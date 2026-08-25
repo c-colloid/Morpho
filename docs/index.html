@@ -1,0 +1,677 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>pandoc pptx ハーネス</title>
+
+<script type="importmap">
+{
+  "imports": {
+    "@bjorn3/browser_wasi_shim": "https://cdn.jsdelivr.net/npm/@bjorn3/browser_wasi_shim@0.4.2/+esm",
+    "fflate": "https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js"
+  }
+}
+</script>
+
+<style>
+:root {
+  --paper:   #E6E8EC;
+  --panel:   #F7F8FA;
+  --ink:     #14161B;
+  --dim:     #666C78;
+  --rule:    #BFC4CD;
+  --cobalt:  #1B3FE0;
+  --crimson: #B01030;
+  --amber:   #A8730A;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  --jp: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0 0 4rem;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--jp);
+  font-size: 15px;
+  line-height: 1.7;
+  -webkit-text-size-adjust: 100%;
+}
+
+.wrap { max-width: 880px; margin: 0 auto; padding: 0 1.25rem; }
+
+/* ---- header ---- */
+header {
+  border-bottom: 2px solid var(--ink);
+  padding: 1.5rem 0 1rem;
+  margin-bottom: 1.75rem;
+}
+h1 {
+  font-family: var(--mono);
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 .4rem;
+}
+.sub { color: var(--dim); font-size: .8rem; margin: 0; }
+
+/* ---- status rail ---- */
+#boot {
+  display: flex; align-items: center; gap: .75rem;
+  font-family: var(--mono); font-size: .75rem;
+  margin-top: .9rem; padding: .55rem .75rem;
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 4px;
+}
+#bootBar { flex: 1; height: 3px; background: var(--rule); border-radius: 2px; overflow: hidden; }
+#bootFill { height: 100%; width: 0; background: var(--cobalt); transition: width .15s linear; }
+#bootTxt { white-space: nowrap; }
+
+/* ---- sections ---- */
+section { margin-bottom: 2.25rem; }
+.eyebrow {
+  font-family: var(--mono); font-size: .68rem; font-weight: 600;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--cobalt);
+  display: flex; align-items: baseline; gap: .6rem; margin-bottom: .7rem;
+}
+.eyebrow::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+h2 { font-size: 1rem; font-weight: 700; margin: 0 0 .5rem; }
+.note { color: var(--dim); font-size: .82rem; margin: .3rem 0 .9rem; }
+
+/* ---- controls ---- */
+button {
+  font-family: var(--jp); font-size: .9rem; font-weight: 600;
+  padding: .7rem 1.2rem; border-radius: 4px; border: 1px solid var(--ink);
+  background: var(--ink); color: var(--paper); cursor: pointer;
+  min-height: 44px;
+}
+button:disabled { opacity: .35; cursor: default; }
+button.ghost { background: transparent; color: var(--ink); }
+button.primary { background: var(--cobalt); border-color: var(--cobalt); }
+
+input[type=file] { font-size: .82rem; font-family: var(--mono); max-width: 100%; }
+textarea {
+  width: 100%; min-height: 15rem; padding: .8rem;
+  font-family: var(--mono); font-size: 13px; line-height: 1.6;
+  border: 1px solid var(--rule); border-radius: 4px; background: var(--panel);
+  color: var(--ink); resize: vertical;
+}
+label.check {
+  display: flex; align-items: flex-start; gap: .55rem;
+  font-size: .85rem; margin: .5rem 0; cursor: pointer;
+}
+label.check input { margin-top: .35rem; width: 18px; height: 18px; flex: none; }
+
+/* ---- patch bay: the signature element ---- */
+.bay { border: 1px solid var(--rule); border-radius: 4px; background: var(--panel); overflow: hidden; }
+.bay-head {
+  display: grid; grid-template-columns: 1fr 1.2fr;
+  font-family: var(--mono); font-size: .64rem; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--dim);
+  padding: .5rem .8rem; border-bottom: 1px solid var(--rule);
+}
+.slot {
+  display: grid; grid-template-columns: 1fr 1.2fr;
+  align-items: center; gap: .5rem;
+  padding: .55rem .8rem; border-bottom: 1px solid var(--rule);
+}
+.slot:last-child { border-bottom: 0; }
+.slot-name { font-family: var(--mono); font-size: .78rem; display: flex; align-items: center; gap: .5rem; }
+.pin { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--crimson); }
+.pin.on { background: var(--cobalt); }
+.slot select {
+  width: 100%; font-family: var(--jp); font-size: .82rem;
+  padding: .45rem .5rem; min-height: 38px;
+  border: 1px solid var(--rule); border-radius: 3px; background: #fff; color: var(--ink);
+}
+@media (max-width: 560px) {
+  .bay-head, .slot { grid-template-columns: 1fr; }
+  .bay-head span:last-child { display: none; }
+}
+
+/* ---- results ---- */
+.metrics { display: flex; flex-wrap: wrap; gap: 1.75rem; margin: 1rem 0; }
+.metric { }
+.metric b { display: block; font-family: var(--mono); font-size: 1.6rem; font-weight: 600; line-height: 1.1; }
+.metric span { font-family: var(--mono); font-size: .64rem; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+
+.diag { border-left: 3px solid var(--rule); padding: .5rem 0 .5rem .8rem; margin: .5rem 0; }
+.diag.critical { border-color: var(--crimson); }
+.diag.design   { border-color: var(--amber); }
+.diag.info     { border-color: var(--dim); }
+.diag h3 {
+  font-family: var(--mono); font-size: .68rem; letter-spacing: .1em;
+  text-transform: uppercase; margin: 0 0 .3rem;
+}
+.diag.critical h3 { color: var(--crimson); }
+.diag.design h3   { color: var(--amber); }
+.diag.info h3     { color: var(--dim); }
+.diag p { margin: .15rem 0; font-family: var(--mono); font-size: .74rem; word-break: break-word; }
+
+pre {
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 4px;
+  padding: .7rem; font-family: var(--mono); font-size: .72rem;
+  overflow-x: auto; white-space: pre-wrap; word-break: break-word; margin: .5rem 0;
+}
+.hidden { display: none; }
+a.dl {
+  display: inline-block; font-family: var(--jp); font-weight: 600; font-size: .9rem;
+  padding: .7rem 1.2rem; border-radius: 4px; min-height: 44px;
+  background: var(--cobalt); color: #fff; text-decoration: none;
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>pandoc.wasm — pptx reference-doc ハーネス</h1>
+  <p class="sub">テンプレートのレイアウト名が pandoc の要求と一致するかを確認し、変換して結果を測る。</p>
+  <div id="boot">
+    <div id="bootBar"><div id="bootFill"></div></div>
+    <div id="bootTxt">待機中</div>
+  </div>
+</header>
+
+<section>
+  <div class="eyebrow">01 — テンプレート</div>
+  <h2>reference-doc を読み込む</h2>
+  <p class="note">
+    pandoc はスライドレイアウトを <em>英語名</em> で探します。日本語版 PowerPoint で作られたテンプレートは一致せず、
+    警告だけを出して pandoc 標準レイアウトに差し替わります。下の配線盤で対応を確認・修正できます。
+  </p>
+  <input type="file" id="refFile" accept=".pptx">
+  <div id="bayWrap" class="hidden" style="margin-top:1rem">
+    <div class="bay">
+      <div class="bay-head"><span>pandoc が探す名前</span><span>テンプレート内のレイアウト</span></div>
+      <div id="bay"></div>
+    </div>
+    <label class="check">
+      <input type="checkbox" id="normalize" checked>
+      <span>変換前にレイアウト名を上の対応どおりに書き換える<br>
+        <small style="color:var(--dim)">オフにすると、テンプレートを無加工のまま渡したときの挙動を確認できます</small></span>
+    </label>
+  </div>
+</section>
+
+<section>
+  <div class="eyebrow">02 — 入力</div>
+  <h2>Markdown</h2>
+  <textarea id="md" spellcheck="false"></textarea>
+  <label class="check">
+    <input type="checkbox" id="stripComments">
+    <span>Lua フィルタで HTML コメントを除去する<br>
+      <small style="color:var(--dim)">RawBlock 警告が消えるか、そもそも WASM で Lua フィルタが動くかの確認を兼ねます</small></span>
+  </label>
+</section>
+
+<section>
+  <div class="eyebrow">03 — 実行</div>
+  <button id="run" class="primary" disabled>pptx に変換</button>
+  <div id="metrics" class="metrics hidden"></div>
+  <div id="dlWrap"></div>
+</section>
+
+<section>
+  <div class="eyebrow">04 — 連続変換テスト</div>
+  <h2>ライブプレビューは成立するか</h2>
+  <p class="note">
+    同じ入力を連続で変換し、<em>WASMヒープが増え続けないか</em>と<em>1回あたりの時間が劣化しないか</em>を測ります。
+    増え続けるなら、編集セッション中にタブが落ちるためライブプレビューは別設計が必要になります。
+  </p>
+  <button id="soak" class="ghost" disabled>100回連続変換</button>
+  <button id="soakStop" class="ghost hidden">中止</button>
+  <div id="soakOut"></div>
+</section>
+
+<section id="diagSec" class="hidden">
+  <div class="eyebrow">05 — 診断</div>
+  <div id="diags"></div>
+  <details>
+    <summary style="font-family:var(--mono);font-size:.75rem;cursor:pointer">stderr / 生の warnings</summary>
+    <pre id="raw"></pre>
+  </details>
+</section>
+
+</div>
+
+<script type="module">
+import { createPandocInstance } from "https://cdn.jsdelivr.net/npm/pandoc-wasm@1.1.0/src/core.js";
+import { unzipSync, zipSync, strFromU8, strToU8 } from "fflate";
+
+const WASM_URLS = [
+  // jsdelivr は 50MB 制限で 403 になるため使えない（pandoc.wasm は 55.9MB）
+  "https://unpkg.com/pandoc-wasm@1.1.0/src/pandoc.wasm",
+  "https://pandoc.github.io/pandoc-wasm/pandoc.wasm",
+];
+
+/* pandoc の pptx ライターが探しにいくレイアウト名（この7つで固定） */
+const SLOTS = [
+  "Title Slide", "Title and Content", "Section Header",
+  "Two Content", "Comparison", "Content with Caption", "Blank",
+];
+
+/* 日本語版 PowerPoint の既定名。表記ゆれも拾う */
+const ALIASES = {
+  "Title Slide":         ["タイトル スライド", "タイトルスライド"],
+  "Title and Content":   ["タイトルとコンテンツ"],
+  "Section Header":      ["セクション見出し"],
+  "Two Content":         ["2 つのコンテンツ", "2つのコンテンツ", "２つのコンテンツ"],
+  "Comparison":          ["比較"],
+  "Content with Caption":["タイトル付きのコンテンツ"],
+  "Blank":               ["白紙"],
+};
+
+const STRIP_LUA = `
+function RawBlock(el)
+  if el.format == 'html' and el.text:match('^%s*<!%-%-') then return {} end
+end
+function RawInline(el)
+  if el.format == 'html' and el.text:match('^%s*<!%-%-') then return {} end
+end
+`;
+
+const DEFAULT_MD = `---
+title: "テンプレート適用テスト"
+author: "フテイケイ"
+---
+
+# セクション見出しのテスト
+
+## 通常スライド
+
+- Title and Content レイアウトが使われるはず
+- テンプレートの配色とフォントが乗っているか確認
+
+## 2カラム
+
+:::::::::::::: {.columns}
+::: {.column width="50%"}
+**左**
+
+- 左の項目
+:::
+::: {.column width="50%"}
+**右**
+
+- 右の項目
+:::
+::::::::::::::
+
+## 表
+
+| 項目 | 値 |
+|---|---|
+| A | 1 |
+| B | 2 |
+
+## 話者ノート
+
+本文です。
+
+::: notes
+ノートペインに出るはずのテキスト。
+:::
+
+<!-- これは HTML コメント。既定では RawBlock 警告が出ます -->
+`;
+
+const $ = (id) => document.getElementById(id);
+$("md").value = DEFAULT_MD;
+
+/* ---------- pandoc.wasm 起動 ---------- */
+let pandoc = null;
+let bootMs = 0;
+let wasmInstance = null;   // メモリ観測用に WebAssembly.instantiate を横取りして捕捉する
+
+async function instantiateWithCapture(bin) {
+  const orig = WebAssembly.instantiate;
+  WebAssembly.instantiate = function (...args) {
+    return orig.apply(this, args).then((r) => {
+      wasmInstance = r.instance || r;
+      return r;
+    });
+  };
+  try {
+    return await createPandocInstance(bin.buffer);
+  } finally {
+    WebAssembly.instantiate = orig;
+  }
+}
+
+const heapBytes = () =>
+  wasmInstance ? wasmInstance.exports.memory.buffer.byteLength : 0;
+
+async function fetchWasm() {
+  let lastErr;
+  for (const url of WASM_URLS) {
+    try {
+      $("bootTxt").textContent = `取得中 ${new URL(url).host}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const total = Number(res.headers.get("content-length")) || 0;
+      const chunks = [];
+      let got = 0;
+      const reader = res.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        got += value.length;
+        if (total) $("bootFill").style.width = `${(got / total) * 100}%`;
+        $("bootTxt").textContent = `${(got / 1048576).toFixed(1)} MB`;
+      }
+      const bin = new Uint8Array(got);
+      let off = 0;
+      for (const c of chunks) { bin.set(c, off); off += c.length; }
+      return bin;
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr;
+}
+
+async function boot() {
+  const t0 = performance.now();
+  try {
+    const bin = await fetchWasm();
+    $("bootTxt").textContent = "インスタンス化中";
+    pandoc = await instantiateWithCapture(bin);
+
+    bootMs = Math.round(performance.now() - t0);
+    $("bootFill").style.width = "100%";
+    $("bootTxt").textContent =
+      `準備完了 ${bootMs} ms / ヒープ ${(heapBytes() / 1048576).toFixed(0)} MB`;
+    $("run").disabled = false;
+    $("soak").disabled = false;
+  } catch (e) {
+    $("bootTxt").textContent = `起動に失敗: ${e.message}`;
+    $("bootFill").style.background = "var(--crimson)";
+    $("bootFill").style.width = "100%";
+  }
+}
+boot();
+
+/* ---------- pptx のレイアウト名を読む / 書き換える ---------- */
+const CSLD = /<p:cSld\b([^>]*)>/;
+const NAME_ATTR = /\sname="([^"]*)"/;
+
+const unesc = (s) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+  .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+let refEntries = null;   // { path: Uint8Array }
+let refLayouts = [];     // [{ path, name }]
+let mapping = {};        // slot -> path
+
+function readLayouts(bytes) {
+  const entries = unzipSync(bytes);
+  const layouts = Object.keys(entries)
+    .filter((p) => /^ppt\/slideLayouts\/slideLayout\d+\.xml$/.test(p))
+    .sort((a, b) => (+a.match(/\d+/)[0]) - (+b.match(/\d+/)[0]))
+    .map((path) => {
+      const head = strFromU8(entries[path]).match(CSLD);
+      const nm = head && head[1].match(NAME_ATTR);
+      return { path, name: nm ? unesc(nm[1]) : "" };
+    });
+  return { entries, layouts };
+}
+
+function autoMap(layouts) {
+  const m = {};
+  for (const slot of SLOTS) {
+    const exact = layouts.find((l) => l.name === slot);
+    if (exact) { m[slot] = exact.path; continue; }
+    const alias = layouts.find((l) => (ALIASES[slot] || []).includes(l.name.trim()));
+    m[slot] = alias ? alias.path : "";
+  }
+  return m;
+}
+
+function renderBay() {
+  const bay = $("bay");
+  bay.innerHTML = "";
+  for (const slot of SLOTS) {
+    const row = document.createElement("div");
+    row.className = "slot";
+
+    const on = !!mapping[slot];
+    row.innerHTML = `<div class="slot-name"><i class="pin${on ? " on" : ""}"></i>${slot}</div>`;
+
+    const sel = document.createElement("select");
+    sel.innerHTML = `<option value="">— 未接続（pandoc 標準に差し替わる）—</option>` +
+      refLayouts.map((l) =>
+        `<option value="${l.path}"${mapping[slot] === l.path ? " selected" : ""}>${
+          l.name || "(名前なし)"}</option>`).join("");
+    sel.onchange = () => { mapping[slot] = sel.value; renderBay(); };
+
+    row.appendChild(sel);
+    bay.appendChild(row);
+  }
+}
+
+$("refFile").onchange = async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    const r = readLayouts(new Uint8Array(await f.arrayBuffer()));
+    refEntries = r.entries;
+    refLayouts = r.layouts;
+    mapping = autoMap(refLayouts);
+    renderBay();
+    $("bayWrap").classList.remove("hidden");
+  } catch (err) {
+    alert(`pptx として読めませんでした: ${err.message}`);
+  }
+};
+
+function buildRefDoc() {
+  const out = { ...refEntries };
+  for (const [slot, path] of Object.entries(mapping)) {
+    if (!path || !out[path]) continue;
+    let xml = strFromU8(out[path]);
+    xml = xml.replace(CSLD, (full, attrs) =>
+      NAME_ATTR.test(attrs)
+        ? `<p:cSld${attrs.replace(NAME_ATTR, ` name="${esc(slot)}"`)}>`
+        : `<p:cSld name="${esc(slot)}"${attrs}>`);
+    out[path] = strToU8(xml);
+  }
+  return zipSync(out, { level: 6 });
+}
+
+/* ---------- 診断の分類 ---------- */
+const RULES = [
+  { re: /not found in resource path/i, kind: "critical",
+    label: "変換が停止します", hint: "画像を files に載せてください" },
+  { re: /Couldn't find layout named/i, kind: "design",
+    label: "レイアウト未検出", hint: "配線盤で対応させると解消します" },
+  { re: /Not rendering RawBlock/i, kind: "info",
+    label: "生ブロックを無視", hint: "多くは HTML コメントです" },
+];
+
+const warnText = (w) =>
+  typeof w === "string" ? w : (w && (w.message || w.msg)) || JSON.stringify(w);
+
+function renderDiags(warnings, stderr) {
+  const buckets = new Map();
+  for (const w of warnings) {
+    const t = warnText(w);
+    const rule = RULES.find((r) => r.re.test(t)) ||
+      { kind: "info", label: "その他", hint: "" };
+    if (!buckets.has(rule.label)) buckets.set(rule.label, { rule, items: [] });
+    buckets.get(rule.label).items.push(t);
+  }
+
+  const box = $("diags");
+  box.innerHTML = "";
+  if (!buckets.size) {
+    box.innerHTML = `<div class="diag"><h3>警告なし</h3></div>`;
+  } else {
+    for (const { rule, items } of buckets.values()) {
+      const d = document.createElement("div");
+      d.className = `diag ${rule.kind}`;
+      d.innerHTML = `<h3>${rule.label} — ${items.length}件</h3>` +
+        items.slice(0, 8).map((t) => `<p>${esc(t)}</p>`).join("") +
+        (items.length > 8 ? `<p>… 他 ${items.length - 8} 件</p>` : "") +
+        (rule.hint ? `<p style="color:var(--dim)">→ ${rule.hint}</p>` : "");
+      box.appendChild(d);
+    }
+  }
+  $("raw").textContent =
+    `warnings (${warnings.length}):\n${JSON.stringify(warnings, null, 2)}\n\nstderr:\n${stderr || "(なし)"}`;
+  $("diagSec").classList.remove("hidden");
+}
+
+/* ---------- 連続変換テスト ---------- */
+let stopSoak = false;
+
+function spark(vals, color, w = 320, h = 44) {
+  if (vals.length < 2) return "";
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const span = hi - lo || 1;
+  const pts = vals.map((v, i) =>
+    `${(i / (vals.length - 1)) * w},${h - ((v - lo) / span) * (h - 4) - 2}`).join(" ");
+  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;max-width:${w}px;height:${h}px;display:block">
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
+}
+
+const median = (a) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
+const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
+
+$("soakStop").onclick = () => { stopSoak = true; };
+
+$("soak").onclick = async () => {
+  const N = 100;
+  stopSoak = false;
+  $("soak").disabled = true;
+  $("soakStop").classList.remove("hidden");
+
+  const md = $("md").value;
+  const options = { from: "markdown", to: "pptx", "output-file": "out.pptx" };
+
+  /* reference-doc はライブプレビュー同様に1度だけ組んで使い回す */
+  let refBlob = null;
+  if (refEntries) {
+    refBlob = new Blob([$("normalize").checked
+      ? buildRefDoc() : zipSync({ ...refEntries }, { level: 6 })]);
+    options["reference-doc"] = "reference.pptx";
+  }
+
+  const times = [], mems = [];
+  const heap0 = heapBytes();
+
+  for (let i = 0; i < N && !stopSoak; i++) {
+    const files = refBlob ? { "reference.pptx": refBlob } : {};
+    const t = performance.now();
+    try {
+      await pandoc.convert(options, md, files);
+    } catch (e) {
+      $("soakOut").innerHTML =
+        `<div class="diag critical"><h3>${i + 1} 回目で停止</h3><p>${esc(String(e))}</p></div>`;
+      break;
+    }
+    times.push(performance.now() - t);
+    mems.push(heapBytes());
+
+    if (i % 5 === 0 || i === N - 1) {
+      $("soakOut").innerHTML =
+        `<p class="note">${i + 1} / ${N} 回</p>` + soakReport(times, mems, heap0);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+
+  $("soakOut").innerHTML = soakReport(times, mems, heap0);
+  $("soak").disabled = false;
+  $("soakStop").classList.add("hidden");
+};
+
+function soakReport(times, mems, heap0) {
+  if (!times.length) return "";
+  const tail = times.slice(-5);
+  const grow = mems[mems.length - 1] - heap0;
+  const perRun = grow / times.length;
+  const verdict = perRun < 1024
+    ? { c: "info", t: "ヒープは安定。単一インスタンスの使い回しで問題なし" }
+    : perRun < 65536
+      ? { c: "design", t: `1回あたり約 ${(perRun / 1024).toFixed(1)} KB 増加。長時間の編集では要監視` }
+      : { c: "critical", t: `1回あたり約 ${(perRun / 1048576).toFixed(2)} MB 増加。定期的なインスタンス再生成が必要` };
+
+  return `
+    <div class="metrics">
+      <div class="metric"><b>${Math.round(times[0])}</b><span>初回 ms</span></div>
+      <div class="metric"><b>${Math.round(median(times))}</b><span>中央値 ms</span></div>
+      <div class="metric"><b>${Math.round(mean(tail))}</b><span>直近5回 ms</span></div>
+      <div class="metric"><b>${(mems[mems.length - 1] / 1048576).toFixed(0)}</b><span>ヒープ MB</span></div>
+      <div class="metric"><b>${grow >= 0 ? "+" : ""}${(grow / 1048576).toFixed(1)}</b><span>増分 MB</span></div>
+    </div>
+    <div class="diag ${verdict.c}"><h3>判定</h3><p>${verdict.t}</p></div>
+    <p class="note" style="margin-bottom:.2rem">変換時間の推移（初回が突出していれば JIT ウォームアップ）</p>
+    ${spark(times, "var(--cobalt)")}
+    <p class="note" style="margin:.6rem 0 .2rem">WASM ヒープの推移（右肩上がりなら回収されていない）</p>
+    ${spark(mems, "var(--crimson)")}`;
+}
+
+/* ---------- 変換 ---------- */
+$("run").onclick = async () => {
+  $("run").disabled = true;
+  $("dlWrap").innerHTML = "";
+  $("metrics").classList.add("hidden");
+
+  const options = { from: "markdown", to: "pptx", "output-file": "out.pptx" };
+  const files = {};
+
+  if (refEntries) {
+    const bytes = $("normalize").checked
+      ? buildRefDoc()
+      : zipSync({ ...refEntries }, { level: 6 });
+    files["reference.pptx"] = new Blob([bytes]);
+    options["reference-doc"] = "reference.pptx";
+  }
+  if ($("stripComments").checked) {
+    files["strip.lua"] = STRIP_LUA;
+    options.filters = ["strip.lua"];
+  }
+
+  const t0 = performance.now();
+  try {
+    const res = await pandoc.convert(options, $("md").value, files);
+    const ms = Math.round(performance.now() - t0);
+
+    const blob = res.files && res.files["out.pptx"];
+    if (!blob) {
+      renderDiags(res.warnings || [], res.stderr);
+      $("dlWrap").innerHTML =
+        `<p style="color:var(--crimson);font-weight:600">出力ファイルが生成されませんでした。診断を確認してください。</p>`;
+      return;
+    }
+
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const slides = Object.keys(unzipSync(bytes))
+      .filter((p) => /^ppt\/slides\/slide\d+\.xml$/.test(p)).length;
+
+    $("metrics").innerHTML = `
+      <div class="metric"><b>${slides}</b><span>スライド</span></div>
+      <div class="metric"><b>${ms}</b><span>変換 ms</span></div>
+      <div class="metric"><b>${(bytes.length / 1024).toFixed(0)}</b><span>出力 KB</span></div>
+      <div class="metric"><b>${bootMs}</b><span>起動 ms</span></div>`;
+    $("metrics").classList.remove("hidden");
+
+    const url = URL.createObjectURL(blob);
+    $("dlWrap").innerHTML =
+      `<a class="dl" href="${url}" download="out.pptx">out.pptx を保存</a>`;
+
+    renderDiags(res.warnings || [], res.stderr);
+  } catch (e) {
+    $("diags").innerHTML =
+      `<div class="diag critical"><h3>変換が例外で停止</h3><p>${esc(String(e))}</p></div>`;
+    $("diagSec").classList.remove("hidden");
+  } finally {
+    $("run").disabled = false;
+  }
+};
+</script>
+</body>
+</html>
