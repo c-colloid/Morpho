@@ -36,10 +36,26 @@ npm start
 
 iPad の Expo Go でスキャンする。初回は pandoc.wasm（55.9 MB）の取得が入る。
 
-> **注意:** App Store の Expo Go は SDK 54 で凍結されている。
-> このプロジェクトは SDK 57 なので、実機で動かすには Apple Developer Program に
-> 加入して `npx eas-cli@latest go` で自分用の Expo Go をクラウドビルドし、
-> TestFlight 経由で入れる必要がある。Mac は要らない（EAS はクラウド）。
+iPad と開発機が同じ Wi-Fi にいない場合は `npm run start:tunnel` を使う。
+
+### iPad に Expo Go を入れる
+
+App Store の Expo Go は **SDK 54 で凍結**されていて、SDK 55 以降は承認されていない。
+このプロジェクトは SDK 57 なので、実機に入れる経路は次の3つ。
+
+| 経路 | 費用 | Mac | 保守 |
+|---|---|---|---|
+| **sign.expo.dev** | 無料 | 不要 | 約7日ごとに再署名 |
+| `npx eas-cli@latest go` | $99/年 | 不要 | 1年 |
+| App Store の Expo Go | 無料 | 不要 | 不要（ただし SDK 54 まで） |
+
+[sign.expo.dev](https://sign.expo.dev/) は **無料 Apple ID の開発者プロビジョニング**を使って
+Expo Go に署名し、USB か QR コードで端末に入れる Expo 公式のサービス。
+有料の Apple Developer Program は要らない。
+証明書の有効期間は約7日で、切れたら同じ手順で入れ直す。
+
+ネイティブモジュールを足す段階（iCloud 連携など）になると
+自前の development build が必要になり、そこで初めて Developer Program が要る。
 
 ## 検査
 
