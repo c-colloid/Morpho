@@ -54,6 +54,33 @@ Expo Go に署名し、USB か QR コードで端末に入れる Expo 公式の�
 有料の Apple Developer Program は要らない。
 証明書の有効期間は約7日で、切れたら同じ手順で入れ直す。
 
+#### Windows から入れる場合の現実
+
+Install の手順で選べるのは **USB / Expo Orbit / .ipa** の3つ。QR コードは出ない
+（トップページには "over USB or QR code" とあるが、実際の手順には無い）。
+
+| 選択肢 | Windows で使えるか |
+|---|---|
+| USB | ✗ 事実上詰まる（下記） |
+| Expo Orbit | ✗ iOS 実機の管理に `xcrun` を使うため **macOS 専用** |
+| .ipa | ○ 別途インストーラが要る |
+
+**USB が詰まる理由。** WebUSB はインターフェースを排他的に掴む必要があるが、
+Apple のドライバ（iTunes / Apple Devices 同梱）が結合していると横取りできない。
+かといってドライバが無いと iPad が usbmux を持たない構成のまま
+（エラーに `active config: 1; usbmux in config(s): 3,4` と出る）。
+どちらに転んでも通らない板挟みで、抜けるには Zadig で
+「Apple Mobile Device USB Device」インターフェースのみ WinUSB に差し替えるしかない。
+複合親デバイスに当てると同期・バックアップごと壊れるので注意。
+
+**.ipa が現実解。** sign.expo.dev が出す .ipa は既に開発証明書で署名済みなので、
+Windows のインストーラ（Sideloadly / iMazing / 3uTools など）で端末へ流し込む。
+いずれもネイティブアプリなので WebUSB の排他問題を踏まない。
+iTunes 同梱の Apple ドライバは必要。
+
+**そもそも SDK 54 に留まれば全部要らない。** `sdk-54` ブランチなら
+App Store の Expo Go がそのまま使え、署名も USB も7日ごとの入れ直しも発生しない。
+
 #### 詰まったところ: Device の手順で UDID を手入力する
 
 **自動のデバイス検出が失敗すると `Your Apple ID session expired, sign in again.` が
