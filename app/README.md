@@ -38,57 +38,51 @@ iPad の Expo Go でスキャンする。初回は pandoc.wasm（55.9 MB）の�
 
 iPad と開発機が同じ Wi-Fi にいない場合は `npm run start:tunnel` を使う。
 
-### iPad に Expo Go を入れる
+### iPad に Expo Go を入れる（確定手順）
 
 App Store の Expo Go は **SDK 54 で凍結**されていて、SDK 55 以降は承認されていない。
-このプロジェクトは SDK 57 なので、実機に入れる経路は次の3つ。
+このプロジェクトは SDK 57 なので、実機に入れるには自分で署名する必要がある。
 
-| 経路 | 費用 | Mac | 保守 |
-|---|---|---|---|
-| **sign.expo.dev** | 無料 | 不要 | 約7日ごとに再署名 |
-| `npx eas-cli@latest go` | $99/年 | 不要 | 1年 |
-| App Store の Expo Go | 無料 | 不要 | 不要（ただし SDK 54 まで） |
+**Windows から通った唯一の経路が以下。** 費用ゼロ、Mac 不要。
 
-[sign.expo.dev](https://sign.expo.dev/) は **無料 Apple ID の開発者プロビジョニング**を使って
-Expo Go に署名し、USB か QR コードで端末に入れる Expo 公式のサービス。
-有料の Apple Developer Program は要らない。
-証明書の有効期間は約7日で、切れたら同じ手順で入れ直す。
+1. [sign.expo.dev](https://sign.expo.dev/) で **`.ipa` を取得するだけ**
+   - Version で SDK 57 を選ぶ
+   - **Device の手順は UDID を手入力する**（後述）
+   - Install の手順で **`.ipa`** を選んでダウンロード
+2. **AltStore / AltServer には別の無料 Apple ID でサインインする**（後述）
+3. AltServer → *Sideload .ipa* → ダウンロードした .ipa を選ぶ
+4. iPad で 設定 → 一般 → **VPNとデバイス管理** → 開発者を信頼
 
-#### Windows から入れる場合の現実
+以降、AltServer は同じ Wi-Fi にいれば **7日ごとに自動で再署名する。**
+sign.expo.dev の USB 経路だと毎週手動で入れ直しになるので、この点でも AltStore が優る。
 
-Install の手順で選べるのは **USB / Expo Orbit / .ipa** の3つ。QR コードは出ない
-（トップページには "over USB or QR code" とあるが、実際の手順には無い）。
+#### 落とし穴1: Device の手順は UDID を手入力する
 
-| 選択肢 | Windows で使えるか |
+自動のデバイス検出が失敗すると `Your Apple ID session expired, sign in again.` が
+出続けて先へ進めない。**エラー文言と実際の失敗箇所が対応していない。**
+Apple ID の認証自体は通っているので、何度サインインし直しても解決しない。
+UDID を手で貼れば通る。UDID は端末ごとに変わらないので次回も同じ値が使える。
+
+#### 落とし穴2: AltStore には別の Apple ID を使う
+
+sign.expo.dev は Apple ID に**開発証明書を作る**。同じ Apple ID で AltServer を動かすと、
+AltServer はその証明書を見つけるが秘密鍵を持っていないため
+**Import Signing Certificate**（.p12 をよこせ）を要求する。
+sign.expo.dev は秘密鍵を渡さないので Skip するしかなく、署名手段がないまま Failed になる。
+
+**AltStore 用に無料 Apple ID をもう一つ作れば、この衝突は原理的に起きない。**
+既存の証明書を Revoke する道もあるが、破棄するとアカウントが
+14日間のクールダウンに入るという報告がある（Apple の公式文書では未確認）。
+別 ID のほうが安全。
+
+#### 通らなかった経路（再挑戦しないこと）
+
+| 経路 | 結果 |
 |---|---|
-| USB | ✗ 事実上詰まる（下記） |
+| sign.expo.dev の USB | ✗ WebUSB の排他確保と Apple ドライバの結合が両立しない板挟み。`active config: 1; usbmux in config(s): 3,4` が出る。Zadig で「Apple Mobile Device USB Device」インターフェースのみ WinUSB に差し替えれば抜けられるが、複合親デバイスに当てると同期・バックアップごと壊れる |
 | Expo Orbit | ✗ iOS 実機の管理に `xcrun` を使うため **macOS 専用** |
-| .ipa | ○ 別途インストーラが要る |
-
-**USB が詰まる理由。** WebUSB はインターフェースを排他的に掴む必要があるが、
-Apple のドライバ（iTunes / Apple Devices 同梱）が結合していると横取りできない。
-かといってドライバが無いと iPad が usbmux を持たない構成のまま
-（エラーに `active config: 1; usbmux in config(s): 3,4` と出る）。
-どちらに転んでも通らない板挟みで、抜けるには Zadig で
-「Apple Mobile Device USB Device」インターフェースのみ WinUSB に差し替えるしかない。
-複合親デバイスに当てると同期・バックアップごと壊れるので注意。
-
-**.ipa が現実解。** sign.expo.dev が出す .ipa は既に開発証明書で署名済みなので、
-Windows のインストーラ（Sideloadly / iMazing / 3uTools など）で端末へ流し込む。
-いずれもネイティブアプリなので WebUSB の排他問題を踏まない。
-iTunes 同梱の Apple ドライバは必要。
-
-**そもそも SDK 54 に留まれば全部要らない。** `sdk-54` ブランチなら
-App Store の Expo Go がそのまま使え、署名も USB も7日ごとの入れ直しも発生しない。
-
-#### 詰まったところ: Device の手順で UDID を手入力する
-
-**自動のデバイス検出が失敗すると `Your Apple ID session expired, sign in again.` が
-出続けて先に進めなくなる。エラー文言と実際の失敗箇所が対応していない。**
-Apple ID の認証は通っているので、いくら入れ直しても解決しない。
-
-Device の手順で **UDID を手で貼り付ければ通る。**
-UDID は端末ごとに変わらないので、証明書が切れて入れ直すときも同じ値を使える。
+| QR コード | ✗ トップページに "over USB or QR code" とあるが、実際の Install の手順には出ない |
+| iTunes へドラッグ | ✗ Apps セクションは iTunes 12.7 で削除済み |
 
 #### 名前が紛らわしいので注意
 
@@ -101,11 +95,15 @@ Apple 側に似た名前のものが2つあり、必要なのは無料のほう�
 
 developer.apple.com では**サインインするだけ**にする。
 「Enroll」は $99 の課金導線なので押さない。
-sign.expo.dev が使うのは無料側の free provisioning。
 `eas go` が有料なのは TestFlight 配布が有料側の機能だから。
 
 ネイティブモジュールを足す段階（iCloud 連携など）になると
 自前の development build が必要になり、そこで初めて Developer Program が要る。
+
+#### 逃げ道
+
+`sdk-54` ブランチは SDK 54 に固定してあり、App Store の Expo Go がそのまま使える。
+署名も .ipa も7日ごとの入れ直しも発生しない。`src/` は main と同一。
 
 ## 検査
 
