@@ -40,22 +40,21 @@ iPad と開発機が同じ Wi-Fi にいない場合は `npm run start:tunnel` �
 
 ### iPad に Expo Go を入れる
 
-App Store の Expo Go は **SDK 54 で凍結**されていて、SDK 55 以降は承認されていない。
-このプロジェクトは SDK 57 なので、実機に入れる経路は次の3つ。
+**このブランチは SDK 54 に固定してある。**
+App Store の Expo Go が SDK 54 で凍結されており、SDK 55 以降は承認されていないため、
+54 に留まっているかぎり **App Store の Expo Go をそのまま使える**。
+Apple ID も Developer Program も、署名の入れ直しも要らない。
 
-| 経路 | 費用 | Mac | 保守 |
-|---|---|---|---|
-| **sign.expo.dev** | 無料 | 不要 | 約7日ごとに再署名 |
-| `npx eas-cli@latest go` | $99/年 | 不要 | 1年 |
-| App Store の Expo Go | 無料 | 不要 | 不要（ただし SDK 54 まで） |
+main は SDK 57。実機に入れる経路が確保できたらそちらへ戻す。
 
-[sign.expo.dev](https://sign.expo.dev/) は **無料 Apple ID の開発者プロビジョニング**を使って
-Expo Go に署名し、USB か QR コードで端末に入れる Expo 公式のサービス。
-有料の Apple Developer Program は要らない。
-証明書の有効期間は約7日で、切れたら同じ手順で入れ直す。
+| 経路 | 費用 | Mac | 保守 | SDK |
+|---|---|---|---|---|
+| **App Store の Expo Go**（このブランチ） | 無料 | 不要 | 不要 | 54 まで |
+| sign.expo.dev | 無料 | 不要 | 約7日ごとに再署名 | 57 可 |
+| `npx eas-cli@latest go` | $99/年 | 不要 | 1年 | 57 可 |
 
 ネイティブモジュールを足す段階（iCloud 連携など）になると
-自前の development build が必要になり、そこで初めて Developer Program が要る。
+どの道 development build が必要になり、そこで初めて Developer Program が要る。
 
 ## 検査
 
