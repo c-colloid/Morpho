@@ -409,11 +409,15 @@ WebView は「Markdown を渡すと描画用 JSON を返す計算機」に徹す
 ## リポジトリ構成
 
 ```
+app/                                 アプリ本体（React Native + Expo）
 docs/index.html                      GitHub Pages で公開する検証ハーネス
 fixtures/pptx-benchmark.md           50枚規模のテストデッキ（自己診断型）
 notes/findings.md                    検証の経緯
 scripts/init.sh                      Pages 有効化と基準出力の再生成
 ```
+
+`app/` の中身と現在地は `app/README.md` を参照。
+`src/converter/types.ts` がアーキテクチャ図の「差し替え可能な境界」にあたる。
 
 比較用の基準出力（pandoc 3.1.3 で 64 枚）はリポジトリに含めていない。次で再生成する:
 
