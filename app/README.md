@@ -54,6 +54,20 @@ Expo Go に署名し、USB か QR コードで端末に入れる Expo 公式の�
 有料の Apple Developer Program は要らない。
 証明書の有効期間は約7日で、切れたら同じ手順で入れ直す。
 
+#### 名前が紛らわしいので注意
+
+Apple 側に似た名前のものが2つあり、必要なのは無料のほう。
+
+| | 費用 | 範囲 |
+|---|---|---|
+| Apple Developer **Agreement**（契約） | **無料** | 自分の端末での実機テスト。7日ごとに更新、端末3台まで |
+| Apple Developer **Program**（プログラム） | $99/年 | App Store 配布、TestFlight、App Store Connect |
+
+developer.apple.com では**サインインするだけ**にする。
+「Enroll」は $99 の課金導線なので押さない。
+sign.expo.dev が使うのは無料側の free provisioning。
+`eas go` が有料なのは TestFlight 配布が有料側の機能だから。
+
 ネイティブモジュールを足す段階（iCloud 連携など）になると
 自前の development build が必要になり、そこで初めて Developer Program が要る。
 
