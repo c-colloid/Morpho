@@ -1,6 +1,6 @@
 {
   "name": "morpho",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "main": "index.ts",
   "dependencies": {
     "expo": "~57.0.16",

@@ -112,8 +112,12 @@ export function usePandocConverter(): {
       domStorageEnabled
       cacheEnabled
       /* 55.9MB を毎回取り直さないよう、画面外に置いたまま生かしておく。
-         display:none だと iOS で実行が止まることがある */
+         display:none だと iOS で実行が止まることがある。
+         注意: style は「中の WebView」にしか効かない。外側のコンテナは
+         flex:1 で包まれており（WebView.styles.ts）、containerStyle を
+         潰さないと画面の半分を取る。v0.1.1 の「下半分にしか出ない」の原因 */
       style={styles.hidden}
+      containerStyle={styles.hidden}
       onMessage={onMessage}
       onError={(e) =>
         setStatus({ phase: 'error', message: 'WebView: ' + e.nativeEvent.description })
@@ -128,5 +132,14 @@ export function usePandocConverter(): {
 }
 
 const styles = StyleSheet.create({
-  hidden: { position: 'absolute', width: 1, height: 1, opacity: 0 },
+  hidden: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: 1,
+    height: 1,
+    opacity: 0,
+    // flex:1 の既定を確実に殺す
+    flex: 0,
+  },
 });
