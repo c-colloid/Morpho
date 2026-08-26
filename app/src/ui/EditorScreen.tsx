@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 
 import Constants from 'expo-constants';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { LatestOnly } from '../converter/latestOnly';
 import { splitFrontMatter } from '../converter/frontMatter';
@@ -65,7 +66,8 @@ const x = 1;
 
 export default function EditorScreen() {
   const { element, converter, status } = usePandocConverter();
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   // iPad の縦向きは 820〜834pt。900 では縦で二画面にならず、狭い縦積みになる
   const wide = width >= 700;
 
@@ -73,6 +75,8 @@ export default function EditorScreen() {
   const [result, setResult] = useState<ConvertResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // 位置ずれの切り分け用。ペイン領域が実際に何ptで置かれたかを見る
+  const [panesBox, setPanesBox] = useState<{ y: number; h: number } | null>(null);
 
   const runner = useMemo(
     () =>
@@ -109,12 +113,36 @@ export default function EditorScreen() {
   }, [source, status.phase, runner]);
 
   return (
-    <View style={styles.root}>
+    <View
+      style={[
+        styles.root,
+        {
+          paddingTop: insets.top,
+          paddingBottom: insets.bottom,
+          paddingLeft: insets.left,
+          paddingRight: insets.right,
+        },
+      ]}
+    >
       {element}
 
-      <HeaderBar status={status} busy={busy} result={result} width={width} wide={wide} />
+      <HeaderBar
+        status={status}
+        busy={busy}
+        result={result}
+        width={width}
+        height={height}
+        insets={insets}
+        wide={wide}
+        panesBox={panesBox}
+      />
 
-      <View style={[styles.panes, wide && styles.panesWide]}>
+      <View
+        style={[styles.panes, wide && styles.panesWide]}
+        onLayout={(e) =>
+          setPanesBox({ y: e.nativeEvent.layout.y, h: e.nativeEvent.layout.height })
+        }
+      >
         <View style={[styles.pane, styles.editorPane]}>
           <Text style={styles.paneLabel}>原稿</Text>
           <TextInput
@@ -229,18 +257,31 @@ function runStyle(run: TextRun): StyleProp<TextStyle> {
 
 const VERSION = Constants.expoConfig?.version ?? '?';
 
+interface Insets {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+}
+
 function HeaderBar({
   status,
   busy,
   result,
   width,
+  height,
+  insets,
   wide,
+  panesBox,
 }: {
   status: BootStatus;
   busy: boolean;
   result: ConvertResult | null;
   width: number;
+  height: number;
+  insets: Insets;
   wide: boolean;
+  panesBox: { y: number; h: number } | null;
 }) {
   let text: string;
   switch (status.phase) {
@@ -267,8 +308,12 @@ function HeaderBar({
   return (
     <View style={[styles.header, status.phase === 'error' && styles.headerError]}>
       <Text style={styles.wordmark}>Morpho</Text>
+      {/* 実機でしか出ない位置ずれの切り分け用。数値をそのまま出す */}
       <Text style={styles.version}>
-        {VERSION} · {Math.round(width)}pt · {wide ? '二画面' : '一画面'}
+        {VERSION} · {Math.round(width)}×{Math.round(height)} ·{' '}
+        {wide ? '二画面' : '一画面'} · 余白 {Math.round(insets.top)}/
+        {Math.round(insets.bottom)}/{Math.round(insets.left)}/{Math.round(insets.right)}
+        {panesBox ? ` · 本体 y${Math.round(panesBox.y)} h${Math.round(panesBox.h)}` : ''}
       </Text>
       <Text style={styles.statusText} numberOfLines={1}>
         {text}
