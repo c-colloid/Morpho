@@ -38,6 +38,15 @@ iPad の Expo Go でスキャンする。初回は pandoc.wasm（55.9 MB）の�
 
 iPad と開発機が同じ Wi-Fi にいない場合は `npm run start:tunnel` を使う。
 
+**QR が読めない / カメラから Expo Go が開かないとき**は、Expo Go を直接起動して
+*Enter URL manually* にターミナルの `exp://192.168.x.x:8081` を入力する。
+AltStore で署名し直した Expo Go は bundle ID が変わっていることがあり、
+その場合カメラからのディープリンクが効かない。
+
+Expo アカウント（sign.expo.dev の手順2で作ったもの）で
+`npx expo login` と Expo Go の両方にログインしておくと、
+開発サーバが Expo Go のホーム画面に自動で並ぶので毎回 URL を打たずに済む。
+
 ### iPad に Expo Go を入れる（確定手順）
 
 App Store の Expo Go は **SDK 54 で凍結**されていて、SDK 55 以降は承認されていない。
