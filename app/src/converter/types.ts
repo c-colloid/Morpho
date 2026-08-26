@@ -22,13 +22,39 @@ export interface Diagnostic {
   count: number;
 }
 
+/** 書式のかかった連続した文字列。pptx の <a:r> にあたる */
+export interface TextRun {
+  text: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  /** 等幅書体。コードスパン / コードブロックの判定に使う */
+  mono?: boolean;
+}
+
+/** 段落。pptx の <a:p> にあたる */
+export interface Paragraph {
+  runs: TextRun[];
+  /** 箇条書きの階層。0 が最上位 */
+  level: number;
+}
+
+/** スライド上の図形ひとつ。pptx の <p:sp> にあたる */
+export interface SlideShape {
+  /**
+   * プレースホルダの種別（title / ctrTitle / subTitle / body など）。
+   * プレースホルダでない図形は null。
+   */
+  placeholder: string | null;
+  paragraphs: Paragraph[];
+}
+
 export interface SlideOutline {
   /** 1 始まり */
   index: number;
   /** 出力側で実際に割り当たったレイアウト名。取れなければ null */
   layout: string | null;
-  /** スライド内のテキストを順に並べたもの。先頭がタイトル相当 */
-  lines: string[];
+  shapes: SlideShape[];
 }
 
 export interface ConvertResult {

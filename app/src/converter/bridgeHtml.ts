@@ -146,6 +146,77 @@ function slideNum(name) {
   return m ? Number(m[1]) : 0;
 }
 
+/* ---- pptx の本文を図形 / 段落 / ラン の三層で読む ----
+   <a:t> だけを拾うと太字・箇条書き・コードが全部同じ見た目になる。
+   書式は <a:rPr b= i= u=> と <a:latin typeface=>、階層は <a:pPr lvl=> にある。 */
+
+var MONO_FACE = /courier|consolas|monaco|menlo|mono/i;
+
+function parseRuns(paragraphXml) {
+  var runs = [];
+  var re = /<a:r>([\\s\\S]*?)<\\/a:r>/g;
+  var m;
+  while ((m = re.exec(paragraphXml)) !== null) {
+    var r = m[1];
+    var t = /<a:t>([\\s\\S]*?)<\\/a:t>/.exec(r);
+    if (!t) continue;
+    var rPr = /<a:rPr\\b([^>]*)>/.exec(r);
+    var attrs = rPr ? rPr[1] : '';
+    var latin = /<a:latin\\b[^>]*\\btypeface="([^"]*)"/.exec(r);
+    var run = { text: decodeXml(t[1]) };
+    if (/\\bb="(1|true)"/.test(attrs)) run.bold = true;
+    if (/\\bi="(1|true)"/.test(attrs)) run.italic = true;
+    if (/\\bu="(sng|dbl)"/.test(attrs)) run.underline = true;
+    if (latin && MONO_FACE.test(latin[1])) run.mono = true;
+    runs.push(run);
+  }
+  return runs;
+}
+
+function parseParagraphs(txBodyXml) {
+  var out = [];
+  var re = /<a:p>([\\s\\S]*?)<\\/a:p>/g;
+  var m;
+  while ((m = re.exec(txBodyXml)) !== null) {
+    var body = m[1];
+    var level = 0;
+    var pPr = /<a:pPr\\b([^>]*)/.exec(body);
+    if (pPr) {
+      var lvl = /\\blvl="(\\d+)"/.exec(pPr[1]);
+      if (lvl) level = Number(lvl[1]);
+    }
+    var runs = parseRuns(body);
+    if (runs.length) out.push({ runs: runs, level: level });
+  }
+  return out;
+}
+
+function parseShapes(slideXml) {
+  var shapes = [];
+  var re = /<p:sp>([\\s\\S]*?)<\\/p:sp>/g;
+  var m;
+  while ((m = re.exec(slideXml)) !== null) {
+    var sp = m[1];
+    var txBody = /<p:txBody>([\\s\\S]*?)<\\/p:txBody>/.exec(sp);
+    if (!txBody) continue;
+    var paragraphs = parseParagraphs(txBody[1]);
+    if (!paragraphs.length) continue;
+
+    /* <p:ph type="title"/> のように種別が入る。type 省略時は body 扱い */
+    var placeholder = null;
+    var ph = /<p:ph\\b([^>]*)/.exec(sp);
+    if (ph) {
+      var type = /\\btype="([^"]*)"/.exec(ph[1]);
+      placeholder = type ? type[1] : 'body';
+    }
+    shapes.push({ placeholder: placeholder, paragraphs: paragraphs });
+  }
+  return shapes;
+}
+
+/* パーサだけ検査できるように外へ出す（scripts/check-scene.mjs が使う） */
+window.__morphoParseShapes = parseShapes;
+
 /* 出力そのものを読む。reveal.js に逃げると嘘をつくので pptx を直接開く */
 function parsePptx(u8) {
   var zip = unzipSync(u8);
@@ -164,22 +235,17 @@ function parsePptx(u8) {
       if (!hit) return null;
       var target = hit[1].replace(/^\\.\\.\\//, 'ppt/');
       if (!zip[target]) return null;
-      var xml = dec.decode(zip[target]);
-      var cSld = /<p:cSld\\b[^>]*\\sname="([^"]*)"/.exec(xml);
+      var cSld = /<p:cSld\\b[^>]*\\sname="([^"]*)"/.exec(dec.decode(zip[target]));
       return cSld ? decodeXml(cSld[1]) : null;
     } catch (e) { return null; }
   };
 
   var slides = names.map(function (n, i) {
-    var xml = dec.decode(zip[n]);
-    var lines = [];
-    var re = /<a:t>([^<]*)<\\/a:t>/g;
-    var m;
-    while ((m = re.exec(xml)) !== null) {
-      var t = decodeXml(m[1]).trim();
-      if (t) lines.push(t);
-    }
-    return { index: i + 1, layout: layoutName(n), lines: lines };
+    return {
+      index: i + 1,
+      layout: layoutName(n),
+      shapes: parseShapes(dec.decode(zip[n]))
+    };
   });
 
   return { slideCount: slides.length, slides: slides };

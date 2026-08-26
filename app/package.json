@@ -18,7 +18,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "check": "tsc --noEmit && node scripts/check-bridge.mjs && node --experimental-strip-types scripts/check-frontmatter.mjs",
+    "check": "tsc --noEmit && node scripts/check-bridge.mjs && node --experimental-strip-types scripts/check-frontmatter.mjs && node scripts/check-scene.mjs",
     "start:tunnel": "expo start --tunnel"
   },
   "private": true

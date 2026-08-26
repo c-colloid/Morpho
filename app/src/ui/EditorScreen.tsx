@@ -7,12 +7,21 @@ import {
   TextInput,
   View,
   useWindowDimensions,
+  type StyleProp,
+  type TextStyle,
 } from 'react-native';
 
 import { LatestOnly } from '../converter/latestOnly';
 import { splitFrontMatter } from '../converter/frontMatter';
 import { usePandocConverter } from '../converter/usePandocConverter';
-import type { BootStatus, ConvertResult, Diagnostic } from '../converter/types';
+import type {
+  BootStatus,
+  ConvertResult,
+  Diagnostic,
+  Paragraph,
+  SlideOutline,
+  TextRun,
+} from '../converter/types';
 
 /** CLAUDE.md 性能設計: デッキ全体の変換は手が止まって 1.5 秒後 */
 const IDLE_MS = 1500;
@@ -114,27 +123,64 @@ export default function EditorScreen() {
           {result?.diagnostics.map((d, i) => (
             <DiagnosticRow key={i} diagnostic={d} />
           ))}
-          {result?.slides.map((s) => (
-            <View key={s.index} style={styles.slide}>
-              <View style={styles.slideHead}>
-                <Text style={styles.slideNum}>{s.index}</Text>
-                <Text style={styles.slideLayout}>{s.layout ?? 'レイアウト不明'}</Text>
-              </View>
-              {s.lines.length === 0 ? (
-                <Text style={styles.slideEmpty}>（テキストなし）</Text>
-              ) : (
-                s.lines.map((line, i) => (
-                  <Text key={i} style={i === 0 ? styles.slideTitle : styles.slideLine}>
-                    {line}
-                  </Text>
-                ))
-              )}
-            </View>
-          ))}
+          {result?.slides.map((s) => <SlideCard key={s.index} slide={s} />)}
         </ScrollView>
       </View>
     </View>
   );
+}
+
+const TITLE_PLACEHOLDERS = ['title', 'ctrTitle'];
+
+function SlideCard({ slide }: { slide: SlideOutline }) {
+  return (
+    <View style={styles.slide}>
+      <View style={styles.slideHead}>
+        <Text style={styles.slideNum}>{slide.index}</Text>
+        <Text style={styles.slideLayout}>{slide.layout ?? 'レイアウト不明'}</Text>
+      </View>
+      {slide.shapes.length === 0 ? (
+        <Text style={styles.slideEmpty}>（テキストなし）</Text>
+      ) : (
+        slide.shapes.map((shape, si) => {
+          const isTitle = !!shape.placeholder && TITLE_PLACEHOLDERS.includes(shape.placeholder);
+          return (
+            <View key={si} style={si > 0 ? styles.shapeGap : undefined}>
+              {shape.paragraphs.map((p, pi) => (
+                <ParagraphRow key={pi} paragraph={p} isTitle={isTitle} />
+              ))}
+            </View>
+          );
+        })
+      )}
+    </View>
+  );
+}
+
+function ParagraphRow({ paragraph, isTitle }: { paragraph: Paragraph; isTitle: boolean }) {
+  // タイトルプレースホルダには行頭記号を出さない
+  const bullet = !isTitle;
+  return (
+    <View style={[styles.para, { paddingLeft: bullet ? paragraph.level * 16 : 0 }]}>
+      {bullet && <Text style={styles.bullet}>{paragraph.level > 0 ? '◦' : '•'}</Text>}
+      <Text style={[styles.paraText, isTitle && styles.titleText]}>
+        {paragraph.runs.map((run, ri) => (
+          <Text key={ri} style={runStyle(run)}>
+            {run.text}
+          </Text>
+        ))}
+      </Text>
+    </View>
+  );
+}
+
+function runStyle(run: TextRun): StyleProp<TextStyle> {
+  return [
+    run.bold && styles.bold,
+    run.italic && styles.italic,
+    run.underline && styles.underline,
+    run.mono && styles.mono,
+  ];
 }
 
 function StatusBar({
@@ -257,7 +303,16 @@ const styles = StyleSheet.create({
   slideHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
   slideNum: { fontSize: 11, color: '#FFFFFF', backgroundColor: '#1B3FE0', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4, overflow: 'hidden' },
   slideLayout: { fontSize: 11, color: '#666C78' },
-  slideTitle: { fontSize: 15, fontWeight: '600', color: '#14161B' },
-  slideLine: { fontSize: 13, color: '#14161B', marginTop: 2 },
   slideEmpty: { fontSize: 12, color: '#666C78', fontStyle: 'italic' },
+
+  shapeGap: { marginTop: 8 },
+  para: { flexDirection: 'row', alignItems: 'flex-start', marginTop: 3 },
+  bullet: { fontSize: 13, lineHeight: 20, color: '#666C78', width: 16 },
+  paraText: { flex: 1, fontSize: 13, lineHeight: 20, color: '#14161B' },
+  titleText: { fontSize: 16, fontWeight: '600', lineHeight: 24 },
+
+  bold: { fontWeight: '700' },
+  italic: { fontStyle: 'italic' },
+  underline: { textDecorationLine: 'underline' },
+  mono: { fontFamily: 'Menlo', fontSize: 12, backgroundColor: '#E6E8EC' },
 });
