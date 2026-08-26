@@ -1,8 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -13,6 +11,8 @@ import {
   type TextStyle,
 } from 'react-native';
 
+import Constants from 'expo-constants';
+
 import { LatestOnly } from '../converter/latestOnly';
 import { splitFrontMatter } from '../converter/frontMatter';
 import { usePandocConverter } from '../converter/usePandocConverter';
@@ -22,6 +22,7 @@ import type {
   Diagnostic,
   Paragraph,
   SlideOutline,
+  SlideShape,
   TextRun,
 } from '../converter/types';
 
@@ -39,8 +40,10 @@ author: "フテイケイ"
 
 ## 日本語の段落
 
-約物（、。「」）と英数字の混植を確認します。
-pandoc 3.9 の WebAssembly ビルドは wasm32-wasi をターゲットにしています。
+これは箇条書きではない普通の段落です。**太字**と*斜体*と\`コード\`を含みます。
+
+欧文では *italic* と **bold** がこう出ます。
+和文の斜体は iOS の日本語書体に斜体字形が無いため傾きません。
 
 <!-- これは HTML コメント。既定では RawBlock 警告が出ます -->
 
@@ -49,7 +52,15 @@ pandoc 3.9 の WebAssembly ビルドは wasm32-wasi をターゲットにして�
 # 二枚目
 
 - 箇条書き
-- **太字** と *斜体*
+- 入れ子を試す
+  - 二階層目
+
+1. 番号付き
+2. ふたつめ
+
+\`\`\`js
+const x = 1;
+\`\`\`
 `;
 
 export default function EditorScreen() {
@@ -101,14 +112,10 @@ export default function EditorScreen() {
     <View style={styles.root}>
       {element}
 
-      <HeaderBar status={status} busy={busy} result={result} />
+      <HeaderBar status={status} busy={busy} result={result} width={width} wide={wide} />
 
       <View style={[styles.panes, wide && styles.panesWide]}>
-        <KeyboardAvoidingView
-          style={[styles.pane, styles.editorPane]}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={0}
-        >
+        <View style={[styles.pane, styles.editorPane]}>
           <Text style={styles.paneLabel}>原稿</Text>
           <TextInput
             value={source}
@@ -120,7 +127,7 @@ export default function EditorScreen() {
             style={styles.editor}
             textAlignVertical="top"
           />
-        </KeyboardAvoidingView>
+        </View>
 
         <View style={[styles.pane, styles.previewPane, wide && styles.previewPaneWide]}>
           <Text style={styles.paneLabel}>
@@ -156,27 +163,50 @@ function SlideCard({ slide }: { slide: SlideOutline }) {
       {slide.shapes.length === 0 ? (
         <Text style={styles.slideEmpty}>（テキストなし）</Text>
       ) : (
-        slide.shapes.map((shape, si) => {
-          const isTitle = !!shape.placeholder && TITLE_PLACEHOLDERS.includes(shape.placeholder);
-          return (
-            <View key={si} style={si > 0 ? styles.shapeGap : undefined}>
-              {shape.paragraphs.map((p, pi) => (
-                <ParagraphRow key={pi} paragraph={p} isTitle={isTitle} />
-              ))}
-            </View>
-          );
-        })
+        slide.shapes.map((shape, si) => (
+          <ShapeBlock key={si} shape={shape} first={si === 0} />
+        ))
       )}
     </View>
   );
 }
 
-function ParagraphRow({ paragraph, isTitle }: { paragraph: Paragraph; isTitle: boolean }) {
-  // タイトルプレースホルダには行頭記号を出さない
-  const bullet = !isTitle;
+function ShapeBlock({ shape, first }: { shape: SlideShape; first: boolean }) {
+  const isTitle = !!shape.placeholder && TITLE_PLACEHOLDERS.includes(shape.placeholder);
+
+  // 番号付きリストは連番を振り直す。番号でない段落を挟んだら 1 に戻す
+  let counter = 0;
+  const numbers = shape.paragraphs.map((p) => (p.bullet === 'number' ? ++counter : (counter = 0)));
+
   return (
-    <View style={[styles.para, { paddingLeft: bullet ? paragraph.level * 16 : 0 }]}>
-      {bullet && <Text style={styles.bullet}>{paragraph.level > 0 ? '◦' : '•'}</Text>}
+    <View style={first ? undefined : styles.shapeGap}>
+      {shape.paragraphs.map((p, pi) => (
+        <ParagraphRow key={pi} paragraph={p} isTitle={isTitle} ordinal={numbers[pi]} />
+      ))}
+    </View>
+  );
+}
+
+function bulletGlyph(p: Paragraph, ordinal: number): string | null {
+  if (p.bullet === 'none') return null;
+  if (p.bullet === 'number') return ordinal + '.';
+  return p.level > 0 ? '◦' : '•';
+}
+
+function ParagraphRow({
+  paragraph,
+  isTitle,
+  ordinal,
+}: {
+  paragraph: Paragraph;
+  isTitle: boolean;
+  ordinal: number;
+}) {
+  // タイトルプレースホルダには行頭記号を出さない
+  const glyph = isTitle ? null : bulletGlyph(paragraph, ordinal);
+  return (
+    <View style={[styles.para, { paddingLeft: paragraph.level * 18 }]}>
+      {glyph !== null && <Text style={styles.bullet}>{glyph}</Text>}
       <Text style={[styles.paraText, isTitle && styles.titleText]}>
         {paragraph.runs.map((run, ri) => (
           <Text key={ri} style={runStyle(run)}>
@@ -197,14 +227,20 @@ function runStyle(run: TextRun): StyleProp<TextStyle> {
   ];
 }
 
+const VERSION = Constants.expoConfig?.version ?? '?';
+
 function HeaderBar({
   status,
   busy,
   result,
+  width,
+  wide,
 }: {
   status: BootStatus;
   busy: boolean;
   result: ConvertResult | null;
+  width: number;
+  wide: boolean;
 }) {
   let text: string;
   switch (status.phase) {
@@ -231,6 +267,9 @@ function HeaderBar({
   return (
     <View style={[styles.header, status.phase === 'error' && styles.headerError]}>
       <Text style={styles.wordmark}>Morpho</Text>
+      <Text style={styles.version}>
+        {VERSION} · {Math.round(width)}pt · {wide ? '二画面' : '一画面'}
+      </Text>
       <Text style={styles.statusText} numberOfLines={1}>
         {text}
       </Text>
@@ -307,6 +346,7 @@ const styles = StyleSheet.create({
   },
   headerError: { backgroundColor: '#F6E4E8' },
   wordmark: { fontSize: 16, fontWeight: '700', color: '#14161B', letterSpacing: 0.2 },
+  version: { fontSize: 11, color: '#666C78', fontVariant: ['tabular-nums'] },
   statusText: { flex: 1, fontSize: 13, color: '#666C78' },
   statusMetric: { fontSize: 13, color: '#1B3FE0', fontVariant: ['tabular-nums'] },
 

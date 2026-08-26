@@ -124,6 +124,14 @@ developer.apple.com では**サインインするだけ**にする。
 `sdk-54` ブランチは SDK 54 に固定してあり、App Store の Expo Go がそのまま使える。
 署名も .ipa も7日ごとの入れ直しも発生しない。`src/` は main と同一。
 
+## バージョン
+
+`app.json` の `version` を上げて、画面上部のヘッダに出している。
+実機で見ているものがどの版か分かるようにするため、変更を push するたびに上げる。
+ヘッダには版のほかに画面幅と一画面／二画面の別も出る（不具合の切り分け用）。
+
+現在 **0.1.0**。企画検証を抜けて実装が始まった時点で 0.1.0 とした。
+
 ## 検査
 
 ```bash
@@ -133,6 +141,28 @@ npm run check
 - `tsc --noEmit`
 - ブリッジに埋めた JavaScript の構文チェック（実機でしか走らないコードなので手元で落とす）
 - front matter 切り出しのテスト
+- pptx パーサのテスト（ブリッジを vm で評価して直接叩く）
+
+### pandoc の実出力を見る
+
+```bash
+node scripts/dump-pptx.mjs [file.md]
+```
+
+**パーサを推測で書かないこと。** 実際に pandoc を回して XML を見る。
+これを怠って「箇条書きでない段落にも行頭記号が付く」不具合を出した。
+
+分かっている pandoc の書き方:
+
+| Markdown | pptx |
+|---|---|
+| 普通の段落・見出し・コードブロック | `<a:pPr><a:buNone/></a:pPr>` |
+| 箇条書き | `<a:pPr lvl="n"/>` のみ（記号はレイアウト継承） |
+| 番号付き | `<a:buAutoNum type="arabicPeriod"/>` |
+| 太字 / 斜体 / 下線 | `<a:rPr b="1" i="1" u="sng"/>` |
+| コード | `<a:latin typeface="Courier"/>` |
+
+`pandoc-wasm` は devDependency に入れてある（55.9 MB あるので `npm install` が重い）。
 
 ## まだやっていないこと
 

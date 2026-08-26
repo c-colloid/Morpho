@@ -32,11 +32,20 @@ export interface TextRun {
   mono?: boolean;
 }
 
+/**
+ * 行頭記号の種別。
+ * pandoc は箇条書きでない段落に <a:buNone/> を明示し、
+ * 箇条書きは何も書かずレイアウトの既定に任せる。
+ * 番号付きは <a:buAutoNum/> を書く。
+ */
+export type BulletKind = 'none' | 'bullet' | 'number';
+
 /** 段落。pptx の <a:p> にあたる */
 export interface Paragraph {
   runs: TextRun[];
   /** 箇条書きの階層。0 が最上位 */
   level: number;
+  bullet: BulletKind;
 }
 
 /** スライド上の図形ひとつ。pptx の <p:sp> にあたる */

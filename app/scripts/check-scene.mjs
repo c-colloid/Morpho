@@ -97,6 +97,58 @@ t('箇条書きの階層を拾う', () => {
   assert.deepEqual(Array.from(ps, (p) => p.level), [0, 2, 0]);
 });
 
+// ここから下は scripts/dump-pptx.mjs で実際の pandoc 出力を見て書いた。
+// pandoc は「箇条書きでない段落」に buNone を明示し、
+// 箇条書きは何も書かずレイアウトの既定に任せる。
+t('buNone のある段落は行頭記号なし', () => {
+  const xml = sp('<p:ph idx="1"/>',
+    '<a:p><a:pPr lvl="0" indent="0" marL="0"><a:buNone/></a:pPr>' +
+    '<a:r><a:rPr/><a:t>これは普通の段落です。</a:t></a:r></a:p>');
+  assert.equal(parse(xml)[0].paragraphs[0].bullet, 'none');
+});
+
+t('buNone の無い段落は箇条書き', () => {
+  const xml = sp('<p:ph idx="1"/>',
+    '<a:p><a:pPr lvl="0"/><a:r><a:rPr/><a:t>箇条書き1</a:t></a:r></a:p>');
+  assert.equal(parse(xml)[0].paragraphs[0].bullet, 'bullet');
+});
+
+t('buAutoNum は番号付き', () => {
+  const xml = sp('<p:ph idx="1"/>',
+    '<a:p><a:pPr lvl="0" indent="-342900" marL="342900">' +
+    '<a:buAutoNum type="arabicPeriod"/></a:pPr>' +
+    '<a:r><a:rPr/><a:t>番号付き</a:t></a:r></a:p>');
+  assert.equal(parse(xml)[0].paragraphs[0].bullet, 'number');
+});
+
+t('見出しは buNone つきで来る（行頭記号を出さない）', () => {
+  const xml = sp('<p:ph type="title"/>',
+    '<a:p><a:pPr lvl="0" indent="0" marL="0"><a:buNone/></a:pPr>' +
+    '<a:r><a:rPr/><a:t>見出し</a:t></a:r></a:p>');
+  const shape = parse(xml)[0];
+  assert.equal(shape.placeholder, 'title');
+  assert.equal(shape.paragraphs[0].bullet, 'none');
+});
+
+t('コードブロックは Courier かつ buNone', () => {
+  const xml = sp('<p:ph idx="1"/>',
+    '<a:p><a:pPr lvl="0" indent="0"><a:buNone/></a:pPr>' +
+    '<a:r><a:rPr b="1"><a:latin typeface="Courier"/></a:rPr><a:t>const</a:t></a:r>' +
+    '<a:r><a:rPr><a:latin typeface="Courier"/></a:rPr><a:t> x = 1;</a:t></a:r></a:p>');
+  const p0 = parse(xml)[0].paragraphs[0];
+  assert.equal(p0.bullet, 'none');
+  assert.equal(p0.runs[0].mono, true);
+  assert.equal(p0.runs[0].bold, true);
+  assert.equal(p0.runs[1].mono, true);
+});
+
+t('斜体は i="1" で来る（pandoc の実出力）', () => {
+  const xml = sp('<p:ph idx="1"/>',
+    '<a:p><a:pPr lvl="0" indent="0" marL="0"><a:buNone/></a:pPr>' +
+    '<a:r><a:rPr i="1"/><a:t>斜体</a:t></a:r></a:p>');
+  assert.equal(parse(xml)[0].paragraphs[0].runs[0].italic, true);
+});
+
 t('空の段落は落とす', () => {
   const xml = sp('<p:ph idx="1"/>',
     '<a:p><a:pPr lvl="0"/></a:p><a:p><a:r><a:t>中身</a:t></a:r></a:p>');

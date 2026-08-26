@@ -185,8 +185,14 @@ function parseParagraphs(txBodyXml) {
       var lvl = /\\blvl="(\\d+)"/.exec(pPr[1]);
       if (lvl) level = Number(lvl[1]);
     }
+    /* pandoc は箇条書きでない段落に buNone を明示する。
+       箇条書きは何も書かずレイアウトの既定（行頭記号）に任せるので、
+       「buNone が無い＝箇条書き」で判定する。 */
+    var bullet = 'bullet';
+    if (/<a:buNone\\s*\\/>/.test(body)) bullet = 'none';
+    else if (/<a:buAutoNum\\b/.test(body)) bullet = 'number';
     var runs = parseRuns(body);
-    if (runs.length) out.push({ runs: runs, level: level });
+    if (runs.length) out.push({ runs: runs, level: level, bullet: bullet });
   }
   return out;
 }
