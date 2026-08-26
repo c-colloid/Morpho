@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -53,7 +55,8 @@ pandoc 3.9 の WebAssembly ビルドは wasm32-wasi をターゲットにして�
 export default function EditorScreen() {
   const { element, converter, status } = usePandocConverter();
   const { width } = useWindowDimensions();
-  const wide = width >= 900;
+  // iPad の縦向きは 820〜834pt。900 では縦で二画面にならず、狭い縦積みになる
+  const wide = width >= 700;
 
   const [source, setSource] = useState(SAMPLE);
   const [result, setResult] = useState<ConvertResult | null>(null);
@@ -95,25 +98,35 @@ export default function EditorScreen() {
   }, [source, status.phase, runner]);
 
   return (
-    <View style={[styles.root, wide && styles.rootWide]}>
+    <View style={styles.root}>
       {element}
 
-      <View style={[styles.pane, styles.editorPane]}>
-        <TextInput
-          value={source}
-          onChangeText={setSource}
-          multiline
-          autoCorrect={false}
-          autoCapitalize="none"
-          spellCheck={false}
-          style={styles.editor}
-          textAlignVertical="top"
-        />
-      </View>
+      <HeaderBar status={status} busy={busy} result={result} />
 
-      <View style={[styles.pane, styles.previewPane, wide && styles.previewPaneWide]}>
-        <StatusBar status={status} busy={busy} result={result} />
-        <ScrollView contentContainerStyle={styles.previewBody}>
+      <View style={[styles.panes, wide && styles.panesWide]}>
+        <KeyboardAvoidingView
+          style={[styles.pane, styles.editorPane]}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          keyboardVerticalOffset={0}
+        >
+          <Text style={styles.paneLabel}>原稿</Text>
+          <TextInput
+            value={source}
+            onChangeText={setSource}
+            multiline
+            autoCorrect={false}
+            autoCapitalize="none"
+            spellCheck={false}
+            style={styles.editor}
+            textAlignVertical="top"
+          />
+        </KeyboardAvoidingView>
+
+        <View style={[styles.pane, styles.previewPane, wide && styles.previewPaneWide]}>
+          <Text style={styles.paneLabel}>
+            プレビュー{result ? ` · ${result.slideCount} 枚` : ''}
+          </Text>
+          <ScrollView contentContainerStyle={styles.previewBody}>
           {error && (
             <View style={[styles.diag, styles.critical]}>
               <Text style={styles.diagLabel}>変換に失敗しました</Text>
@@ -123,8 +136,9 @@ export default function EditorScreen() {
           {result?.diagnostics.map((d, i) => (
             <DiagnosticRow key={i} diagnostic={d} />
           ))}
-          {result?.slides.map((s) => <SlideCard key={s.index} slide={s} />)}
-        </ScrollView>
+            {result?.slides.map((s) => <SlideCard key={s.index} slide={s} />)}
+          </ScrollView>
+        </View>
       </View>
     </View>
   );
@@ -183,7 +197,7 @@ function runStyle(run: TextRun): StyleProp<TextStyle> {
   ];
 }
 
-function StatusBar({
+function HeaderBar({
   status,
   busy,
   result,
@@ -215,14 +229,15 @@ function StatusBar({
   }
 
   return (
-    <View style={[styles.statusBar, status.phase === 'error' && styles.statusBarError]}>
-      <Text style={styles.statusText} numberOfLines={2}>
+    <View style={[styles.header, status.phase === 'error' && styles.headerError]}>
+      <Text style={styles.wordmark}>Morpho</Text>
+      <Text style={styles.statusText} numberOfLines={1}>
         {text}
       </Text>
       {busy && <ActivityIndicator size="small" />}
       {result && !busy && (
         <Text style={styles.statusMetric}>
-          {result.slideCount} 枚 / {result.ms} ms / {(result.bytes / 1024).toFixed(0)} KB
+          {result.ms} ms · {(result.bytes / 1024).toFixed(0)} KB
         </Text>
       )}
     </View>
@@ -254,36 +269,48 @@ const RULE = '#BFC4CD';
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#E6E8EC' },
-  rootWide: { flexDirection: 'row' },
+  panes: { flex: 1 },
+  panesWide: { flexDirection: 'row' },
   pane: { flex: 1 },
   editorPane: { backgroundColor: '#F7F8FA' },
   previewPane: { borderTopWidth: 1, borderTopColor: RULE },
   previewPaneWide: { borderTopWidth: 0, borderLeftWidth: 1, borderLeftColor: RULE },
 
+  paneLabel: {
+    fontSize: 11,
+    letterSpacing: 0.6,
+    color: '#666C78',
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 6,
+  },
+
   editor: {
     flex: 1,
-    padding: 16,
-    fontSize: 15,
-    lineHeight: 23,
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+    fontSize: 17,
+    lineHeight: 27,
     color: '#14161B',
     fontFamily: 'Menlo',
   },
 
-  statusBar: {
+  header: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: RULE,
     backgroundColor: '#F7F8FA',
   },
-  statusBarError: { backgroundColor: '#F6E4E8' },
-  statusText: { flex: 1, fontSize: 12, color: '#666C78' },
-  statusMetric: { fontSize: 12, color: '#1B3FE0', fontVariant: ['tabular-nums'] },
+  headerError: { backgroundColor: '#F6E4E8' },
+  wordmark: { fontSize: 16, fontWeight: '700', color: '#14161B', letterSpacing: 0.2 },
+  statusText: { flex: 1, fontSize: 13, color: '#666C78' },
+  statusMetric: { fontSize: 13, color: '#1B3FE0', fontVariant: ['tabular-nums'] },
 
-  previewBody: { padding: 14, gap: 10 },
+  previewBody: { paddingHorizontal: 20, paddingBottom: 24, gap: 12 },
 
   diag: { padding: 12, borderRadius: 8, borderLeftWidth: 4, backgroundColor: '#F7F8FA' },
   critical: { borderLeftColor: '#B01030' },
@@ -294,7 +321,7 @@ const styles = StyleSheet.create({
   diagText: { fontSize: 11, color: '#666C78', marginTop: 6, fontFamily: 'Menlo' },
 
   slide: {
-    padding: 12,
+    padding: 16,
     borderRadius: 8,
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
@@ -307,12 +334,12 @@ const styles = StyleSheet.create({
 
   shapeGap: { marginTop: 8 },
   para: { flexDirection: 'row', alignItems: 'flex-start', marginTop: 3 },
-  bullet: { fontSize: 13, lineHeight: 20, color: '#666C78', width: 16 },
-  paraText: { flex: 1, fontSize: 13, lineHeight: 20, color: '#14161B' },
-  titleText: { fontSize: 16, fontWeight: '600', lineHeight: 24 },
+  bullet: { fontSize: 15, lineHeight: 24, color: '#666C78', width: 18 },
+  paraText: { flex: 1, fontSize: 15, lineHeight: 24, color: '#14161B' },
+  titleText: { fontSize: 19, fontWeight: '600', lineHeight: 28 },
 
   bold: { fontWeight: '700' },
   italic: { fontStyle: 'italic' },
   underline: { textDecorationLine: 'underline' },
-  mono: { fontFamily: 'Menlo', fontSize: 12, backgroundColor: '#E6E8EC' },
+  mono: { fontFamily: 'Menlo', fontSize: 14, backgroundColor: '#E6E8EC' },
 });
