@@ -33,6 +33,8 @@ runInContext(body, ctx);
 
 // vm 側の配列はレルムが違うので、比較の前に Array.from でこちらへ写すこと
 const parse = win.__morphoParseShapes;
+const parseFrames = win.__morphoParsePlaceholderFrames;
+const findFrame = win.__morphoFindFrame;
 assert.equal(typeof parse, 'function', '__morphoParseShapes が生えていない');
 
 let n = 0;
@@ -194,6 +196,49 @@ t('notesSlide の sldImg / body / sldNum を見分ける', () => {
   // sldNum の "1" が body に混ざらない
   const others = shapes.filter((s) => s.placeholder === 'sldNum');
   assert.equal(others.length, 1);
+});
+
+// ---- 幾何（実測した master の構造を模す） ----
+const MASTER =
+  '<p:sp><p:nvSpPr><p:nvPr><p:ph type="title" /></p:nvPr></p:nvSpPr>' +
+  '<p:spPr><a:xfrm><a:off x="457200" y="205979" /><a:ext cx="8229600" cy="857250" /></a:xfrm></p:spPr>' +
+  '<p:txBody><a:p><a:r><a:t>t</a:t></a:r></a:p></p:txBody></p:sp>' +
+  '<p:sp><p:nvSpPr><p:nvPr><p:ph idx="1" type="body" /></p:nvPr></p:nvSpPr>' +
+  '<p:spPr><a:xfrm><a:off x="457200" y="1200151" /><a:ext cx="8229600" cy="3394472" /></a:xfrm></p:spPr>' +
+  '<p:txBody><a:p><a:r><a:t>b</a:t></a:r></a:p></p:txBody></p:sp>';
+
+t('マスターのプレースホルダ座標を読む', () => {
+  const phs = parseFrames(MASTER);
+  assert.equal(phs.length, 2);
+  assert.equal(phs[0].type, 'title');
+  assert.deepEqual({ ...phs[0].frame }, { x: 457200, y: 205979, w: 8229600, h: 857250 });
+  assert.equal(phs[1].idx, 1);
+});
+
+t('type で照合し、ctrTitle は title に落ちる', () => {
+  const phs = parseFrames(MASTER);
+  assert.equal(findFrame(phs, 'title', null).y, 205979);
+  assert.equal(findFrame(phs, 'ctrTitle', null).y, 205979);
+});
+
+t('type が無ければ idx で照合する', () => {
+  const phs = parseFrames(MASTER);
+  assert.equal(findFrame(phs, 'body', 1).y, 1200151);
+  assert.equal(findFrame(phs, null, 1).y, 1200151);
+});
+
+t('subTitle は body に落ちる', () => {
+  const phs = parseFrames(MASTER);
+  assert.equal(findFrame(phs, 'subTitle', 99).y, 1200151);
+});
+
+t('座標なしのレイアウト（pandoc 既定）は素通りする', () => {
+  const layout =
+    '<p:sp><p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:spPr/>' +
+    '<p:txBody><a:p><a:r><a:t>x</a:t></a:r></a:p></p:txBody></p:sp>';
+  const phs = parseFrames(layout);
+  assert.equal(phs[0].frame, null);
+  assert.equal(findFrame(phs, 'title', null), null);
 });
 
 console.log(`\n${n} 件すべて通過`);

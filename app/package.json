@@ -1,6 +1,6 @@
 {
   "name": "morpho",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "main": "index.ts",
   "dependencies": {
     "expo": "~57.0.16",
@@ -26,7 +26,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "check": "tsc --noEmit && node scripts/check-bridge.mjs && node --experimental-strip-types scripts/check-frontmatter.mjs && node scripts/check-scene.mjs && node --experimental-strip-types scripts/check-cursor.mjs",
+    "check": "tsc --noEmit && node scripts/check-bridge.mjs && node --experimental-strip-types scripts/check-frontmatter.mjs && node scripts/check-scene.mjs && node --experimental-strip-types scripts/check-cursor.mjs && node scripts/check-deck.mjs",
     "start:tunnel": "expo start --tunnel"
   },
   "private": true

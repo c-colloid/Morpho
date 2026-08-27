@@ -219,18 +219,119 @@ function parseShapes(slideXml) {
 
     /* <p:ph type="title"/> のように種別が入る。type 省略時は body 扱い */
     var placeholder = null;
+    var phIdx = null;
     var ph = /<p:ph\\b([^>]*)/.exec(sp);
     if (ph) {
       var type = /\\btype="([^"]*)"/.exec(ph[1]);
       placeholder = type ? type[1] : 'body';
+      var idx = /\\bidx="(\\d+)"/.exec(ph[1]);
+      if (idx) phIdx = Number(idx[1]);
     }
-    shapes.push({ placeholder: placeholder, paragraphs: paragraphs });
+    shapes.push({
+      placeholder: placeholder,
+      phIdx: phIdx,
+      frame: parseXfrm(sp),
+      paragraphs: paragraphs
+    });
   }
   return shapes;
 }
 
 /* パーサだけ検査できるように外へ出す（scripts/check-scene.mjs が使う） */
 window.__morphoParseShapes = parseShapes;
+
+/* <a:xfrm><a:off x= y=/><a:ext cx= cy=/></a:xfrm> を読む。無ければ null */
+function parseXfrm(xml) {
+  var off = /<a:off\\s+x="(-?\\d+)"\\s+y="(-?\\d+)"/.exec(xml);
+  var ext = /<a:ext\\s+cx="(\\d+)"\\s+cy="(\\d+)"/.exec(xml);
+  if (!off || !ext) return null;
+  return { x: Number(off[1]), y: Number(off[2]), w: Number(ext[1]), h: Number(ext[2]) };
+}
+
+/* レイアウト / マスターのプレースホルダ一覧（type, idx, frame）。
+   pandoc 既定テンプレートでは座標はマスターだけが持つ（実測）。
+   reference-doc ではレイアウトが持ち得るので両方読む */
+function parsePlaceholderFrames(xml) {
+  var out = [];
+  var re = /<p:sp>([\\s\\S]*?)<\\/p:sp>/g;
+  var m;
+  while ((m = re.exec(xml)) !== null) {
+    var ph = /<p:ph\\b([^>]*)/.exec(m[1]);
+    if (!ph) continue;
+    var type = /\\btype="([^"]*)"/.exec(ph[1]);
+    var idx = /\\bidx="(\\d+)"/.exec(ph[1]);
+    out.push({
+      type: type ? type[1] : null,
+      idx: idx ? Number(idx[1]) : null,
+      frame: parseXfrm(m[1])
+    });
+  }
+  return out;
+}
+window.__morphoParsePlaceholderFrames = parsePlaceholderFrames;
+
+/* タイトルは type で、本文は type か idx で照合する。
+   ctrTitle（Title Slide）の座標はマスターに無いので title に落とす */
+function findFrame(phList, type, idx) {
+  var want = type === 'ctrTitle' ? 'title' : type;
+  for (var i = 0; i < phList.length; i++) {
+    if (phList[i].frame && phList[i].type === want) return phList[i].frame;
+  }
+  if (idx !== null) {
+    for (var j = 0; j < phList.length; j++) {
+      if (phList[j].frame && phList[j].idx === idx) return phList[j].frame;
+    }
+  }
+  /* subTitle 等: type でも idx でも一致しなければ body に落とす */
+  if (want !== 'title') {
+    for (var k = 0; k < phList.length; k++) {
+      if (phList[k].frame && phList[k].type === 'body') return phList[k].frame;
+    }
+  }
+  return null;
+}
+window.__morphoFindFrame = findFrame;
+
+/* デッキ情報: 寸法・配色・既定の文字サイズ */
+function parseDeck(zip, dec) {
+  var deck = { w: 9144000, h: 5143500, colors: {}, titleSz: 3300, bodySz: [2400, 2100, 1800, 1500, 1500] };
+  try {
+    var pres = dec.decode(zip['ppt/presentation.xml']);
+    var sz = /<p:sldSz\\s+cx="(\\d+)"\\s+cy="(\\d+)"/.exec(pres);
+    if (sz) { deck.w = Number(sz[1]); deck.h = Number(sz[2]); }
+  } catch (e) {}
+  try {
+    var theme = dec.decode(zip['ppt/theme/theme1.xml']);
+    var clr = /<a:clrScheme[\\s\\S]*?<\\/a:clrScheme>/.exec(theme);
+    if (clr) {
+      var re = /<a:(dk1|lt1|dk2|lt2|accent[1-6]|hlink|folHlink)>[\\s\\S]*?(?:val|lastClr)="([0-9A-Fa-f]{6})"/g;
+      var m;
+      while ((m = re.exec(clr[0])) !== null) deck.colors[m[1]] = '#' + m[2];
+    }
+  } catch (e) {}
+  try {
+    var masterName = Object.keys(zip).filter(function (n) {
+      return /^ppt\\/slideMasters\\/slideMaster\\d+\\.xml$/.test(n);
+    })[0];
+    var master = dec.decode(zip[masterName]);
+    var ts = /<p:titleStyle>[\\s\\S]*?<\\/p:titleStyle>/.exec(master);
+    if (ts) {
+      var tsz = /sz="(\\d+)"/.exec(ts[0]);
+      if (tsz) deck.titleSz = Number(tsz[1]);
+    }
+    var bs = /<p:bodyStyle>[\\s\\S]*?<\\/p:bodyStyle>/.exec(master);
+    if (bs) {
+      var sizes = [];
+      var lre = /<a:lvl(\\d)pPr[\\s\\S]*?sz="(\\d+)"/g;
+      var lm;
+      while ((lm = lre.exec(bs[0])) !== null) sizes[Number(lm[1]) - 1] = Number(lm[2]);
+      for (var i2 = 0; i2 < 5; i2++) if (!sizes[i2]) sizes[i2] = deck.bodySz[i2];
+      deck.bodySz = sizes.slice(0, 5);
+    }
+    deck.masterPh = parsePlaceholderFrames(master);
+  } catch (e) { deck.masterPh = []; }
+  return deck;
+}
 
 /* 出力そのものを読む。reveal.js に逃げると嘘をつくので pptx を直接開く */
 function parsePptx(u8) {
@@ -239,6 +340,20 @@ function parsePptx(u8) {
   var names = Object.keys(zip).filter(function (n) {
     return /^ppt\\/slides\\/slide\\d+\\.xml$/.test(n);
   }).sort(function (a, b) { return slideNum(a) - slideNum(b); });
+
+  var deck = parseDeck(zip, dec);
+  var layoutPhCache = {};
+  var layoutPhOf = function (slidePath) {
+    var hit = /Target="([^"]*slideLayout\\d+\\.xml)"/.exec(relsOf(slidePath));
+    if (!hit) return [];
+    var target = hit[1].replace(/^\\.\\.\\//, 'ppt/');
+    if (!(target in layoutPhCache)) {
+      layoutPhCache[target] = zip[target]
+        ? parsePlaceholderFrames(dec.decode(zip[target]))
+        : [];
+    }
+    return layoutPhCache[target];
+  };
 
   var relsOf = function (slidePath) {
     var relPath = slidePath.replace(/^ppt\\/slides\\//, 'ppt/slides/_rels/') + '.rels';
@@ -275,16 +390,32 @@ function parsePptx(u8) {
   };
 
   var slides = names.map(function (n, i) {
+    var shapes = parseShapes(dec.decode(zip[n]));
+    var layoutPh = layoutPhOf(n);
+    for (var si = 0; si < shapes.length; si++) {
+      var sh = shapes[si];
+      if (!sh.frame) {
+        /* 自前の座標が無ければ レイアウト → マスター の順で継承（実測どおり） */
+        sh.frame =
+          findFrame(layoutPh, sh.placeholder, sh.phIdx) ||
+          findFrame(deck.masterPh, sh.placeholder, sh.phIdx);
+      }
+    }
     return {
       index: i + 1,
       layout: layoutName(n),
-      shapes: parseShapes(dec.decode(zip[n])),
+      shapes: shapes,
       notes: notesFor(n)
     };
   });
 
-  return { slideCount: slides.length, slides: slides };
+  return {
+    slideCount: slides.length,
+    slides: slides,
+    deck: { w: deck.w, h: deck.h, colors: deck.colors, titleSz: deck.titleSz, bodySz: deck.bodySz }
+  };
 }
+window.__morphoParsePptx = parsePptx;
 
 function warnText(w) {
   if (typeof w === 'string') return w;
@@ -353,6 +484,7 @@ async function doConvert(id, md, opts) {
       result: {
         slideCount: parsed.slideCount,
         slides: parsed.slides,
+        deck: parsed.deck,
         diagnostics: classify(res.warnings, res.stderr),
         ms: ms,
         bytes: buf.length

@@ -27,9 +27,7 @@ import type {
   BootStatus,
   ConvertResult,
   Diagnostic,
-  Paragraph,
   SlideOutline,
-  SlideShape,
   TextRun,
 } from '../converter/types';
 import { slideIndexAtCursor } from '../preview/cursorSlide';
@@ -45,6 +43,8 @@ import {
 import { sanitizeFileName, shareExport } from '../store/exportShare';
 import { DocumentsModal } from './DocumentsModal';
 import { ExportMenu, type ExportChoice } from './ExportMenu';
+import { SlideShow } from './SlideShow';
+import { SlideSurface } from './SlideSurface';
 
 /** CLAUDE.md 性能設計: デッキ全体の変換は手が止まって 1.5 秒後 */
 const IDLE_MS = 1500;
@@ -361,6 +361,10 @@ export default function EditorScreen() {
     if (y !== undefined) previewRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
   }, [currentSlide, result]);
 
+  /* ---------- スライドショー ---------- */
+  const [showOpen, setShowOpen] = useState(false);
+  const [previewW, setPreviewW] = useState(0);
+
   /* ---------- 書き出し ---------- */
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState<ExportChoice | null>(null);
@@ -442,6 +446,7 @@ export default function EditorScreen() {
         result={result}
         onOpenDocs={() => setDocsOpen(true)}
         onOpenExport={() => setExportOpen(true)}
+        onPlay={() => setShowOpen(true)}
       />
 
       <View style={[styles.panes, wide && styles.panesWide]}>
@@ -465,7 +470,10 @@ export default function EditorScreen() {
           />
         </View>
 
-        <View style={[styles.pane, styles.previewPane, wide && styles.previewPaneWide]}>
+        <View
+          style={[styles.pane, styles.previewPane, wide && styles.previewPaneWide]}
+          onLayout={(e) => setPreviewW(e.nativeEvent.layout.width)}
+        >
           <View style={styles.paneLabelRow}>
             <Text style={styles.paneLabel}>
               プレビュー{result ? ` · ${result.slideCount} 枚` : ''}
@@ -486,13 +494,24 @@ export default function EditorScreen() {
                 key={s.index}
                 onLayout={(e) => cardYs.current.set(s.index, e.nativeEvent.layout.y)}
               >
-                <SlideCard slide={s} active={s.index === highlighted} />
+                <SlideCard
+                  slide={s}
+                  deck={result.deck}
+                  active={s.index === highlighted}
+                  width={Math.max(0, previewW - 40 - 26)}
+                />
               </View>
             ))}
           </ScrollView>
         </View>
       </View>
 
+      <SlideShow
+        visible={showOpen}
+        result={result}
+        initialIndex={highlighted}
+        onClose={() => setShowOpen(false)}
+      />
       <ExportMenu
         visible={exportOpen}
         busy={exporting}
@@ -521,12 +540,14 @@ function HeaderBar({
   result,
   onOpenDocs,
   onOpenExport,
+  onPlay,
 }: {
   status: BootStatus;
   busy: boolean;
   result: ConvertResult | null;
   onOpenDocs: () => void;
   onOpenExport: () => void;
+  onPlay: () => void;
 }) {
   let text: string;
   switch (status.phase) {
@@ -565,6 +586,13 @@ function HeaderBar({
       )}
       <Pressable
         style={({ pressed }) => [styles.headerBtn, pressed && styles.headerBtnPressed]}
+        disabled={!result}
+        onPress={onPlay}
+      >
+        <Text style={[styles.headerBtnText, !result && styles.headerBtnDisabled]}>▶ 再生</Text>
+      </Pressable>
+      <Pressable
+        style={({ pressed }) => [styles.headerBtn, pressed && styles.headerBtnPressed]}
         onPress={onOpenDocs}
       >
         <Text style={styles.headerBtnText}>書類</Text>
@@ -584,9 +612,17 @@ function HeaderBar({
   );
 }
 
-const TITLE_PLACEHOLDERS = ['title', 'ctrTitle'];
-
-function SlideCard({ slide, active }: { slide: SlideOutline; active: boolean }) {
+function SlideCard({
+  slide,
+  deck,
+  active,
+  width,
+}: {
+  slide: SlideOutline;
+  deck: ConvertResult['deck'];
+  active: boolean;
+  width: number;
+}) {
   const [notesOpen, setNotesOpen] = useState(false);
   return (
     <View style={[styles.slide, active && styles.slideActive]}>
@@ -602,12 +638,10 @@ function SlideCard({ slide, active }: { slide: SlideOutline; active: boolean }) 
           </Pressable>
         )}
       </View>
-      {slide.shapes.length === 0 ? (
-        <Text style={styles.slideEmpty}>（テキストなし）</Text>
-      ) : (
-        slide.shapes.map((shape, si) => (
-          <ShapeBlock key={si} shape={shape} first={si === 0} />
-        ))
+      {width > 0 && (
+        <View style={styles.surfaceWrap}>
+          <SlideSurface slide={slide} deck={deck} width={width} />
+        </View>
       )}
       {notesOpen && slide.notes.length > 0 && (
         <View style={styles.notesBox}>
@@ -622,53 +656,6 @@ function SlideCard({ slide, active }: { slide: SlideOutline; active: boolean }) 
           ))}
         </View>
       )}
-    </View>
-  );
-}
-
-function ShapeBlock({ shape, first }: { shape: SlideShape; first: boolean }) {
-  const isTitle = !!shape.placeholder && TITLE_PLACEHOLDERS.includes(shape.placeholder);
-
-  // 番号付きリストは連番を振り直す。番号でない段落を挟んだら 1 に戻す
-  let counter = 0;
-  const numbers = shape.paragraphs.map((p) => (p.bullet === 'number' ? ++counter : (counter = 0)));
-
-  return (
-    <View style={first ? undefined : styles.shapeGap}>
-      {shape.paragraphs.map((p, pi) => (
-        <ParagraphRow key={pi} paragraph={p} isTitle={isTitle} ordinal={numbers[pi]} />
-      ))}
-    </View>
-  );
-}
-
-function bulletGlyph(p: Paragraph, ordinal: number): string | null {
-  if (p.bullet === 'none') return null;
-  if (p.bullet === 'number') return ordinal + '.';
-  return p.level > 0 ? '◦' : '•';
-}
-
-function ParagraphRow({
-  paragraph,
-  isTitle,
-  ordinal,
-}: {
-  paragraph: Paragraph;
-  isTitle: boolean;
-  ordinal: number;
-}) {
-  // タイトルプレースホルダには行頭記号を出さない
-  const glyph = isTitle ? null : bulletGlyph(paragraph, ordinal);
-  return (
-    <View style={[styles.para, { paddingLeft: paragraph.level * 18 }]}>
-      {glyph !== null && <Text style={styles.bullet}>{glyph}</Text>}
-      <Text style={[styles.paraText, isTitle && styles.titleText]}>
-        {paragraph.runs.map((run, ri) => (
-          <Text key={ri} style={runStyle(run)}>
-            {run.text}
-          </Text>
-        ))}
-      </Text>
     </View>
   );
 }
@@ -760,6 +747,7 @@ const styles = StyleSheet.create({
   headerBtnPrimary: { backgroundColor: '#1B3FE0', borderColor: '#1B3FE0' },
   headerBtnPressed: { opacity: 0.6 },
   headerBtnText: { fontSize: 14, color: '#14161B' },
+  headerBtnDisabled: { color: '#BFC4CD' },
   headerBtnPrimaryText: { color: '#FFFFFF', fontWeight: '600' },
 
   previewBody: { paddingHorizontal: 20, paddingBottom: 24, gap: 12 },
@@ -799,11 +787,7 @@ const styles = StyleSheet.create({
   },
   notesText: { fontSize: 13, lineHeight: 20, color: '#5A4A14', marginTop: 2 },
 
-  shapeGap: { marginTop: 8 },
-  para: { flexDirection: 'row', alignItems: 'flex-start', marginTop: 3 },
-  bullet: { fontSize: 15, lineHeight: 24, color: '#666C78', width: 18 },
-  paraText: { flex: 1, fontSize: 15, lineHeight: 24, color: '#14161B' },
-  titleText: { fontSize: 19, fontWeight: '600', lineHeight: 28 },
+  surfaceWrap: { borderWidth: 1, borderColor: RULE, borderRadius: 4, alignSelf: 'flex-start' },
 
   bold: { fontWeight: '700' },
   italic: { fontStyle: 'italic' },

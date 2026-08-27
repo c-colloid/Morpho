@@ -49,12 +49,24 @@ export interface Paragraph {
 }
 
 /** スライド上の図形ひとつ。pptx の <p:sp> にあたる */
+/** EMU（914400 = 1 inch / 12700 = 1 pt） */
+export interface Frame {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface SlideShape {
   /**
    * プレースホルダの種別（title / ctrTitle / subTitle / body など）。
    * プレースホルダでない図形は null。
    */
   placeholder: string | null;
+  /** <p:ph idx=""> の値。継承照合に使う */
+  phIdx: number | null;
+  /** スライド上の位置。自前 → レイアウト → マスター の順で解決済み。不明なら null */
+  frame: Frame | null;
   paragraphs: Paragraph[];
 }
 
@@ -68,9 +80,22 @@ export interface SlideOutline {
   notes: Paragraph[];
 }
 
+/** テンプレート由来のデッキ情報。字サイズは 1/100 pt（3300 = 33pt） */
+export interface DeckInfo {
+  /** スライド寸法（EMU） */
+  w: number;
+  h: number;
+  /** theme1.xml の配色（#RRGGBB）。dk1 / lt1 / accent1..6 など */
+  colors: Record<string, string>;
+  titleSz: number;
+  /** 箇条書き階層 lvl1..lvl5 の字サイズ */
+  bodySz: number[];
+}
+
 export interface ConvertResult {
   slideCount: number;
   slides: SlideOutline[];
+  deck: DeckInfo;
   diagnostics: Diagnostic[];
   /** 変換だけにかかった時間 */
   ms: number;
