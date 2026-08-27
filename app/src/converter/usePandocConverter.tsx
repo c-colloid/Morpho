@@ -3,7 +3,14 @@ import { StyleSheet } from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
 import { BRIDGE_HTML } from './bridgeHtml';
-import type { BootStatus, ConvertOptions, ConvertResult, Converter } from './types';
+import type {
+  BootStatus,
+  ConvertOptions,
+  ConvertResult,
+  Converter,
+  ExportFormat,
+  ExportResult,
+} from './types';
 
 /**
  * Converter の最初の実装。
@@ -14,7 +21,7 @@ import type { BootStatus, ConvertOptions, ConvertResult, Converter } from './typ
  */
 
 interface Pending {
-  resolve: (r: ConvertResult) => void;
+  resolve: (r: any) => void;
   reject: (e: Error) => void;
 }
 
@@ -96,6 +103,21 @@ export function usePandocConverter(): {
         });
         webRef.current?.injectJavaScript(
           'window.__morphoConvert(' + id + ',' + toJsLiteral(markdown) + ',' + toJsLiteral(options) + '); true;',
+        );
+        return promise;
+      },
+      async exportFile(
+        markdown: string,
+        format: ExportFormat,
+        options: ConvertOptions = {},
+      ): Promise<ExportResult> {
+        await waitForReady();
+        const id = nextId.current++;
+        const promise = new Promise<ExportResult>((resolve, reject) => {
+          pending.current.set(id, { resolve, reject });
+        });
+        webRef.current?.injectJavaScript(
+          'window.__morphoExport(' + id + ',' + toJsLiteral(markdown) + ',' + toJsLiteral(options) + ',' + toJsLiteral(format) + '); true;',
         );
         return promise;
       },

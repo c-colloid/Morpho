@@ -12,6 +12,15 @@ React Native + Expo。設計判断の根拠はリポジトリ直下の `CLAUDE.m
 
 **iPad 実機で動作を確認済み**（起動 595 ms / ヒープ 104 MB / 4枚 76 ms）。
 
+### v0.2.0 で入ったもの
+
+- **書き出し**: pptx / docx を pandoc で生成して共有シートへ（Files / iCloud へ保存可）。
+  .md はそのまま共有。Obsidian へは公式 URI（obsidian://new）で送れる（実験的）
+- **複数文書**: アプリ内保存（自動保存 1 秒 + background 遷移で即時フラッシュ）。
+  文書一覧から新規・切替・削除・.md 読み込み。保存状態と文字数をペイン見出しに表示
+- **カーソル同期**: カーソル位置のスライドをプレビューで強調して自動スクロール。
+  推定は純関数（`src/preview/cursorSlide.ts`）でコードフェンス内の # や *** は無視
+
 出力の pptx は図形・段落・ランの三層で読む。
 太字・斜体・下線・等幅（コード）・箇条書きの階層・タイトルプレースホルダを
 それぞれ反映する。`<a:t>` だけを拾うと全部同じ見た目になるので、
@@ -124,6 +133,30 @@ developer.apple.com では**サインインするだけ**にする。
 `sdk-54` ブランチは SDK 54 に固定してあり、App Store の Expo Go がそのまま使える。
 署名も .ipa も7日ごとの入れ直しも発生しない。`src/` は main と同一。
 
+## 外部アプリ連携（Files / Obsidian）の現在地
+
+**結論: 読み込みと書き出しは今できる。その場での上書き編集（open in place）は
+Expo Go では原理的に不可能で、development build が必要。**
+
+| やりたいこと | 今（Expo Go） | 手段 |
+|---|---|---|
+| Files / Obsidian 保管庫の .md を取り込む | ○ | 書類 →「読み込み」（expo-document-picker。キャッシュへのコピー） |
+| .md / .pptx / .docx を Files（iCloud 含む）へ保存 | ○ | 書き出し → 共有シート →「"ファイル"に保存」。同名なら置き換え |
+| Obsidian にノートとして送る | ○（実験的） | 書き出し →「Obsidian へ送る」。公式 URI（obsidian://new）で最後に開いた保管庫へ。本文約2万字まで |
+| 元ファイルへのその場の上書き保存 | **✗** | picker はコピーしか返さない。security-scoped bookmark が要る |
+
+Obsidian 保管庫との往復は「読み込み → 編集 → .md 書き出しで同じ場所に置き換え」で
+手動なら回る。ファイル名は文書タイトルから付くので、タイトルを変えなければ
+置き換え先も揃う。
+
+**open in place を実現する条件**（次の段階）:
+development build + ネイティブ側の UIDocumentPicker（asCopy: false）と
+security-scoped bookmark。@react-native-documents/picker の open モードが
+この用途に合う。development build は EAS のクラウドビルドで作れるが、
+実機に入れる署名で結局 Apple Developer Program（$99/年）が要る
+（AltStore の再署名で dev build が動くかは未検証）。
+iCloud 連携を本気で満たすのはこのタイミングになる。
+
 ## ハマった点: react-native-webview の style は外側に効かない
 
 不可視 WebView を `style={{position:'absolute', width:1, height:1}}` で
@@ -143,7 +176,7 @@ flex:1 の兄弟がもう1人いることが算術で確定した。
 実機で見ているものがどの版か分かるようにするため、変更を push するたびに上げる。
 ヘッダには版のほかに画面幅と一画面／二画面の別も出る（不具合の切り分け用）。
 
-現在 **0.1.2**。企画検証を抜けて実装が始まった時点で 0.1.0 とした。
+現在 **0.2.0**。企画検証を抜けて実装が始まった時点で 0.1.0 とした。
 
 ## 検査
 

@@ -1,6 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
+  AppState,
+  Linking,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -12,6 +16,8 @@ import {
 } from 'react-native';
 
 import Constants from 'expo-constants';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { LatestOnly } from '../converter/latestOnly';
@@ -26,9 +32,24 @@ import type {
   SlideShape,
   TextRun,
 } from '../converter/types';
+import { slideIndexAtCursor } from '../preview/cursorSlide';
+import {
+  createDoc,
+  deleteDoc,
+  listDocs,
+  loadDoc,
+  saveDoc,
+  titleOf,
+  type DocMeta,
+} from '../store/documents';
+import { sanitizeFileName, shareExport } from '../store/exportShare';
+import { DocumentsModal } from './DocumentsModal';
+import { ExportMenu, type ExportChoice } from './ExportMenu';
 
 /** CLAUDE.md 性能設計: デッキ全体の変換は手が止まって 1.5 秒後 */
 const IDLE_MS = 1500;
+/** 自動保存は手が止まって 1 秒後。フラッシュは文書切替と background 遷移でも走る */
+const SAVE_MS = 1000;
 
 const SAMPLE = `---
 title: "Morpho"
@@ -64,6 +85,15 @@ const x = 1;
 \`\`\`
 `;
 
+const NEW_DOC = `# 無題
+
+ここに書き始める。
+`;
+
+type SaveState = { kind: 'editing' } | { kind: 'saving' } | { kind: 'saved'; at: number };
+
+const two = (n: number) => String(n).padStart(2, '0');
+
 export default function EditorScreen() {
   const { element, converter, status } = usePandocConverter();
   const { width, height } = useWindowDimensions();
@@ -71,13 +101,196 @@ export default function EditorScreen() {
   // iPad の縦向きは 820〜834pt。900 では縦で二画面にならず、狭い縦積みになる
   const wide = width >= 700;
 
-  const [source, setSource] = useState(SAMPLE);
+  const [source, setSource] = useState('');
   const [result, setResult] = useState<ConvertResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // 位置ずれの切り分け用。ペイン領域が実際に何ptで置かれたかを見る
-  const [panesBox, setPanesBox] = useState<{ y: number; h: number } | null>(null);
 
+  /* ---------- 文書 ---------- */
+  const [docs, setDocs] = useState<DocMeta[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<SaveState>({ kind: 'saved', at: Date.now() });
+  const [docsOpen, setDocsOpen] = useState(false);
+
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
+  const statusRef = useRef(status.phase);
+  statusRef.current = status.phase;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+  const dirtyRef = useRef(false);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /* デバウンス中でも、書き込み先は必ず「その編集が起きた文書」。
+     文書切替の前に必ず flush するので、ref 参照で取り違えは起きない */
+  const flushSave = useCallback(async () => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    const id = activeIdRef.current;
+    if (!dirtyRef.current || !id) return;
+    dirtyRef.current = false;
+    setSaveState({ kind: 'saving' });
+    try {
+      setDocs(await saveDoc(id, sourceRef.current));
+      setSaveState({ kind: 'saved', at: Date.now() });
+    } catch (e) {
+      dirtyRef.current = true;
+      setSaveState({ kind: 'editing' });
+    }
+  }, []);
+
+  const onChangeSource = useCallback(
+    (text: string) => {
+      setSource(text);
+      dirtyRef.current = true;
+      setSaveState({ kind: 'editing' });
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => void flushSave(), SAVE_MS);
+    },
+    [flushSave],
+  );
+
+  /* 起動時: 既存の文書を開く。無ければサンプルで1冊作る */
+  useEffect(() => {
+    void (async () => {
+      const existing = await listDocs();
+      if (existing.length === 0) {
+        const { id, docs: next } = await createDoc(SAMPLE);
+        setDocs(next);
+        setActiveId(id);
+        setSource(SAMPLE);
+      } else {
+        setDocs(existing);
+        setActiveId(existing[0].id);
+        setSource((await loadDoc(existing[0].id)) ?? '');
+      }
+    })();
+  }, []);
+
+  /* background/inactive でデバウンス中の編集を取りこぼさない */
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'background' || state === 'inactive') void flushSave();
+      // アイドル後の初回変換は遅い（実測 83ms vs 46ms）。復帰時に裏で温める
+      if (state === 'active' && status.phase === 'ready') {
+        void converter.convert('# warm', {}).catch(() => {});
+      }
+    });
+    return () => sub.remove();
+  }, [flushSave, converter, status.phase]);
+
+  /* 文書を替えたら前の文書のプレビューを 1.5 秒引きずらない。
+     即時に変換を投げ、強調位置とカード座標も破棄する */
+  const resetPreviewFor = useCallback(
+    (text: string) => {
+      setResult(null);
+      setError(null);
+      setCurrentSlide(1);
+      cardYs.current.clear();
+      if (statusRef.current === 'ready') {
+        setBusy(true);
+        runnerRef.current?.submit(text);
+      }
+    },
+    [],
+  );
+
+  const switchDoc = useCallback(
+    async (id: string) => {
+      try {
+        await flushSave();
+        const text = await loadDoc(id);
+        if (text === null) return;
+        setActiveId(id);
+        setSource(text);
+        setSaveState({ kind: 'saved', at: Date.now() });
+        resetPreviewFor(text);
+        setDocsOpen(false);
+      } catch (e) {
+        Alert.alert('切り替えられませんでした', String(e instanceof Error ? e.message : e));
+      }
+    },
+    [flushSave, resetPreviewFor],
+  );
+
+  const handleCreate = useCallback(async () => {
+    try {
+      await flushSave();
+      const { id, docs: next } = await createDoc(NEW_DOC);
+      setDocs(next);
+      setActiveId(id);
+      setSource(NEW_DOC);
+      setSaveState({ kind: 'saved', at: Date.now() });
+      resetPreviewFor(NEW_DOC);
+      setDocsOpen(false);
+    } catch (e) {
+      Alert.alert('作成できませんでした', String(e instanceof Error ? e.message : e));
+    }
+  }, [flushSave, resetPreviewFor]);
+
+  const handleImport = useCallback(async () => {
+    try {
+      const picked = await DocumentPicker.getDocumentAsync({
+        type: ['text/markdown', 'text/plain'],
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (picked.canceled || !picked.assets?.length) return;
+      const text = await FileSystem.readAsStringAsync(picked.assets[0].uri);
+      await flushSave();
+      const { id, docs: next } = await createDoc(text);
+      setDocs(next);
+      setActiveId(id);
+      setSource(text);
+      setSaveState({ kind: 'saved', at: Date.now() });
+      resetPreviewFor(text);
+      setDocsOpen(false);
+    } catch (e) {
+      Alert.alert('読み込めませんでした', String(e instanceof Error ? e.message : e));
+    }
+  }, [flushSave, resetPreviewFor]);
+
+  const handleDelete = useCallback(
+    async (id: string) => {
+      try {
+        /* デバウンス中の自動保存と競合させない。
+           消す文書の編集は破棄し、他の文書の編集は先に書き切る */
+        if (id === activeIdRef.current) {
+          if (saveTimer.current) {
+            clearTimeout(saveTimer.current);
+            saveTimer.current = null;
+          }
+          dirtyRef.current = false;
+        } else {
+          await flushSave();
+        }
+        const next = await deleteDoc(id);
+        setDocs(next);
+        if (id === activeIdRef.current) {
+          if (next.length > 0) {
+            const text = (await loadDoc(next[0].id)) ?? '';
+            setActiveId(next[0].id);
+            setSource(text);
+            resetPreviewFor(text);
+          } else {
+            const created = await createDoc(NEW_DOC);
+            setDocs(created.docs);
+            setActiveId(created.id);
+            setSource(NEW_DOC);
+            resetPreviewFor(NEW_DOC);
+          }
+          setSaveState({ kind: 'saved', at: Date.now() });
+        }
+      } catch (e) {
+        Alert.alert('削除できませんでした', String(e instanceof Error ? e.message : e));
+      }
+    },
+    [flushSave, resetPreviewFor],
+  );
+
+  /* ---------- 変換 ---------- */
   const runner = useMemo(
     () =>
       new LatestOnly<string, ConvertResult>(
@@ -99,18 +312,107 @@ export default function EditorScreen() {
     [converter],
   );
 
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /* resetPreviewFor は宣言順の都合で ref 経由に読む */
+  const runnerRef = useRef<typeof runner | null>(null);
+  runnerRef.current = runner;
+
+  const convTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (status.phase !== 'ready') return;
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => {
+    if (status.phase !== 'ready' || activeId === null) return;
+    if (convTimer.current) clearTimeout(convTimer.current);
+    convTimer.current = setTimeout(() => {
       setBusy(true);
       runner.submit(source);
     }, IDLE_MS);
     return () => {
-      if (timer.current) clearTimeout(timer.current);
+      if (convTimer.current) clearTimeout(convTimer.current);
     };
-  }, [source, status.phase, runner]);
+  }, [source, status.phase, runner, activeId]);
+
+  /* ---------- カーソルとプレビューの同期 ---------- */
+  const [currentSlide, setCurrentSlide] = useState(1);
+  const cardYs = useRef(new Map<number, number>());
+  const previewRef = useRef<ScrollView>(null);
+
+  const onSelectionChange = useCallback(
+    (e: { nativeEvent: { selection: { start: number } } }) => {
+      // 読むだけ。selection を書き戻すと日本語 IME が壊れる
+      const cursor = e.nativeEvent.selection.start;
+      const src = sourceRef.current;
+      const { metadata, body } = splitFrontMatter(src);
+      const bodyCursor = cursor - (src.length - body.length);
+      const idx = slideIndexAtCursor(body, bodyCursor, metadata.title !== undefined);
+      setCurrentSlide(idx);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const clamped = result ? Math.min(currentSlide, result.slideCount) : currentSlide;
+    const y = cardYs.current.get(clamped);
+    if (y !== undefined) previewRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
+  }, [currentSlide, result]);
+
+  /* ---------- 書き出し ---------- */
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exporting, setExporting] = useState<ExportChoice | null>(null);
+
+  const handleExport = useCallback(
+    async (choice: ExportChoice) => {
+      const src = sourceRef.current;
+      const fileName = sanitizeFileName(titleOf(src, Date.now())) + '.' + choice;
+      setExporting(choice);
+      try {
+        await flushSave();
+        if (choice === 'obsidian') {
+          /* Obsidian の公式 URI。vault を省略すると最後に開いた保管庫に入る。
+             URL に本文を載せるため長文では失敗し得る。Expo Go でも動く唯一の経路 */
+          if (src.length > 20000) {
+            throw new Error(
+              '本文が長すぎて URI で送れません（約2万字まで）。.md を書き出して Obsidian の保管庫フォルダへ保存してください',
+            );
+          }
+          const name = sanitizeFileName(titleOf(src, Date.now()));
+          const uri =
+            'obsidian://new?file=' +
+            encodeURIComponent(name) +
+            '&content=' +
+            encodeURIComponent(src);
+          try {
+            await Linking.openURL(uri);
+          } catch {
+            throw new Error('Obsidian を開けませんでした。インストールされていますか？');
+          }
+          setExportOpen(false);
+        } else if (choice === 'md') {
+          await shareExport(fileName, 'md', { text: src });
+        } else {
+          const { metadata, body } = splitFrontMatter(src);
+          const out = await converter.exportFile(body, choice, {
+            metadata,
+            stripHtmlComments: true,
+          });
+          await shareExport(fileName, choice, { base64: out.base64 });
+        }
+        setExportOpen(false);
+      } catch (e) {
+        Alert.alert('書き出せませんでした', String(e instanceof Error ? e.message : e));
+      } finally {
+        setExporting(null);
+      }
+    },
+    [converter, flushSave],
+  );
+
+  /* ---------- 表示 ---------- */
+  const saveLabel =
+    saveState.kind === 'editing'
+      ? '編集中'
+      : saveState.kind === 'saving'
+        ? '保存中…'
+        : `保存 ${two(new Date(saveState.at).getHours())}:${two(new Date(saveState.at).getMinutes())}`;
+
+  const highlighted = result ? Math.min(currentSlide, result.slideCount) : currentSlide;
 
   return (
     <View
@@ -130,24 +432,22 @@ export default function EditorScreen() {
         status={status}
         busy={busy}
         result={result}
-        width={width}
-        height={height}
-        insets={insets}
-        wide={wide}
-        panesBox={panesBox}
+        onOpenDocs={() => setDocsOpen(true)}
+        onOpenExport={() => setExportOpen(true)}
       />
 
-      <View
-        style={[styles.panes, wide && styles.panesWide]}
-        onLayout={(e) =>
-          setPanesBox({ y: e.nativeEvent.layout.y, h: e.nativeEvent.layout.height })
-        }
-      >
+      <View style={[styles.panes, wide && styles.panesWide]}>
         <View style={[styles.pane, styles.editorPane]}>
-          <Text style={styles.paneLabel}>原稿</Text>
+          <View style={styles.paneLabelRow}>
+            <Text style={styles.paneLabel}>原稿</Text>
+            <Text style={styles.paneMeta}>
+              {source.length}字 · {saveLabel}
+            </Text>
+          </View>
           <TextInput
             value={source}
-            onChangeText={setSource}
+            onChangeText={onChangeSource}
+            onSelectionChange={onSelectionChange}
             multiline
             autoCorrect={false}
             autoCapitalize="none"
@@ -158,32 +458,129 @@ export default function EditorScreen() {
         </View>
 
         <View style={[styles.pane, styles.previewPane, wide && styles.previewPaneWide]}>
-          <Text style={styles.paneLabel}>
-            プレビュー{result ? ` · ${result.slideCount} 枚` : ''}
-          </Text>
-          <ScrollView contentContainerStyle={styles.previewBody}>
-          {error && (
-            <View style={[styles.diag, styles.critical]}>
-              <Text style={styles.diagLabel}>変換に失敗しました</Text>
-              <Text style={styles.diagText}>{error}</Text>
-            </View>
-          )}
-          {result?.diagnostics.map((d, i) => (
-            <DiagnosticRow key={i} diagnostic={d} />
-          ))}
-            {result?.slides.map((s) => <SlideCard key={s.index} slide={s} />)}
+          <View style={styles.paneLabelRow}>
+            <Text style={styles.paneLabel}>
+              プレビュー{result ? ` · ${result.slideCount} 枚` : ''}
+            </Text>
+          </View>
+          <ScrollView ref={previewRef} contentContainerStyle={styles.previewBody}>
+            {error && (
+              <View style={[styles.diag, styles.critical]}>
+                <Text style={styles.diagLabel}>変換に失敗しました</Text>
+                <Text style={styles.diagText}>{error}</Text>
+              </View>
+            )}
+            {result?.diagnostics.map((d, i) => (
+              <DiagnosticRow key={i} diagnostic={d} />
+            ))}
+            {result?.slides.map((s) => (
+              <View
+                key={s.index}
+                onLayout={(e) => cardYs.current.set(s.index, e.nativeEvent.layout.y)}
+              >
+                <SlideCard slide={s} active={s.index === highlighted} />
+              </View>
+            ))}
           </ScrollView>
         </View>
       </View>
+
+      <ExportMenu
+        visible={exportOpen}
+        busy={exporting}
+        onSelect={(c) => void handleExport(c)}
+        onClose={() => setExportOpen(false)}
+      />
+      <DocumentsModal
+        visible={docsOpen}
+        docs={docs}
+        activeId={activeId}
+        onSelect={(id) => void switchDoc(id)}
+        onCreate={() => void handleCreate()}
+        onImport={() => void handleImport()}
+        onDelete={(id) => void handleDelete(id)}
+        onClose={() => setDocsOpen(false)}
+      />
+    </View>
+  );
+}
+
+const VERSION = Constants.expoConfig?.version ?? '?';
+
+function HeaderBar({
+  status,
+  busy,
+  result,
+  onOpenDocs,
+  onOpenExport,
+}: {
+  status: BootStatus;
+  busy: boolean;
+  result: ConvertResult | null;
+  onOpenDocs: () => void;
+  onOpenExport: () => void;
+}) {
+  let text: string;
+  switch (status.phase) {
+    case 'idle':
+      text = '起動中';
+      break;
+    case 'loading': {
+      const mb = (status.loadedBytes / 1048576).toFixed(1);
+      const total = status.totalBytes ? ' / ' + (status.totalBytes / 1048576).toFixed(1) : '';
+      text = 'pandoc.wasm 取得中 ' + mb + total + ' MB';
+      break;
+    }
+    case 'instantiating':
+      text = 'インスタンス化中';
+      break;
+    case 'ready':
+      text = '';
+      break;
+    case 'error':
+      text = '起動に失敗: ' + status.message;
+      break;
+  }
+
+  return (
+    <View style={[styles.header, status.phase === 'error' && styles.headerError]}>
+      <Text style={styles.wordmark}>Morpho</Text>
+      <Text style={styles.version}>{VERSION}</Text>
+      <Text style={styles.statusText} numberOfLines={1}>
+        {text}
+      </Text>
+      {busy && <ActivityIndicator size="small" />}
+      {result && !busy && (
+        <Text style={styles.statusMetric}>
+          {result.ms} ms · {(result.bytes / 1024).toFixed(0)} KB
+        </Text>
+      )}
+      <Pressable
+        style={({ pressed }) => [styles.headerBtn, pressed && styles.headerBtnPressed]}
+        onPress={onOpenDocs}
+      >
+        <Text style={styles.headerBtnText}>書類</Text>
+      </Pressable>
+      <Pressable
+        style={({ pressed }) => [
+          styles.headerBtn,
+          styles.headerBtnPrimary,
+          pressed && styles.headerBtnPressed,
+        ]}
+        disabled={status.phase !== 'ready'}
+        onPress={onOpenExport}
+      >
+        <Text style={[styles.headerBtnText, styles.headerBtnPrimaryText]}>書き出し</Text>
+      </Pressable>
     </View>
   );
 }
 
 const TITLE_PLACEHOLDERS = ['title', 'ctrTitle'];
 
-function SlideCard({ slide }: { slide: SlideOutline }) {
+function SlideCard({ slide, active }: { slide: SlideOutline; active: boolean }) {
   return (
-    <View style={styles.slide}>
+    <View style={[styles.slide, active && styles.slideActive]}>
       <View style={styles.slideHead}>
         <Text style={styles.slideNum}>{slide.index}</Text>
         <Text style={styles.slideLayout}>{slide.layout ?? 'レイアウト不明'}</Text>
@@ -255,79 +652,6 @@ function runStyle(run: TextRun): StyleProp<TextStyle> {
   ];
 }
 
-const VERSION = Constants.expoConfig?.version ?? '?';
-
-interface Insets {
-  top: number;
-  bottom: number;
-  left: number;
-  right: number;
-}
-
-function HeaderBar({
-  status,
-  busy,
-  result,
-  width,
-  height,
-  insets,
-  wide,
-  panesBox,
-}: {
-  status: BootStatus;
-  busy: boolean;
-  result: ConvertResult | null;
-  width: number;
-  height: number;
-  insets: Insets;
-  wide: boolean;
-  panesBox: { y: number; h: number } | null;
-}) {
-  let text: string;
-  switch (status.phase) {
-    case 'idle':
-      text = '起動中';
-      break;
-    case 'loading': {
-      const mb = (status.loadedBytes / 1048576).toFixed(1);
-      const total = status.totalBytes ? ' / ' + (status.totalBytes / 1048576).toFixed(1) : '';
-      text = 'pandoc.wasm 取得中 ' + mb + total + ' MB';
-      break;
-    }
-    case 'instantiating':
-      text = 'インスタンス化中';
-      break;
-    case 'ready':
-      text = '起動 ' + status.bootMs + ' ms / ヒープ ' + status.heapMB + ' MB';
-      break;
-    case 'error':
-      text = '起動に失敗: ' + status.message;
-      break;
-  }
-
-  return (
-    <View style={[styles.header, status.phase === 'error' && styles.headerError]}>
-      <Text style={styles.wordmark}>Morpho</Text>
-      {/* 実機でしか出ない位置ずれの切り分け用。数値をそのまま出す */}
-      <Text style={styles.version}>
-        {VERSION} · {Math.round(width)}×{Math.round(height)} ·{' '}
-        {wide ? '二画面' : '一画面'} · 余白 {Math.round(insets.top)}/
-        {Math.round(insets.bottom)}/{Math.round(insets.left)}/{Math.round(insets.right)}
-        {panesBox ? ` · 本体 y${Math.round(panesBox.y)} h${Math.round(panesBox.h)}` : ''}
-      </Text>
-      <Text style={styles.statusText} numberOfLines={1}>
-        {text}
-      </Text>
-      {busy && <ActivityIndicator size="small" />}
-      {result && !busy && (
-        <Text style={styles.statusMetric}>
-          {result.ms} ms · {(result.bytes / 1024).toFixed(0)} KB
-        </Text>
-      )}
-    </View>
-  );
-}
-
 function DiagnosticRow({ diagnostic }: { diagnostic: Diagnostic }) {
   const tone =
     diagnostic.kind === 'critical'
@@ -360,14 +684,16 @@ const styles = StyleSheet.create({
   previewPane: { borderTopWidth: 1, borderTopColor: RULE },
   previewPaneWide: { borderTopWidth: 0, borderLeftWidth: 1, borderLeftColor: RULE },
 
-  paneLabel: {
-    fontSize: 11,
-    letterSpacing: 0.6,
-    color: '#666C78',
+  paneLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
     paddingHorizontal: 20,
     paddingTop: 12,
     paddingBottom: 6,
   },
+  paneLabel: { fontSize: 11, letterSpacing: 0.6, color: '#666C78' },
+  paneMeta: { fontSize: 11, color: '#666C78', fontVariant: ['tabular-nums'] },
 
   editor: {
     flex: 1,
@@ -384,7 +710,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
     paddingHorizontal: 20,
-    paddingVertical: 12,
+    paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: RULE,
     backgroundColor: '#F7F8FA',
@@ -394,6 +720,17 @@ const styles = StyleSheet.create({
   version: { fontSize: 11, color: '#666C78', fontVariant: ['tabular-nums'] },
   statusText: { flex: 1, fontSize: 13, color: '#666C78' },
   statusMetric: { fontSize: 13, color: '#1B3FE0', fontVariant: ['tabular-nums'] },
+  headerBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: RULE,
+  },
+  headerBtnPrimary: { backgroundColor: '#1B3FE0', borderColor: '#1B3FE0' },
+  headerBtnPressed: { opacity: 0.6 },
+  headerBtnText: { fontSize: 14, color: '#14161B' },
+  headerBtnPrimaryText: { color: '#FFFFFF', fontWeight: '600' },
 
   previewBody: { paddingHorizontal: 20, paddingBottom: 24, gap: 12 },
 
@@ -412,6 +749,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: RULE,
   },
+  slideActive: { borderColor: '#1B3FE0', borderWidth: 2, padding: 15 },
   slideHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
   slideNum: { fontSize: 11, color: '#FFFFFF', backgroundColor: '#1B3FE0', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4, overflow: 'hidden' },
   slideLayout: { fontSize: 11, color: '#666C78' },

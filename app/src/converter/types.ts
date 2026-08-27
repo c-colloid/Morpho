@@ -83,9 +83,25 @@ export interface ConvertOptions {
   metadata?: Record<string, string>;
 }
 
+/** 変換器が生成できる出力形式。md はエディタの内容そのものなので含めない */
+export type ExportFormat = 'pptx' | 'docx';
+
+export interface ExportResult {
+  /** 出力ファイルの base64 */
+  base64: string;
+  bytes: number;
+  ms: number;
+  diagnostics: Diagnostic[];
+}
+
 export interface Converter {
   readonly name: string;
   convert(markdown: string, options?: ConvertOptions): Promise<ConvertResult>;
+  exportFile(
+    markdown: string,
+    format: ExportFormat,
+    options?: ConvertOptions,
+  ): Promise<ExportResult>;
 }
 
 export type BootStatus =

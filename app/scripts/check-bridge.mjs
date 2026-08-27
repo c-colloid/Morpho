@@ -74,7 +74,7 @@ if (!mapMatch) {
 }
 
 // 上りの窓口が実在するか
-for (const needle of ['window.__morphoConvert', 'ReactNativeWebView.postMessage']) {
+for (const needle of ['window.__morphoConvert', 'window.__morphoExport', 'ReactNativeWebView.postMessage']) {
   if (!html.includes(needle)) {
     console.error(`  FAIL ${needle} が見つかりません`);
     failed = true;

@@ -87,6 +87,15 @@ var RULES = [
 var pandoc = null;
 var wasmInstance = null;
 
+/* pandoc.wasm は走り出したら中断できず、同時再入の挙動も未検証。
+   プレビュー・書き出し・暖機のどこから来ても、ここで必ず直列化する */
+var chain = Promise.resolve();
+function serialized(fn) {
+  var next = chain.then(fn, fn);
+  chain = next.catch(function () {});
+  return next;
+}
+
 /* インスタンスは公開されないので instantiate を一時的に横取りして掴む */
 async function instantiateWithCapture(bin) {
   var orig = WebAssembly.instantiate;
@@ -288,6 +297,10 @@ function classify(warnings, stderr) {
 }
 
 async function convert(id, md, opts) {
+  return serialized(async function () { await doConvert(id, md, opts); });
+}
+
+async function doConvert(id, md, opts) {
   try {
     if (!pandoc) throw new Error('converter is not ready yet');
     opts = opts || {};
@@ -330,6 +343,63 @@ async function convert(id, md, opts) {
 }
 
 window.__morphoConvert = function (id, md, opts) { convert(id, md, opts); };
+
+/* 書き出し。プレビューと同じ経路で変換し、出力ファイルを base64 で返す。
+   FileReader.readAsDataURL は WKWebView で使える。btoa の 64KB 制限も踏まない */
+async function exportFile(id, md, opts, format) {
+  return serialized(async function () { await doExport(id, md, opts, format); });
+}
+
+async function doExport(id, md, opts, format) {
+  try {
+    if (!pandoc) throw new Error('converter is not ready yet');
+    opts = opts || {};
+    var name = 'out.' + format;
+    var options = {
+      from: 'markdown-yaml_metadata_block',
+      to: format,
+      'output-file': name
+    };
+    if (opts.metadata && Object.keys(opts.metadata).length) options.metadata = opts.metadata;
+    var files = {};
+    if (opts.stripHtmlComments) {
+      files['strip.lua'] = STRIP_LUA;
+      options.filters = ['strip.lua'];
+    }
+
+    var t0 = performance.now();
+    var res = await pandoc.convert(options, md, files);
+    var ms = Math.round(performance.now() - t0);
+
+    var out = res.files && res.files[name];
+    if (!out) throw new Error('pandoc produced no ' + name);
+
+    var reader = new FileReader();
+    var base64 = await new Promise(function (resolve, reject) {
+      reader.onerror = function () { reject(new Error('FileReader failed')); };
+      reader.onload = function () {
+        /* data:...;base64,XXXX の頭を落とす */
+        var s = String(reader.result);
+        resolve(s.slice(s.indexOf(',') + 1));
+      };
+      reader.readAsDataURL(out);
+    });
+
+    RN({
+      id: id,
+      type: 'ok',
+      result: {
+        base64: base64,
+        bytes: out.size,
+        ms: ms,
+        diagnostics: classify(res.warnings, res.stderr)
+      }
+    });
+  } catch (e) {
+    RN({ id: id, type: 'error', message: String((e && e.message) || e) });
+  }
+}
+window.__morphoExport = function (id, md, opts, format) { exportFile(id, md, opts, format); };
 
 (async function boot() {
   var t0 = performance.now();
