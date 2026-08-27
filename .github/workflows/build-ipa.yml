@@ -1,0 +1,85 @@
+# 署名なし ipa を GitHub Actions で作る。
+#
+# AltStore / SideStore は ipa を無料 Apple ID の証明書で署名し直して
+# インストールするため、CI 側の署名は不要（CODE_SIGNING_ALLOWED=NO）。
+# これで Apple Developer Program に加入せず、Windows 機での開発サーバも
+# 経由せずに、スタンドアロンの Morpho を iPad でテストできる。
+#
+# 使い方（iPad だけで完結）:
+#   GitHub の Actions タブ → Build IPA → Run workflow
+#   → 完了後 Artifacts から Morpho-ipa をダウンロード → 展開
+#   → AltStore（要 同一LAN の AltServer）か SideStore で ipa を開く
+name: Build IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Xcode を確認
+        run: |
+          xcodebuild -version
+          ls /Applications | grep -i xcode || true
+
+      - name: 依存を入れる
+        run: npm ci
+
+      - name: ネイティブプロジェクトを生成 (expo prebuild)
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: CocoaPods
+        run: npx pod-install ios
+
+      - name: 署名なしでビルド
+        run: |
+          xcodebuild \
+            -workspace ios/Morpho.xcworkspace \
+            -scheme Morpho \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build | xcbeautify --renderer github-actions || \
+          xcodebuild \
+            -workspace ios/Morpho.xcworkspace \
+            -scheme Morpho \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: ipa に固める
+        run: |
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
+          echo "app: $APP"
+          test -n "$APP"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          VERSION=$(node -p "require('./app.json').expo.version")
+          zip -qry "Morpho-${VERSION}.ipa" Payload
+          ls -la *.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Morpho-ipa
+          path: app/*.ipa
+          retention-days: 14
