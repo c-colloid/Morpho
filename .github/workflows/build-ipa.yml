@@ -21,7 +21,10 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    # Expo SDK 57 の ExpoModulesJSI は swift-tools-version 6.2 を要求する。
+    # Xcode 16.x（Swift 6.1）だと SPM が詳細なしの
+    # "Could not resolve package dependencies:" で落ちる（run #1, #2 の死因）
+    runs-on: macos-26
     timeout-minutes: 60
     defaults:
       run:
@@ -35,10 +38,16 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
 
-      - name: Xcode を確認
+      - name: Xcode を確認（26 未満なら最新を選ぶ）
         run: |
-          xcodebuild -version
           ls /Applications | grep -i xcode || true
+          MAJOR=$(xcodebuild -version | awk 'NR==1{print int($2)}')
+          if [ "$MAJOR" -lt 26 ]; then
+            NEWEST=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+            test -n "$NEWEST" || { echo "Xcode 26 が見つからない"; exit 1; }
+            sudo xcode-select -s "$NEWEST"
+          fi
+          xcodebuild -version
 
       - name: 依存を入れる
         run: npm ci
