@@ -175,4 +175,25 @@ t('複数の図形を順に返す', () => {
   assert.deepEqual(Array.from(shapes, (s) => s.placeholder), ['title', 'body']);
 });
 
+// 実際の notesSlide1.xml の構造（scripts/dump-pptx.mjs で確認）を模した検査。
+// ノート抽出は「placeholder === 'body' の図形だけを拾う」に依存する
+t('notesSlide の sldImg / body / sldNum を見分ける', () => {
+  const xml =
+    '<p:sp><p:nvSpPr><p:nvPr><p:ph type="sldImg"/></p:nvPr></p:nvSpPr><p:spPr/></p:sp>' +
+    sp('<p:ph type="body" idx="1"/>',
+      '<a:p><a:pPr lvl="0" indent="0" marL="0"/><a:r><a:rPr/><a:t>ノート一行目。</a:t></a:r></a:p>' +
+      '<a:p><a:r><a:rPr b="1"/><a:t>太字</a:t></a:r></a:p>') +
+    sp('<p:ph type="sldNum" sz="quarter" idx="10"/>',
+      '<a:p><a:r><a:rPr lang="en-US"/><a:t>1</a:t></a:r></a:p>');
+  const shapes = parse(xml);
+  const body = shapes.filter((s) => s.placeholder === 'body');
+  assert.equal(body.length, 1);
+  assert.equal(body[0].paragraphs.length, 2);
+  assert.equal(body[0].paragraphs[0].runs[0].text, 'ノート一行目。');
+  assert.equal(body[0].paragraphs[1].runs[0].bold, true);
+  // sldNum の "1" が body に混ざらない
+  const others = shapes.filter((s) => s.placeholder === 'sldNum');
+  assert.equal(others.length, 1);
+});
+
 console.log(`\n${n} 件すべて通過`);

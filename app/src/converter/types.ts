@@ -64,6 +64,8 @@ export interface SlideOutline {
   /** 出力側で実際に割り当たったレイアウト名。取れなければ null */
   layout: string | null;
   shapes: SlideShape[];
+  /** 発表者ノート（::: notes ::: 由来）。無ければ空配列 */
+  notes: Paragraph[];
 }
 
 export interface ConvertResult {

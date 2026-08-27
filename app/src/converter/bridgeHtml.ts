@@ -240,13 +240,15 @@ function parsePptx(u8) {
     return /^ppt\\/slides\\/slide\\d+\\.xml$/.test(n);
   }).sort(function (a, b) { return slideNum(a) - slideNum(b); });
 
+  var relsOf = function (slidePath) {
+    var relPath = slidePath.replace(/^ppt\\/slides\\//, 'ppt/slides/_rels/') + '.rels';
+    return zip[relPath] ? dec.decode(zip[relPath]) : '';
+  };
+
   /* レイアウト名は theme ではなく slideLayout の p:cSld@name に入っている */
   var layoutName = function (slidePath) {
     try {
-      var relPath = slidePath.replace(/^ppt\\/slides\\//, 'ppt/slides/_rels/') + '.rels';
-      if (!zip[relPath]) return null;
-      var rels = dec.decode(zip[relPath]);
-      var hit = /Target="([^"]*slideLayout\\d+\\.xml)"/.exec(rels);
+      var hit = /Target="([^"]*slideLayout\\d+\\.xml)"/.exec(relsOf(slidePath));
       if (!hit) return null;
       var target = hit[1].replace(/^\\.\\.\\//, 'ppt/');
       if (!zip[target]) return null;
@@ -255,11 +257,29 @@ function parsePptx(u8) {
     } catch (e) { return null; }
   };
 
+  /* 発表者ノート。スライドとの対応は番号一致ではなく rels 経由（実測で確認）。
+     notesSlide の本文は type="body"。sldImg / sldNum は除外する */
+  var notesFor = function (slidePath) {
+    try {
+      var hit = /Target="([^"]*notesSlide\\d+\\.xml)"/.exec(relsOf(slidePath));
+      if (!hit) return [];
+      var target = hit[1].replace(/^\\.\\.\\//, 'ppt/');
+      if (!zip[target]) return [];
+      var shapes = parseShapes(dec.decode(zip[target]));
+      var out = [];
+      for (var i = 0; i < shapes.length; i++) {
+        if (shapes[i].placeholder === 'body') out = out.concat(shapes[i].paragraphs);
+      }
+      return out;
+    } catch (e) { return []; }
+  };
+
   var slides = names.map(function (n, i) {
     return {
       index: i + 1,
       layout: layoutName(n),
-      shapes: parseShapes(dec.decode(zip[n]))
+      shapes: parseShapes(dec.decode(zip[n])),
+      notes: notesFor(n)
     };
   });
 
@@ -306,7 +326,8 @@ async function doConvert(id, md, opts) {
     opts = opts || {};
     var options = {
       /* CLAUDE.md 落とし穴 1・2: リーダーは固定し、Auto 検出には頼らない */
-      from: 'markdown-yaml_metadata_block',
+      /* east_asian_line_breaks: 和文の行内折り返しが半角スペースにならない（実測済み） */
+      from: 'markdown-yaml_metadata_block+east_asian_line_breaks',
       to: 'pptx',
       'output-file': 'out.pptx'
     };
@@ -356,7 +377,8 @@ async function doExport(id, md, opts, format) {
     opts = opts || {};
     var name = 'out.' + format;
     var options = {
-      from: 'markdown-yaml_metadata_block',
+      /* east_asian_line_breaks: 和文の行内折り返しが半角スペースにならない（実測済み） */
+      from: 'markdown-yaml_metadata_block+east_asian_line_breaks',
       to: format,
       'output-file': name
     };

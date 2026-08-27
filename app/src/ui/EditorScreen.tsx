@@ -73,6 +73,9 @@ author: "フテイケイ"
 
 # 二枚目
 
+改行位置を自分で決める行は\\
+行末にバックスラッシュを置く。
+
 - 箇条書き
 - 入れ子を試す
   - 二階層目
@@ -83,6 +86,11 @@ author: "フテイケイ"
 \`\`\`js
 const x = 1;
 \`\`\`
+
+::: notes
+ここは発表者ノート。スライドには出ない。
+プレビューの「ノート」から確認できる。
+:::
 `;
 
 const NEW_DOC = `# 無題
@@ -579,11 +587,20 @@ function HeaderBar({
 const TITLE_PLACEHOLDERS = ['title', 'ctrTitle'];
 
 function SlideCard({ slide, active }: { slide: SlideOutline; active: boolean }) {
+  const [notesOpen, setNotesOpen] = useState(false);
   return (
     <View style={[styles.slide, active && styles.slideActive]}>
       <View style={styles.slideHead}>
         <Text style={styles.slideNum}>{slide.index}</Text>
         <Text style={styles.slideLayout}>{slide.layout ?? 'レイアウト不明'}</Text>
+        <View style={styles.slideHeadSpace} />
+        {slide.notes.length > 0 && (
+          <Pressable hitSlop={8} onPress={() => setNotesOpen((v) => !v)}>
+            <Text style={[styles.notesToggle, notesOpen && styles.notesToggleOpen]}>
+              ノート {notesOpen ? '▾' : '▸'}
+            </Text>
+          </Pressable>
+        )}
       </View>
       {slide.shapes.length === 0 ? (
         <Text style={styles.slideEmpty}>（テキストなし）</Text>
@@ -591,6 +608,19 @@ function SlideCard({ slide, active }: { slide: SlideOutline; active: boolean }) 
         slide.shapes.map((shape, si) => (
           <ShapeBlock key={si} shape={shape} first={si === 0} />
         ))
+      )}
+      {notesOpen && slide.notes.length > 0 && (
+        <View style={styles.notesBox}>
+          {slide.notes.map((p, i) => (
+            <Text key={i} style={styles.notesText}>
+              {p.runs.map((run, ri) => (
+                <Text key={ri} style={runStyle(run)}>
+                  {run.text}
+                </Text>
+              ))}
+            </Text>
+          ))}
+        </View>
       )}
     </View>
   );
@@ -754,6 +784,20 @@ const styles = StyleSheet.create({
   slideNum: { fontSize: 11, color: '#FFFFFF', backgroundColor: '#1B3FE0', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4, overflow: 'hidden' },
   slideLayout: { fontSize: 11, color: '#666C78' },
   slideEmpty: { fontSize: 12, color: '#666C78', fontStyle: 'italic' },
+  slideHeadSpace: { flex: 1 },
+  notesToggle: { fontSize: 12, color: '#666C78' },
+  notesToggleOpen: { color: '#1B3FE0' },
+  notesBox: {
+    marginTop: 10,
+    paddingTop: 8,
+    paddingHorizontal: 10,
+    paddingBottom: 8,
+    borderRadius: 6,
+    backgroundColor: '#FBF6E3',
+    borderLeftWidth: 3,
+    borderLeftColor: '#A8730A',
+  },
+  notesText: { fontSize: 13, lineHeight: 20, color: '#5A4A14', marginTop: 2 },
 
   shapeGap: { marginTop: 8 },
   para: { flexDirection: 'row', alignItems: 'flex-start', marginTop: 3 },
