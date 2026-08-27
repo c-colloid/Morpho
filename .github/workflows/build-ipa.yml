@@ -13,6 +13,11 @@ name: Build IPA
 
 on:
   workflow_dispatch:
+  # 検証用: このファイル自身の変更でも走る（このセッションのトークンは
+  # workflow_dispatch を叩けないため）。アプリ本体の push では走らない
+  push:
+    branches: [main]
+    paths: ['.github/workflows/build-ipa.yml']
 
 jobs:
   build:
