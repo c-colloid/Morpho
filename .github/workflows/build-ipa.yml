@@ -49,39 +49,44 @@ jobs:
       - name: CocoaPods
         run: npx pod-install ios
 
+      - name: SPM 依存を解決（実エラーを露出させる）
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -workspace ios/Morpho.xcworkspace \
+            -scheme Morpho \
+            -clonedSourcePackagesDirPath SourcePackages
+
       - name: 署名なしでビルド
         run: |
+          set -o pipefail
           xcodebuild \
             -workspace ios/Morpho.xcworkspace \
             -scheme Morpho \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
+            -clonedSourcePackagesDirPath SourcePackages \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build | xcbeautify --renderer github-actions || \
-          xcodebuild \
-            -workspace ios/Morpho.xcworkspace \
-            -scheme Morpho \
-            -configuration Release \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            build
+            build | xcbeautify --renderer github-actions
 
-      - name: ipa に固める
+      - name: ipa に固める（空の .app は失敗にする）
         run: |
           APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
           echo "app: $APP"
           test -n "$APP"
+          test -f "$APP/Morpho" || { echo "実行バイナリが無い"; exit 1; }
+          test -f "$APP/main.jsbundle" || echo "警告: main.jsbundle が見当たらない"
           mkdir -p Payload
           cp -R "$APP" Payload/
           VERSION=$(node -p "require('./app.json').expo.version")
           zip -qry "Morpho-${VERSION}.ipa" Payload
-          ls -la *.ipa
+          SIZE=$(stat -f%z "Morpho-${VERSION}.ipa")
+          echo "ipa: ${SIZE} bytes"
+          test "$SIZE" -gt 3000000 || { echo "ipa が小さすぎる（ビルド不全）"; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:
