@@ -154,6 +154,40 @@ developer.apple.com では**サインインするだけ**にする。
 `sdk-54` ブランチは SDK 54 に固定してあり、App Store の Expo Go がそのまま使える。
 署名も .ipa も7日ごとの入れ直しも発生しない。`src/` は main と同一。
 
+## スタンドアロン版を iPad に入れる（CI ビルドの ipa）
+
+GitHub Actions が**署名なしの ipa** を作る（`.github/workflows/build-ipa.yml`）。
+AltStore / SideStore は ipa を無料 Apple ID で署名し直してインストールするため、
+CI 側の署名も Apple Developer Program も不要。**検証済み・成果物 約 8.6 MB**。
+
+手順（iPad だけで完結する）:
+
+1. GitHub の **Actions タブ → Build IPA → Run workflow**
+2. 完了（約5分）後、run のページ下部 **Artifacts → Morpho-ipa** をダウンロード
+3. zip を展開して `Morpho-x.y.z.ipa` を取り出す
+4. **AltStore**（＋ボタン → ipa を選択。同一 LAN に AltServer が必要）か
+   **SideStore**（初回ペアリング後は完全に iPad 単体）で開く
+
+Expo Go 版との違い:
+
+| | Expo Go + Metro | スタンドアロン ipa |
+|---|---|---|
+| 反映速度 | 保存で即時 | ビルド約5分 + 入れ直し |
+| iPad 最適化 | Expo Go の制約で iPhone 幅 | **ネイティブに iPad 対応** |
+| ネイティブモジュール追加 | 不可 | **可能**（Share Extension / open-in-place への道） |
+| 文書の保存先 | Expo Go のサンドボックス | **別サンドボックス**（文書は共有されない） |
+
+日常の開発は Metro、節目の確認と「素の Morpho」の検証はこの ipa、という使い分け。
+無料 Apple ID のサイドロード枠は 3 アプリまで（AltStore 自身が 1 枠使う）。
+
+ハマりどころ（CI 構築時に実際に踏んだもの）:
+- **Xcode 26 が必須**。SDK 57 の ExpoModulesJSI は swift-tools-version 6.2 を
+  要求し、Xcode 16.x だと SPM が詳細空の
+  `Could not resolve package dependencies:` で落ちる → `runs-on: macos-26`
+- `xcodebuild | xcbeautify` は **xcbeautify の exit 0 が失敗を隠す**。
+  `set -o pipefail` を忘れると空の ipa が「成功」になる
+- 成果物の検算（実行バイナリの存在・サイズ下限）を必ず入れる
+
 ## 外部アプリ連携（Files / Obsidian）の現在地
 
 **結論: 読み込みと書き出しは今できる。その場での上書き編集（open in place）は
