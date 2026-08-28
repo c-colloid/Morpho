@@ -52,6 +52,8 @@ export interface Paragraph {
    */
   marL?: number | null;
   indent?: number | null;
+  /** 段落の水平揃え上書き（l / ctr / r / just）。null はスタイル既定を継承 */
+  algn?: string | null;
 }
 
 /** スライド上の図形ひとつ。pptx の <p:sp> にあたる */
@@ -73,6 +75,11 @@ export interface SlideShape {
   phIdx: number | null;
   /** スライド上の位置。自前 → レイアウト → マスター の順で解決済み。不明なら null */
   frame: Frame | null;
+  /**
+   * 垂直アンカー（t / ctr / b）。自前 → レイアウト → マスター の順で解決済み。
+   * null は既定（上揃え）。pandoc 既定マスターのタイトルは ctr（実測）
+   */
+  anchor?: string | null;
   paragraphs: Paragraph[];
 }
 
@@ -100,6 +107,14 @@ export interface DeckInfo {
   bodyMarL: number[];
   /** 同・先頭行のぶら下げ（EMU、通常は負）。行頭記号の位置 = marL + indent */
   bodyIndent: number[];
+  /** タイトルの水平揃え（titleStyle lvl1 の algn）。pandoc 既定は ctr */
+  titleAlgn?: string | null;
+  /** 箇条書き階層ごとの水平揃え。null は左 */
+  bodyAlgn?: Array<string | null>;
+  /** 段落前間隔（spcPct の 1/1000 %。pandoc 既定は 20000 = 行高の 20%） */
+  bodySpcBef?: number[];
+  /** 段落前間隔の絶対値指定（spcPts、1/100 pt）。reference-doc で使われ得る */
+  bodySpcBefPts?: number[];
 }
 
 /**

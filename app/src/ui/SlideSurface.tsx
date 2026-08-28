@@ -237,8 +237,14 @@ function ShapeBox({
         paddingHorizontal: INSET_X_PT * scale,
         paddingVertical: INSET_Y_PT * scale,
         overflow: 'hidden',
-        /* タイトルは下揃え・本文は上揃えが PowerPoint 既定に近い */
-        justifyContent: isTitle ? 'flex-end' : 'flex-start',
+        /* 垂直アンカーは実出力の bodyPr から継承解決済み
+           （pandoc 既定: タイトル=ctr、本文=無指定=上）。無指定の既定は上揃え */
+        justifyContent:
+          shape.anchor === 'ctr'
+            ? 'center'
+            : shape.anchor === 'b'
+              ? 'flex-end'
+              : 'flex-start',
       }}
     >
       {shape.paragraphs.map((p, pi) =>
@@ -297,6 +303,23 @@ function SurfaceParagraph({
   const hang = paragraph.indent ?? deck.bodyIndent[lvl] ?? 0;
   const indentPt = Math.max(0, (marL + hang) / EMU_PER_PT);
 
+  /* 水平揃え: 段落の上書き → スタイル既定（タイトルは titleStyle、本文は
+     bodyStyle の lvl 既定）。pandoc 既定マスターのタイトルは中央揃え（実測） */
+  const algn =
+    paragraph.algn ??
+    (isTitle ? deck.titleAlgn : deck.bodyAlgn?.[lvl]) ??
+    'l';
+  const textAlign =
+    algn === 'ctr' ? ('center' as const)
+    : algn === 'r' ? ('right' as const)
+    : algn === 'just' ? ('justify' as const)
+    : ('left' as const);
+
+  /* 段落前間隔: spcPct（行高の %）と spcPts（1/100 pt の絶対値）の両対応。
+     タイトルは 0（実測） */
+  const spcBefPct = isTitle ? 0 : (deck.bodySpcBef?.[lvl] ?? 0);
+  const spcBefPts = isTitle ? 0 : (deck.bodySpcBefPts?.[lvl] ?? 0);
+
   const glyph =
     isTitle || paragraph.bullet === 'none'
       ? null
@@ -307,13 +330,21 @@ function SurfaceParagraph({
           : '•';
 
   return (
-    <View style={[styles.para, { paddingLeft: indentPt * scale }]}>
+    <View
+      style={[
+        styles.para,
+        {
+          paddingLeft: indentPt * scale,
+          marginTop: fontSize * 1.25 * (spcBefPct / 100000) + (spcBefPts / 100) * scale,
+        },
+      ]}
+    >
       {glyph !== null && (
         <Text style={{ fontSize, lineHeight: fontSize * 1.25, color, width: fontSize * 1.1 }}>
           {glyph}
         </Text>
       )}
-      <Text style={{ flex: 1, fontSize, lineHeight: fontSize * 1.25, color }}>
+      <Text style={{ flex: 1, fontSize, lineHeight: fontSize * 1.25, color, textAlign }}>
         {paragraph.runs.map((run, ri) => (
           <Text key={ri} style={surfaceRunStyle(run, fontSize)}>
             {run.text}

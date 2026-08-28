@@ -214,6 +214,7 @@ function parseParagraphs(txBodyXml) {
        字下げの実寸を出すため、上書きの有無ごと持ち帰る（null = 継承） */
     var marL = null;
     var indent = null;
+    var algn = null;
     var pPr = /<a:pPr\\b([^>]*)/.exec(body);
     if (pPr) {
       var lvl = /\\blvl="(\\d+)"/.exec(pPr[1]);
@@ -222,6 +223,8 @@ function parseParagraphs(txBodyXml) {
       if (ml) marL = Number(ml[1]);
       var ind = /\\bindent="(-?\\d+)"/.exec(pPr[1]);
       if (ind) indent = Number(ind[1]);
+      var al = /\\balgn="(\\w+)"/.exec(pPr[1]);
+      if (al) algn = al[1];
     }
     /* pandoc は箇条書きでない段落に buNone を明示する。
        箇条書きは何も書かずレイアウトの既定（行頭記号）に任せるので、
@@ -230,7 +233,7 @@ function parseParagraphs(txBodyXml) {
     if (/<a:buNone\\s*\\/>/.test(body)) bullet = 'none';
     else if (/<a:buAutoNum\\b/.test(body)) bullet = 'number';
     var runs = parseRuns(body);
-    if (runs.length) out.push({ runs: runs, level: level, bullet: bullet, marL: marL, indent: indent });
+    if (runs.length) out.push({ runs: runs, level: level, bullet: bullet, marL: marL, indent: indent, algn: algn });
   }
   return out;
 }
@@ -256,10 +259,18 @@ function parseShapes(slideXml) {
       var idx = /\\bidx="(\\d+)"/.exec(ph[1]);
       if (idx) phIdx = Number(idx[1]);
     }
+    /* 垂直アンカー。無ければ null（レイアウト → マスターから継承する） */
+    var anchor = null;
+    var bp = /<a:bodyPr\\b([^>]*)/.exec(sp);
+    if (bp) {
+      var an = /\\banchor="(\\w+)"/.exec(bp[1]);
+      if (an) anchor = an[1];
+    }
     shapes.push({
       placeholder: placeholder,
       phIdx: phIdx,
       frame: parseXfrm(sp),
+      anchor: anchor,
       paragraphs: paragraphs
     });
   }
@@ -289,45 +300,60 @@ function parsePlaceholderFrames(xml) {
     if (!ph) continue;
     var type = /\\btype="([^"]*)"/.exec(ph[1]);
     var idx = /\\bidx="(\\d+)"/.exec(ph[1]);
+    var anchor = null;
+    var bp = /<a:bodyPr\\b([^>]*)/.exec(m[1]);
+    if (bp) {
+      var an = /\\banchor="(\\w+)"/.exec(bp[1]);
+      if (an) anchor = an[1];
+    }
     out.push({
       type: type ? type[1] : null,
       idx: idx ? Number(idx[1]) : null,
-      frame: parseXfrm(m[1])
+      frame: parseXfrm(m[1]),
+      anchor: anchor
     });
   }
   return out;
 }
 window.__morphoParsePlaceholderFrames = parsePlaceholderFrames;
 
-/* タイトルは type で、本文は type か idx で照合する。
-   ctrTitle（Title Slide）の座標はマスターに無いので title に落とす */
-function findFrame(phList, type, idx) {
+/* プレースホルダの継承照合。タイトルは type で、本文は type か idx で照合し、
+   ctrTitle（Title Slide）はマスターに無いので title に落とす。
+   key（frame / anchor）が入っている要素だけを候補にする */
+function findInherited(phList, type, idx, key) {
   var want = type === 'ctrTitle' ? 'title' : type;
   for (var i = 0; i < phList.length; i++) {
-    if (phList[i].frame && phList[i].type === want) return phList[i].frame;
+    if (phList[i][key] && phList[i].type === want) return phList[i][key];
   }
   if (idx !== null) {
     for (var j = 0; j < phList.length; j++) {
-      if (phList[j].frame && phList[j].idx === idx) return phList[j].frame;
+      if (phList[j][key] && phList[j].idx === idx) return phList[j][key];
     }
   }
   /* subTitle 等: type でも idx でも一致しなければ body に落とす */
   if (want !== 'title') {
     for (var k = 0; k < phList.length; k++) {
-      if (phList[k].frame && phList[k].type === 'body') return phList[k].frame;
+      if (phList[k][key] && phList[k].type === 'body') return phList[k][key];
     }
   }
   return null;
 }
+function findFrame(phList, type, idx) { return findInherited(phList, type, idx, 'frame'); }
+function findAnchor(phList, type, idx) { return findInherited(phList, type, idx, 'anchor'); }
 window.__morphoFindFrame = findFrame;
 
 /* デッキ情報: 寸法・配色・既定の文字サイズ */
 function parseDeck(zip, dec) {
-  var deck = { w: 9144000, h: 5143500, colors: {}, titleSz: 3300, bodySz: [2400, 2100, 1800, 1500, 1500], bodyMarL: [], bodyIndent: [] };
+  var deck = { w: 9144000, h: 5143500, colors: {}, titleSz: 3300, bodySz: [2400, 2100, 1800, 1500, 1500], bodyMarL: [], bodyIndent: [], titleAlgn: null, bodyAlgn: [], bodySpcBef: [], bodySpcBefPts: [] };
   /* 既定はマスターの実測値: marL=342900*(n+1), indent=-342900（27pt 刻みのぶら下げ） */
   for (var di = 0; di < 9; di++) {
     deck.bodyMarL.push(342900 * (di + 1));
     deck.bodyIndent.push(-342900);
+    deck.bodyAlgn.push(null);
+    /* spcBef は spcPct の 1/1000 %（20000 = 20%）。OOXML 既定は 0 */
+    deck.bodySpcBef.push(0);
+    /* 絶対値指定（spcPts、1/100 pt）の場合はこちらに入る */
+    deck.bodySpcBefPts.push(0);
   }
   try {
     var pres = dec.decode(zip['ppt/presentation.xml']);
@@ -352,6 +378,9 @@ function parseDeck(zip, dec) {
     if (ts) {
       var tsz = /sz="(\\d+)"/.exec(ts[0]);
       if (tsz) deck.titleSz = Number(tsz[1]);
+      /* pandoc 既定マスターのタイトルは algn="ctr"（実測） */
+      var tal = /<a:lvl1pPr[^>]*\\balgn="(\\w+)"/.exec(ts[0]);
+      if (tal) deck.titleAlgn = tal[1];
     }
     var bs = /<p:bodyStyle>[\\s\\S]*?<\\/p:bodyStyle>/.exec(master);
     if (bs) {
@@ -370,6 +399,19 @@ function parseDeck(zip, dec) {
         if (ml2) deck.bodyMarL[lv] = Number(ml2[1]);
         var in2 = /\\bindent="(-?\\d+)"/.exec(pm[2]);
         if (in2) deck.bodyIndent[lv] = Number(in2[1]);
+        var al2 = /\\balgn="(\\w+)"/.exec(pm[2]);
+        if (al2) deck.bodyAlgn[lv] = al2[1];
+      }
+      /* 段落前間隔。pandoc 既定は spcPct（行高の %）だが、PowerPoint 製の
+         reference-doc は spcPts（1/100 pt の絶対値）で書くことがあるので両対応 */
+      var bre = /<a:lvl(\\d)pPr[^>]*>([\\s\\S]*?)<\\/a:lvl\\1pPr>/g;
+      var bm;
+      while ((bm = bre.exec(bs[0])) !== null) {
+        var blv = Number(bm[1]) - 1;
+        var sp2 = /<a:spcBef>\\s*<a:spcPct\\s+val="(\\d+)"/.exec(bm[2]);
+        if (sp2) deck.bodySpcBef[blv] = Number(sp2[1]);
+        var sp3 = /<a:spcBef>\\s*<a:spcPts\\s+val="(\\d+)"/.exec(bm[2]);
+        if (sp3) deck.bodySpcBefPts[blv] = Number(sp3[1]);
       }
     }
     deck.masterPh = parsePlaceholderFrames(master);
@@ -444,6 +486,13 @@ function parsePptx(u8) {
           findFrame(layoutPh, sh.placeholder, sh.phIdx) ||
           findFrame(deck.masterPh, sh.placeholder, sh.phIdx);
       }
+      if (!sh.anchor) {
+        /* 垂直アンカーも同じ継承。pandoc 既定ではタイトルがマスターの
+           anchor="ctr" を継承する（実測） */
+        sh.anchor =
+          findAnchor(layoutPh, sh.placeholder, sh.phIdx) ||
+          findAnchor(deck.masterPh, sh.placeholder, sh.phIdx);
+      }
     }
     return {
       index: i + 1,
@@ -456,7 +505,7 @@ function parsePptx(u8) {
   return {
     slideCount: slides.length,
     slides: slides,
-    deck: { w: deck.w, h: deck.h, colors: deck.colors, titleSz: deck.titleSz, bodySz: deck.bodySz, bodyMarL: deck.bodyMarL, bodyIndent: deck.bodyIndent }
+    deck: { w: deck.w, h: deck.h, colors: deck.colors, titleSz: deck.titleSz, bodySz: deck.bodySz, bodyMarL: deck.bodyMarL, bodyIndent: deck.bodyIndent, titleAlgn: deck.titleAlgn, bodyAlgn: deck.bodyAlgn, bodySpcBef: deck.bodySpcBef, bodySpcBefPts: deck.bodySpcBefPts }
   };
 }
 window.__morphoParsePptx = parsePptx;

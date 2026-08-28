@@ -161,6 +161,21 @@ t('docx: ノート以外の本文は残る', () => {
   assert.ok(documentXml.includes('箇条書き'));
 });
 
+t('テキスト位置の系統値: タイトルは中央（アンカー・揃え）、本文は spcBef 20%', () => {
+  /* pandoc 既定マスターの実測値。プレビューの位置合わせの土台 */
+  assert.equal(parsed.deck.titleAlgn, 'ctr');
+  assert.equal(parsed.deck.bodyAlgn[0], 'l');
+  assert.equal(parsed.deck.bodySpcBef[0], 20000);
+  assert.equal(parsed.deck.bodySpcBef[1], 20000);
+  const title = parsed.slides[1].shapes.find((s) => s.placeholder === 'title');
+  assert.equal(title.anchor, 'ctr', 'タイトルの垂直アンカーがマスターから継承されていない');
+  const body = parsed.slides[1].shapes.find((s) => s.placeholder === 'body');
+  assert.equal(body.anchor ?? null, null, '本文は無指定（上揃え）のはず');
+  /* タイトルスライドの ctrTitle も title のアンカーに落ちる */
+  const ctr = parsed.slides[0].shapes.find((s) => s.placeholder === 'ctrTitle');
+  assert.equal(ctr.anchor, 'ctr');
+});
+
 /* ---------- 装飾の OOXML 後処理（飾る力）の統合検査 ---------- */
 
 const DECORS = [
