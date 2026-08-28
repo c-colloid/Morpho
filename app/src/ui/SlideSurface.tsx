@@ -1,7 +1,15 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import type { DeckInfo, Paragraph, SlideOutline, SlideShape, TextRun } from '../converter/types';
+import type {
+  DeckInfo,
+  Paragraph,
+  SlideDecoration,
+  SlideOutline,
+  SlideShape,
+  TextRun,
+} from '../converter/types';
+import { decorationColorHex } from '../design/presets';
 
 /**
  * 実寸プレビュー。
@@ -26,12 +34,15 @@ export function SlideSurface({
   slide,
   deck,
   width,
+  decorations,
   onParagraphPress,
   onParagraphLongPress,
 }: {
   slide: SlideOutline;
   deck: DeckInfo;
   width: number;
+  /** このスライドの装飾。本文の背面に実寸で描く（書き出しと同じ z 順） */
+  decorations?: SlideDecoration[];
   /** 段落のタップ。段落は Pressable がタップを吸うので、親のタップ処理へ流すために使う */
   onParagraphPress?: () => void;
   /** 段落の長押し（改行編集の入口）。未指定なら操作なしの表示専用 */
@@ -41,6 +52,7 @@ export function SlideSurface({
   const slideHpt = deck.h / EMU_PER_PT;
   const scale = width / slideWpt;
   const bg = deck.colors.lt1 ?? '#FFFFFF';
+  const px = (emu: number) => (emu / EMU_PER_PT) * scale;
 
   return (
     <View
@@ -49,6 +61,23 @@ export function SlideSurface({
         { width, height: slideHpt * scale, backgroundColor: bg },
       ]}
     >
+      {decorations?.map((d) => (
+        <View
+          key={d.id}
+          style={{
+            position: 'absolute',
+            left: px(d.x),
+            top: px(d.y),
+            width: px(d.w),
+            height: px(d.h),
+            backgroundColor: decorationColorHex(d.color, deck.colors),
+            opacity: d.opacity / 100,
+            /* roundRect の既定半径 = 短辺の 16.67%（PowerPoint の adj 既定） */
+            borderRadius:
+              d.shape === 'roundRect' ? Math.min(px(d.w), px(d.h)) * 0.1667 : 0,
+          }}
+        />
+      ))}
       {slide.shapes.map((shape, i) => (
         <ShapeBox
           key={i}

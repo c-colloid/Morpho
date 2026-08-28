@@ -9,7 +9,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 
-import type { SlideResult } from '../converter/types';
+import type { SlideDecoration, SlideResult } from '../converter/types';
 import { SlideSurface } from './SlideSurface';
 
 const two = (n: number) => String(n).padStart(2, '0');
@@ -23,11 +23,14 @@ export function SlideShow({
   visible,
   result,
   initialIndex,
+  decorations,
   onClose,
 }: {
   visible: boolean;
   result: SlideResult | null;
   initialIndex: number;
+  /** スライド番号（タイトル込み）→ 装飾。編集画面と同じ対応表を受け取る */
+  decorations?: Map<number, SlideDecoration[]>;
   onClose: () => void;
 }) {
   const { width, height } = useWindowDimensions();
@@ -81,7 +84,12 @@ export function SlideShow({
           >
             {slides.map((s) => (
               <View key={s.index} style={[styles.pageBox, { width, height: stageH }]}>
-                <SlideSurface slide={s} deck={result.deck} width={surfaceW} />
+                <SlideSurface
+                  slide={s}
+                  deck={result.deck}
+                  width={surfaceW}
+                  decorations={decorations?.get(s.index)}
+                />
               </View>
             ))}
           </ScrollView>
@@ -126,7 +134,12 @@ export function SlideShow({
               </Text>
               <Text style={styles.presenterLabel}>次のスライド</Text>
               {next ? (
-                <SlideSurface slide={next} deck={result.deck} width={200} />
+                <SlideSurface
+                  slide={next}
+                  deck={result.deck}
+                  width={200}
+                  decorations={decorations?.get(next.index)}
+                />
               ) : (
                 <Text style={styles.noteEmpty}>（最後のスライドです）</Text>
               )}

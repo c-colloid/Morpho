@@ -31,6 +31,7 @@ import type {
   Diagnostic,
   Paragraph,
   PreviewFormat,
+  SlideDecoration,
   SlideOutline,
   SlideResult,
   TextRun,
@@ -53,6 +54,16 @@ import {
   type DocMeta,
 } from '../store/documents';
 import { checkForUpdate, type UpdateInfo } from '../store/updateCheck';
+import {
+  EMPTY_DESIGN,
+  deleteDesign,
+  loadDesign,
+  newDecorationId,
+  saveDesign,
+  type DesignData,
+} from '../store/designs';
+import { makePreset, type PresetKind } from '../design/presets';
+import { DecorSheet } from './DecorSheet';
 import { sanitizeFileName, shareExport } from '../store/exportShare';
 import { DocumentsModal } from './DocumentsModal';
 import { ExportMenu, type ExportChoice } from './ExportMenu';
@@ -197,6 +208,39 @@ export default function EditorScreen() {
     [flushSave],
   );
 
+  /* ---------- 文書デザインデータ（装飾。三層分離の第3層） ---------- */
+  const [design, setDesign] = useState<DesignData>(EMPTY_DESIGN);
+  const designRef = useRef(design);
+  designRef.current = design;
+  useEffect(() => {
+    if (!activeId) return;
+    /* 前の文書の装飾を非同期ロードの間だけでも見せない・書かせない。
+       残したまま編集されると前の文書の装飾ごと新しい文書へ保存されてしまう */
+    setDesign(EMPTY_DESIGN);
+    let alive = true;
+    void loadDesign(activeId).then((d) => {
+      if (alive) setDesign(d);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [activeId]);
+
+  /* 変更のたびに即保存（小さな JSON なのでデバウンス不要）。
+     updater 内で副作用を起こすと StrictMode の再実行で保存が二重に走るため、
+     next の計算と保存は setState の外で行う */
+  const mutateDesign = useCallback((fn: (prev: DesignData) => DesignData) => {
+    const next = fn(designRef.current);
+    designRef.current = next;
+    setDesign(next);
+    const id = activeIdRef.current;
+    if (id) {
+      void saveDesign(id, next).catch((e) =>
+        Alert.alert('装飾を保存できませんでした', String(e instanceof Error ? e.message : e)),
+      );
+    }
+  }, []);
+
   /* ---------- 更新チェック（起動時に1回・失敗は黙って無視） ---------- */
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   useEffect(() => {
@@ -326,6 +370,7 @@ export default function EditorScreen() {
           await flushSave();
         }
         const next = await deleteDoc(id);
+        await deleteDesign(id);
         setDocs(next);
         if (id === activeIdRef.current) {
           if (next.length > 0) {
@@ -585,6 +630,73 @@ export default function EditorScreen() {
     [breakSheet, patchBody],
   );
 
+  /* ---------- 装飾（飾る力） ---------- */
+  const [decorSheetCi, setDecorSheetCi] = useState<number | null>(null);
+
+  const handleEditDecor = useCallback(
+    (slideIndex: number) => {
+      const ci = contentIndexOf(slideIndex);
+      if (ci === null) return;
+      if (ci < 1) {
+        Alert.alert('タイトルスライドの装飾は未対応です', 'front matter から生成されるためです');
+        return;
+      }
+      setDecorSheetCi(ci);
+    },
+    [contentIndexOf],
+  );
+
+  const handleAddDecor = useCallback(
+    (kind: PresetKind) => {
+      const ci = decorSheetCi;
+      if (ci === null) return;
+      const deck = resultRef.current?.deck;
+      mutateDesign((prev) => ({
+        ...prev,
+        decorations: [
+          ...prev.decorations,
+          makePreset(kind, ci, newDecorationId(), deck?.w ?? 9144000, deck?.h ?? 5143500),
+        ],
+      }));
+    },
+    [decorSheetCi, mutateDesign],
+  );
+
+  const handleUpdateDecor = useCallback(
+    (d: SlideDecoration) => {
+      mutateDesign((prev) => ({
+        ...prev,
+        decorations: prev.decorations.map((x) => (x.id === d.id ? d : x)),
+      }));
+    },
+    [mutateDesign],
+  );
+
+  const handleRemoveDecor = useCallback(
+    (id: string) => {
+      mutateDesign((prev) => ({
+        ...prev,
+        decorations: prev.decorations.filter((x) => x.id !== id),
+      }));
+    },
+    [mutateDesign],
+  );
+
+  /* プレビュー用: スライド番号（タイトル込み）→ 装飾の対応表 */
+  const decorBySlide = useMemo(() => {
+    const map = new Map<number, SlideDecoration[]>();
+    if (design.decorations.length === 0) return map;
+    const { metadata } = splitFrontMatter(source);
+    const off = metadata.title !== undefined ? 1 : 0;
+    for (const d of design.decorations) {
+      const idx = d.contentIndex + off;
+      const arr = map.get(idx);
+      if (arr) arr.push(d);
+      else map.set(idx, [d]);
+    }
+    return map;
+  }, [design, source]);
+
   /* ---------- スライドショー ---------- */
   const [showOpen, setShowOpen] = useState(false);
   const [previewW, setPreviewW] = useState(0);
@@ -627,6 +739,8 @@ export default function EditorScreen() {
           const out = await converter.exportFile(body, choice, {
             metadata,
             stripHtmlComments: true,
+            /* 装飾は pptx にだけ焼き込まれる（ブリッジ側で無関係な形式は無視） */
+            decorations: design.decorations,
           });
           await shareExport(fileName, choice, { base64: out.base64 });
         }
@@ -637,7 +751,7 @@ export default function EditorScreen() {
         setExporting(null);
       }
     },
-    [converter, flushSave],
+    [converter, flushSave, design],
   );
 
   /* ---------- 表示 ---------- */
@@ -804,8 +918,10 @@ export default function EditorScreen() {
                     deck={result.deck}
                     active={s.index === highlighted}
                     width={Math.max(0, previewW - 40 - 26)}
+                    decorations={decorBySlide.get(s.index)}
                     onSelect={handleSelectSlide}
                     onEditNotes={handleEditNotes}
+                    onEditDecor={handleEditDecor}
                     onParagraphLongPress={handleParagraphLongPress}
                   />
                 </View>
@@ -828,10 +944,21 @@ export default function EditorScreen() {
         onApply={handleApplyBreaks}
         onClose={() => setBreakSheet(null)}
       />
+      <DecorSheet
+        visible={decorSheetCi !== null}
+        contentIndex={decorSheetCi ?? 1}
+        decorations={design.decorations.filter((d) => d.contentIndex === decorSheetCi)}
+        deck={result?.deck ?? null}
+        onAdd={handleAddDecor}
+        onUpdate={handleUpdateDecor}
+        onRemove={handleRemoveDecor}
+        onClose={() => setDecorSheetCi(null)}
+      />
       <SlideShow
         visible={showOpen}
         result={result}
         initialIndex={highlighted}
+        decorations={decorBySlide}
         onClose={() => setShowOpen(false)}
       />
       <ExportMenu
@@ -942,16 +1069,20 @@ function SlideCard({
   deck,
   active,
   width,
+  decorations,
   onSelect,
   onEditNotes,
+  onEditDecor,
   onParagraphLongPress,
 }: {
   slide: SlideOutline;
   deck: SlideResult['deck'];
   active: boolean;
   width: number;
+  decorations?: SlideDecoration[];
   onSelect: (slideIndex: number) => void;
   onEditNotes: (slideIndex: number) => void;
+  onEditDecor: (slideIndex: number) => void;
   onParagraphLongPress: (slideIndex: number, paragraph: Paragraph) => void;
 }) {
   const [notesOpen, setNotesOpen] = useState(false);
@@ -965,6 +1096,11 @@ function SlideCard({
         <Text style={styles.slideNum}>{slide.index}</Text>
         <Text style={styles.slideLayout}>{slide.layout ?? 'レイアウト不明'}</Text>
         <View style={styles.slideHeadSpace} />
+        <Pressable hitSlop={8} onPress={() => onEditDecor(slide.index)}>
+          <Text style={styles.notesToggle}>
+            装飾{decorations?.length ? ` ${decorations.length}` : ''}
+          </Text>
+        </Pressable>
         {hasNotes ? (
           <Pressable hitSlop={8} onPress={() => setNotesOpen((v) => !v)}>
             <Text style={[styles.notesToggle, notesOpen && styles.notesToggleOpen]}>
@@ -983,6 +1119,7 @@ function SlideCard({
             slide={slide}
             deck={deck}
             width={width}
+            decorations={decorations}
             onParagraphPress={() => onSelect(slide.index)}
             onParagraphLongPress={(p) => onParagraphLongPress(slide.index, p)}
           />

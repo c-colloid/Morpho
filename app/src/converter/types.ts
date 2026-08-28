@@ -133,11 +133,46 @@ export interface WebResult extends ConvertResultBase {
 
 export type ConvertResult = SlideResult | WebResult;
 
+/**
+ * スライド上の装飾ひとつ（notes/roadmap-pptx.md「飾る力」）。
+ * データは EMU 座標とテーマ参照色で持ち、変換器を自前 writer に
+ * 差し替えても生き残る形にする。pandoc 固有の語彙は含めない。
+ */
+export type DecorationShape = 'rect' | 'roundRect';
+
+export interface DecorationColor {
+  /** テーマ配色の参照（accent1〜accent6）。テンプレート差し替えに追従する */
+  scheme?: 'accent1' | 'accent2' | 'accent3' | 'accent4' | 'accent5' | 'accent6';
+  /** 直接指定（#RRGGBB）。scheme が無いときに使う */
+  hex?: string;
+}
+
+export interface SlideDecoration {
+  /** 文書内で一意。グループ化（将来）のメンバー参照にも使う */
+  id: string;
+  /** コンテンツスライド番号（1 始まり・タイトルスライドを含まない） */
+  contentIndex: number;
+  shape: DecorationShape;
+  /** スライド座標系の EMU（914400 = 1 inch） */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  color: DecorationColor;
+  /** 0〜100（%） */
+  opacity: number;
+}
+
 export interface ConvertOptions {
   /** HTML コメントを Lua フィルタで落とす（CLAUDE.md 落とし穴 7） */
   stripHtmlComments?: boolean;
   /** front matter を自前パースして渡す（CLAUDE.md 落とし穴 1） */
   metadata?: Record<string, string>;
+  /**
+   * 書き出しに適用する装飾。pptx のみ（OOXML 後処理で spTree に注入）。
+   * 他形式では無視される
+   */
+  decorations?: SlideDecoration[];
 }
 
 /** 変換器が生成できる出力形式。md はエディタの内容そのものなので含めない */

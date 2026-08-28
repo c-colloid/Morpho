@@ -52,7 +52,7 @@ setTimeout(function () {
 <body>
 <script type="module">
 import { createPandocInstance } from 'https://cdn.jsdelivr.net/npm/pandoc-wasm@1.1.0/src/core.js';
-import { unzipSync } from 'fflate';
+import { unzipSync, zipSync, strToU8 } from 'fflate';
 
 window.__booted = true;
 var RN = window.__rn;
@@ -491,6 +491,75 @@ function classify(warnings, stderr) {
   return buckets;
 }
 
+/* ---- 装飾の OOXML 後処理（notes/roadmap-pptx.md「飾る力」） ----
+   pandoc が吐いた pptx の spTree に <p:sp> を注入する。
+   既存の図形より前（grpSpPr の直後）に置くと本文の背面に描かれる。
+   レイアウト名の書き換え（配線盤）と同じ技術で、pandoc 本体は差し替えない。 */
+
+function decorFillXml(color, opacity) {
+  var alpha = opacity < 100 ? '<a:alpha val="' + Math.round(opacity * 1000) + '"/>' : '';
+  if (color && color.scheme) {
+    return '<a:solidFill><a:schemeClr val="' + color.scheme + '">' + alpha +
+      '</a:schemeClr></a:solidFill>';
+  }
+  var hex = ((color && color.hex) || '888888').replace('#', '').toUpperCase();
+  return '<a:solidFill><a:srgbClr val="' + hex + '">' + alpha + '</a:srgbClr></a:solidFill>';
+}
+
+function buildDecorSp(d, cNvPrId) {
+  var prst = d.shape === 'roundRect' ? 'roundRect' : 'rect';
+  var opacity = d.opacity == null ? 100 : d.opacity;
+  return '<p:sp><p:nvSpPr>' +
+    '<p:cNvPr id="' + cNvPrId + '" name="MorphoDecor ' + d.id + '"/>' +
+    '<p:cNvSpPr/><p:nvPr/></p:nvSpPr>' +
+    '<p:spPr><a:xfrm>' +
+    '<a:off x="' + Math.round(d.x) + '" y="' + Math.round(d.y) + '"/>' +
+    '<a:ext cx="' + Math.round(d.w) + '" cy="' + Math.round(d.h) + '"/>' +
+    '</a:xfrm>' +
+    '<a:prstGeom prst="' + prst + '"><a:avLst/></a:prstGeom>' +
+    decorFillXml(d.color, opacity) +
+    '<a:ln><a:noFill/></a:ln>' +
+    '</p:spPr>' +
+    '<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr/></a:p></p:txBody>' +
+    '</p:sp>';
+}
+window.__morphoBuildDecorSp = buildDecorSp;
+
+/* zip 内の slideN.xml へ装飾を注入して zip を作り直す。
+   contentIndex はタイトルスライドを含まない 1 始まり。titleOffset で実スライドへ写す */
+function applyDecorations(bytes, decorations, titleOffset) {
+  if (!decorations || !decorations.length) return bytes;
+  var zip = unzipSync(bytes);
+  var dec2 = new TextDecoder();
+  var bySlide = {};
+  decorations.forEach(function (d) {
+    var n = d.contentIndex + titleOffset;
+    (bySlide[n] = bySlide[n] || []).push(d);
+  });
+  Object.keys(bySlide).forEach(function (n) {
+    var name = 'ppt/slides/slide' + n + '.xml';
+    if (!zip[name]) return; /* スライド数がずれていたら安全側（注入しない） */
+    var xml = dec2.decode(zip[name]);
+    /* cNvPr id はスライド内で一意。既存の最大値の続きから振る */
+    var maxId = 0;
+    var idRe = /\\bid="(\\d+)"/g;
+    var im;
+    while ((im = idRe.exec(xml)) !== null) {
+      if (Number(im[1]) > maxId) maxId = Number(im[1]);
+    }
+    var sps = bySlide[n]
+      .map(function (d, i) { return buildDecorSp(d, maxId + 1 + i); })
+      .join('');
+    var marker = '</p:grpSpPr>';
+    var at = xml.indexOf(marker);
+    if (at < 0) return;
+    at += marker.length;
+    zip[name] = strToU8(xml.slice(0, at) + sps + xml.slice(at));
+  });
+  return zipSync(zip);
+}
+window.__morphoApplyDecorations = applyDecorations;
+
 async function convert(id, md, opts, format) {
   return serialized(async function () { await doConvert(id, md, opts, format); });
 }
@@ -624,6 +693,14 @@ async function doExport(id, md, opts, format) {
 
     var out = res.files && res.files[name];
     if (!out) throw new Error('pandoc produced no ' + name);
+
+    /* 装飾は pptx にだけ OOXML 後処理で焼き込む */
+    if (format === 'pptx' && opts.decorations && opts.decorations.length) {
+      var titleOffset = opts.metadata && opts.metadata.title ? 1 : 0;
+      var processed = applyDecorations(
+        new Uint8Array(await out.arrayBuffer()), opts.decorations, titleOffset);
+      out = new Blob([processed]);
+    }
 
     var reader = new FileReader();
     var base64 = await new Promise(function (resolve, reject) {

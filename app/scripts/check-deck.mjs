@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
 import assert from 'node:assert/strict';
-import { unzipSync } from 'fflate';
+import { unzipSync, zipSync, strToU8, strFromU8 } from 'fflate';
 import { convert } from '../node_modules/pandoc-wasm/src/index.node.js';
 
 const src = readFileSync(new URL('../src/converter/bridgeHtml.ts', import.meta.url), 'utf8');
@@ -20,7 +20,7 @@ const win = { __rn: () => {} };
 const ctx = createContext({
   window: win,
   fetch: () => new Promise(() => {}),
-  unzipSync,             // ブリッジ内の自由変数として注入
+  unzipSync, zipSync, strToU8,   // ブリッジ内の自由変数として注入
   performance, TextDecoder, WebAssembly, console, Promise,
 });
 runInContext(mod, ctx);
@@ -159,6 +159,64 @@ t('docx: ::: notes ::: が本文から除去される（落とし穴 8）', () =
 t('docx: ノート以外の本文は残る', () => {
   assert.ok(documentXml.includes('一枚目'));
   assert.ok(documentXml.includes('箇条書き'));
+});
+
+/* ---------- 装飾の OOXML 後処理（飾る力）の統合検査 ---------- */
+
+const DECORS = [
+  {
+    id: 'dtest1',
+    contentIndex: 1,
+    shape: 'rect',
+    x: 0, y: 0, w: 9144000, h: 300000,
+    color: { scheme: 'accent1' },
+    opacity: 100,
+  },
+  {
+    id: 'dtest2',
+    contentIndex: 1,
+    shape: 'roundRect',
+    x: 457200, y: 1000000, w: 8229600, h: 3000000,
+    color: { hex: '#12AB34' },
+    opacity: 15,
+  },
+];
+
+/* metadata.title あり → タイトルスライドが1枚 → contentIndex 1 は slide2.xml */
+const decorated = win.__morphoApplyDecorations(bytes, DECORS, 1);
+const dzip = unzipSync(new Uint8Array(decorated));
+const slide2 = strFromU8(dzip['ppt/slides/slide2.xml']);
+
+t('装飾: 対象スライドに MorphoDecor の sp が注入される', () => {
+  assert.ok(slide2.includes('MorphoDecor dtest1'));
+  assert.ok(slide2.includes('MorphoDecor dtest2'));
+  const s1 = strFromU8(dzip['ppt/slides/slide1.xml']);
+  assert.ok(!s1.includes('MorphoDecor'), 'タイトルスライドに注入されている');
+});
+t('装飾: 既存図形の前（本文の背面）に入り、cNvPr id が重複しない', () => {
+  assert.ok(slide2.indexOf('MorphoDecor') < slide2.indexOf('<p:ph'), '既存図形より後ろにある');
+  const ids = [...slide2.matchAll(/<p:cNvPr id="(\d+)"/g)].map((m) => m[1]);
+  assert.equal(new Set(ids).size, ids.length, `id が重複: ${ids.join(',')}`);
+});
+t('装飾: テーマ参照色・不透明度・直接指定色が XML に出る', () => {
+  assert.ok(slide2.includes('<a:schemeClr val="accent1">'));
+  assert.ok(slide2.includes('<a:srgbClr val="12AB34"><a:alpha val="15000"/>'));
+  assert.ok(slide2.includes('prst="roundRect"'));
+});
+t('装飾: 注入後も zip は壊れず、既存の解析結果が変わらない', () => {
+  /* 注入図形はテキストを持たないので、テキスト中心の自前パーサには
+     写らないのが正しい（プレビューの装飾はデザインデータから直接描く）。
+     ここで確かめるのは「壊していないこと」 */
+  const reparsed = win.__morphoParsePptx(new Uint8Array(decorated));
+  assert.equal(reparsed.slideCount, parsed.slideCount);
+  assert.deepEqual(
+    Array.from(reparsed.slides[1].shapes, (s) => s.placeholder),
+    Array.from(parsed.slides[1].shapes, (s) => s.placeholder),
+  );
+  assert.equal(
+    reparsed.slides[1].notes.map((p) => p.runs.map((r) => r.text).join('')).join(''),
+    'ノート本文。',
+  );
 });
 
 console.log(`\n${n} 件すべて通過`);
