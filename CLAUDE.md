@@ -104,6 +104,10 @@ did not find expected alphabetic or numeric character
 **対処:** リーダーを `markdown-yaml_metadata_block` に固定し、front matter はアプリ側で自前パースして
 `options.metadata` として渡す。明示的なスライド区切りは `***` を使わせる。
 
+なお front matter を剥がさず YAML と `options.metadata` を**両方**渡すと、
+docx では Title 段落と「title: …」の生テーブルが重複出力される（実測）。
+剥がして渡す方針はこの理由でも必須。
+
 ### 2. 入力フォーマットの Auto 検出は使わない
 
 pandoc.org/app の Auto は拡張子ベースの検出で、貼り付けテキストには効かない。
@@ -161,6 +165,15 @@ Not rendering RawBlock (Format "html") "<!--...-->"
 
 Markdown で最も一般的なメモ書き手段なので、実文書には普通に入っている。
 放置すると本当に見るべき警告が埋もれる。Lua フィルタで除去する（`docs/index.html` の `STRIP_LUA`）。
+
+### 8. `::: notes :::` は docx 出力で無警告のまま本文に混入する
+
+pptx は発表者ノートを notesSlideN.xml に隔離するが、docx には発表者ノートの
+概念自体が無く、中身が無印の BodyText 段落として本文に溶ける。警告はゼロ。
+**docx 書き出し時は Lua フィルタ
+`function Div(el) if el.classes:includes('notes') then return {} end end`
+で除去する**（除去できることは実測済み）。pptx では除去しない（ノート欄に入るのが正）。
+HTML 出力では `<div class="notes">` として本文に出る（クラスは残るので CSS で隠せる）。
 
 ---
 

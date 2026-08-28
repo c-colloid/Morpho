@@ -51,6 +51,23 @@ t('タイトルプレースホルダを見分ける', () => {
   assert.equal(shape.paragraphs[0].runs[0].text, '見出し');
 });
 
+t('Web プレビュー: CSS 注入は </head> 直前・.notes 非表示・和文フォント指定', () => {
+  const decorate = win.__morphoDecorateWebHtml;
+  assert.equal(typeof decorate, 'function');
+  const out = decorate('<html><head><style>a{}</style></head><body>x</body></html>');
+  const inject = out.indexOf('.notes{display:none}');
+  assert.ok(inject > 0, '.notes 非表示が入っていない');
+  assert.ok(inject < out.indexOf('</head>'), '注入が </head> より後ろにある');
+  assert.ok(out.includes('Hiragino Sans'), '和文フォント指定が無い');
+  assert.equal(out.indexOf('<style>a{}</style>') > 0, true, '既存の CSS を壊した');
+});
+
+t('Web プレビュー: </head> が無い断片 HTML には先頭に注入する', () => {
+  const out = win.__morphoDecorateWebHtml('<p>断片</p>');
+  assert.ok(out.startsWith('<style>'));
+  assert.ok(out.endsWith('<p>断片</p>'));
+});
+
 t('行内改行 <a:br/> を \\n として拾う（原稿の行末バックスラッシュ由来）', () => {
   const xml = sp('<p:ph idx="1"/>',
     '<a:p><a:r><a:t>一行目は</a:t></a:r><a:br /><a:r><a:t>二行目に続く</a:t></a:r></a:p>');

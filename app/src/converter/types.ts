@@ -102,16 +102,36 @@ export interface DeckInfo {
   bodyIndent: number[];
 }
 
-export interface ConvertResult {
-  slideCount: number;
-  slides: SlideOutline[];
-  deck: DeckInfo;
+/**
+ * プレビューの形式。スライド（pptx を解析したシーン）と Web（完成 HTML）。
+ * 文書（docx を解析したブロック列）はプレビュー実装時に足す。
+ * ExportFormat（書き出すコンテナ形式）とは別レイヤーの概念。
+ */
+export type PreviewFormat = 'slides' | 'web';
+
+interface ConvertResultBase {
   diagnostics: Diagnostic[];
   /** 変換だけにかかった時間 */
   ms: number;
   /** 出力ファイルのバイト数 */
   bytes: number;
 }
+
+/** スライドプレビュー: 実際の pptx を解析したシーン */
+export interface SlideResult extends ConvertResultBase {
+  kind: 'slides';
+  slideCount: number;
+  slides: SlideOutline[];
+  deck: DeckInfo;
+}
+
+/** Web プレビュー: 変換器が返す完成 HTML。WebView 等でそのまま描画する */
+export interface WebResult extends ConvertResultBase {
+  kind: 'web';
+  html: string;
+}
+
+export type ConvertResult = SlideResult | WebResult;
 
 export interface ConvertOptions {
   /** HTML コメントを Lua フィルタで落とす（CLAUDE.md 落とし穴 7） */
@@ -133,7 +153,19 @@ export interface ExportResult {
 
 export interface Converter {
   readonly name: string;
-  convert(markdown: string, options?: ConvertOptions): Promise<ConvertResult>;
+  /** format 省略時は 'slides'。既存の呼び出しはそのまま SlideResult に絞り込まれる */
+  convert(
+    markdown: string,
+    options?: ConvertOptions & { format?: 'slides' },
+  ): Promise<SlideResult>;
+  convert(
+    markdown: string,
+    options: ConvertOptions & { format: 'web' },
+  ): Promise<WebResult>;
+  convert(
+    markdown: string,
+    options: ConvertOptions & { format: PreviewFormat },
+  ): Promise<ConvertResult>;
   exportFile(
     markdown: string,
     format: ExportFormat,

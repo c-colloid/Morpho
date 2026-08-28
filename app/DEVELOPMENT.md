@@ -200,7 +200,7 @@ npm run check
 | `check-cursor.mjs` | カーソル位置 → スライド番号の対応 |
 | `check-notes-edit.mjs` | 発表者ノートの読み取りと書き戻し |
 | `check-linebreak.mjs` | 改行位置編集（正規化・分割・オフセット適用・対象特定） |
-| `check-deck.mjs` | **統合検査**: 本物の pandoc.wasm で pptx を作り、座標・配色・字サイズ・字下げ・改行・ノートの継承解決までを確認 |
+| `check-deck.mjs` | **統合検査**: 本物の pandoc.wasm で pptx / html / docx を作り、座標・配色・字サイズ・字下げ・改行・ノート・Web の CSS 注入・docx のノート除去までを確認 |
 
 ### pandoc の実出力を見る
 
@@ -252,6 +252,8 @@ flex:1 の兄弟がもう1人いることが算術で確定した。
 ## まだやっていないこと
 
 - テンプレート取り込みとレイアウト名の書き換え（配線盤 UI）
+- 文書（docx）プレビュー — 設計と実出力調査は済み
+  （`../notes/preview-formats.md`、`scripts/dump-docx.mjs`）。飾る力（v0.6）の後
 - 表のプレビュー描画（`<p:graphicFrame>` の解析）
 - iCloud Drive の .md を開いて上書き保存する経路（→「外部アプリ連携」の
   open in place。development build と Developer Program の課金判断が要る）

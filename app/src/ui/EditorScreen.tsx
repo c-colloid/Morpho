@@ -23,13 +23,18 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LatestOnly } from '../converter/latestOnly';
 import { splitFrontMatter } from '../converter/frontMatter';
 import { usePandocConverter } from '../converter/usePandocConverter';
+import { WebView } from 'react-native-webview';
+
 import type {
   BootStatus,
   ConvertResult,
   Diagnostic,
   Paragraph,
+  PreviewFormat,
   SlideOutline,
+  SlideResult,
   TextRun,
+  WebResult,
 } from '../converter/types';
 import { slideIndexAtCursor, slideSegments } from '../preview/cursorSlide';
 import { getNotes, setNotes } from '../preview/notesEdit.ts';
@@ -121,9 +126,16 @@ export default function EditorScreen() {
   const wide = width >= 700;
 
   const [source, setSource] = useState('');
-  const [result, setResult] = useState<ConvertResult | null>(null);
+  const [result, setResult] = useState<SlideResult | null>(null);
+  const [webResult, setWebResult] = useState<WebResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  /* プレビューの形式。変換はアクティブな形式だけを走らせる
+     （ブリッジは単一 FIFO 直列・中断不可のため。notes/preview-formats.md） */
+  const [previewFormat, setPreviewFormat] = useState<PreviewFormat>('slides');
+  const previewFormatRef = useRef(previewFormat);
+  previewFormatRef.current = previewFormat;
 
   /* ---------- 文書 ---------- */
   const [docs, setDocs] = useState<DocMeta[]>([]);
@@ -135,7 +147,7 @@ export default function EditorScreen() {
   sourceRef.current = source;
   const statusRef = useRef(status.phase);
   statusRef.current = status.phase;
-  const resultRef = useRef<ConvertResult | null>(null);
+  const resultRef = useRef<SlideResult | null>(null);
   resultRef.current = result;
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
@@ -218,12 +230,14 @@ export default function EditorScreen() {
   const resetPreviewFor = useCallback(
     (text: string) => {
       setResult(null);
+      setWebResult(null);
       setError(null);
       setCurrentSlide(1);
       cardYs.current.clear();
+      webScrollY.current = 0;
       if (statusRef.current === 'ready') {
         setBusy(true);
-        runnerRef.current?.submit(text);
+        runnerRef.current?.submit({ md: text, format: previewFormatRef.current });
       }
     },
     [],
@@ -325,11 +339,15 @@ export default function EditorScreen() {
   /* ---------- 変換 ---------- */
   const runner = useMemo(
     () =>
-      new LatestOnly<string, ConvertResult>(
-        (md) => {
+      new LatestOnly<{ md: string; format: PreviewFormat }, ConvertResult>(
+        (job) => {
           // CLAUDE.md 落とし穴 1: front matter は自前で剥がして metadata で渡す
-          const { metadata, body } = splitFrontMatter(md);
-          return converter.convert(body, { metadata, stripHtmlComments: true });
+          const { metadata, body } = splitFrontMatter(job.md);
+          return converter.convert(body, {
+            metadata,
+            stripHtmlComments: true,
+            format: job.format,
+          });
         },
         (r, e) => {
           setBusy(false);
@@ -337,7 +355,13 @@ export default function EditorScreen() {
             setError(e.message);
           } else if (r) {
             setError(null);
-            setResult(r);
+            if (r.kind === 'web') {
+              /* HTML が同一なら state を差し替えない。WebView の再ロード
+                 （＝スクロール先頭戻り）を無駄に起こさないため */
+              setWebResult((prev) => (prev && prev.html === r.html ? prev : r));
+            } else {
+              setResult(r);
+            }
           }
         },
       ),
@@ -354,17 +378,39 @@ export default function EditorScreen() {
     if (convTimer.current) clearTimeout(convTimer.current);
     convTimer.current = setTimeout(() => {
       setBusy(true);
-      runner.submit(source);
+      /* 形式は ref で読む。切り替え時は handleFormatChange が即時変換するので、
+         ここを previewFormat に依存させると同じ入力を二重に変換してしまう */
+      runner.submit({ md: source, format: previewFormatRef.current });
     }, IDLE_MS);
     return () => {
       if (convTimer.current) clearTimeout(convTimer.current);
     };
   }, [source, status.phase, runner, activeId]);
 
+  /* 形式の切り替え。古い結果は残したまま（切り戻しで即表示）、
+     その形式の最新結果をすぐ取りに行く */
+  const handleFormatChange = useCallback((f: PreviewFormat) => {
+    setPreviewFormat(f);
+    previewFormatRef.current = f;
+    /* 直前のタイピングで武装済みのデバウンスを解除。放置すると
+       同じ入力の変換がもう一度走る（ここで即時変換するため不要） */
+    if (convTimer.current) {
+      clearTimeout(convTimer.current);
+      convTimer.current = null;
+    }
+    if (statusRef.current === 'ready') {
+      setBusy(true);
+      runnerRef.current?.submit({ md: sourceRef.current, format: f });
+    }
+  }, []);
+
   /* ---------- カーソルとプレビューの同期 ---------- */
   const [currentSlide, setCurrentSlide] = useState(1);
   const cardYs = useRef(new Map<number, number>());
   const previewRef = useRef<ScrollView>(null);
+  /* Web プレビューのスクロール位置。再ロード（再変換）後に復元する */
+  const webViewRef = useRef<WebView>(null);
+  const webScrollY = useRef(0);
 
   const onSelectionChange = useCallback(
     (e: { nativeEvent: { selection: { start: number } } }) => {
@@ -608,7 +654,8 @@ export default function EditorScreen() {
       <HeaderBar
         status={status}
         busy={busy}
-        result={result}
+        result={previewFormat === 'web' ? webResult : result}
+        canPlay={previewFormat === 'slides' && result !== null}
         onOpenDocs={() => setDocsOpen(true)}
         onOpenExport={() => setExportOpen(true)}
         onPlay={() => setShowOpen(true)}
@@ -643,36 +690,101 @@ export default function EditorScreen() {
         >
           <View style={styles.paneLabelRow}>
             <Text style={styles.paneLabel}>
-              プレビュー{result ? ` · ${result.slideCount} 枚` : ''}
+              プレビュー
+              {previewFormat === 'slides' && result ? ` · ${result.slideCount} 枚` : ''}
             </Text>
+            <View style={styles.formatSeg}>
+              {(
+                [
+                  ['slides', 'スライド'],
+                  ['web', 'Web'],
+                ] as Array<[PreviewFormat, string]>
+              ).map(([f, label]) => (
+                <Pressable
+                  key={f}
+                  style={[styles.formatBtn, previewFormat === f && styles.formatBtnOn]}
+                  onPress={() => handleFormatChange(f)}
+                >
+                  <Text
+                    style={[styles.formatText, previewFormat === f && styles.formatTextOn]}
+                  >
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
           </View>
-          <ScrollView ref={previewRef} contentContainerStyle={styles.previewBody}>
-            {error && (
-              <View style={[styles.diag, styles.critical]}>
-                <Text style={styles.diagLabel}>変換に失敗しました</Text>
-                <Text style={styles.diagText}>{error}</Text>
-              </View>
-            )}
-            {result?.diagnostics.map((d, i) => (
-              <DiagnosticRow key={i} diagnostic={d} />
-            ))}
-            {result?.slides.map((s) => (
-              <View
-                key={s.index}
-                onLayout={(e) => cardYs.current.set(s.index, e.nativeEvent.layout.y)}
-              >
-                <SlideCard
-                  slide={s}
-                  deck={result.deck}
-                  active={s.index === highlighted}
-                  width={Math.max(0, previewW - 40 - 26)}
-                  onSelect={handleSelectSlide}
-                  onEditNotes={handleEditNotes}
-                  onParagraphLongPress={handleParagraphLongPress}
+          {previewFormat === 'web' ? (
+            <View style={styles.webPane}>
+              {error && (
+                <View style={[styles.diag, styles.critical]}>
+                  <Text style={styles.diagLabel}>変換に失敗しました</Text>
+                  <Text style={styles.diagText}>{error}</Text>
+                </View>
+              )}
+              {webResult?.diagnostics.map((d, i) => (
+                <DiagnosticRow key={i} diagnostic={d} />
+              ))}
+              {webResult ? (
+                <WebView
+                  ref={webViewRef}
+                  style={styles.webView}
+                  originWhitelist={['*']}
+                  source={{ html: webResult.html }}
+                  /* 実出力の表示専用。ページ内アンカー（about:blank#fn1 等）は
+                     通し、外部リンクだけブロックする */
+                  onShouldStartLoadWithRequest={(req) =>
+                    req.url.startsWith('about:blank') || req.url.startsWith('data:')
+                  }
+                  setSupportMultipleWindows={false}
+                  /* 再変換のたびに文書ごとロードし直されるので、
+                     スクロール位置を覚えてロード後に復元する */
+                  onScroll={(e) => {
+                    webScrollY.current = e.nativeEvent.contentOffset.y;
+                  }}
+                  onLoadEnd={() => {
+                    if (webScrollY.current > 0) {
+                      webViewRef.current?.injectJavaScript(
+                        'window.scrollTo(0, ' + Math.round(webScrollY.current) + '); true;',
+                      );
+                    }
+                  }}
                 />
-              </View>
-            ))}
-          </ScrollView>
+              ) : (
+                <View style={styles.webEmpty}>
+                  <ActivityIndicator />
+                </View>
+              )}
+            </View>
+          ) : (
+            <ScrollView ref={previewRef} contentContainerStyle={styles.previewBody}>
+              {error && (
+                <View style={[styles.diag, styles.critical]}>
+                  <Text style={styles.diagLabel}>変換に失敗しました</Text>
+                  <Text style={styles.diagText}>{error}</Text>
+                </View>
+              )}
+              {result?.diagnostics.map((d, i) => (
+                <DiagnosticRow key={i} diagnostic={d} />
+              ))}
+              {result?.slides.map((s) => (
+                <View
+                  key={s.index}
+                  onLayout={(e) => cardYs.current.set(s.index, e.nativeEvent.layout.y)}
+                >
+                  <SlideCard
+                    slide={s}
+                    deck={result.deck}
+                    active={s.index === highlighted}
+                    width={Math.max(0, previewW - 40 - 26)}
+                    onSelect={handleSelectSlide}
+                    onEditNotes={handleEditNotes}
+                    onParagraphLongPress={handleParagraphLongPress}
+                  />
+                </View>
+              ))}
+            </ScrollView>
+          )}
         </View>
       </View>
 
@@ -721,6 +833,7 @@ function HeaderBar({
   status,
   busy,
   result,
+  canPlay,
   onOpenDocs,
   onOpenExport,
   onPlay,
@@ -728,6 +841,8 @@ function HeaderBar({
   status: BootStatus;
   busy: boolean;
   result: ConvertResult | null;
+  /** ▶再生はスライド形式のときだけ */
+  canPlay: boolean;
   onOpenDocs: () => void;
   onOpenExport: () => void;
   onPlay: () => void;
@@ -769,10 +884,10 @@ function HeaderBar({
       )}
       <Pressable
         style={({ pressed }) => [styles.headerBtn, pressed && styles.headerBtnPressed]}
-        disabled={!result}
+        disabled={!canPlay}
         onPress={onPlay}
       >
-        <Text style={[styles.headerBtnText, !result && styles.headerBtnDisabled]}>▶ 再生</Text>
+        <Text style={[styles.headerBtnText, !canPlay && styles.headerBtnDisabled]}>▶ 再生</Text>
       </Pressable>
       <Pressable
         style={({ pressed }) => [styles.headerBtn, pressed && styles.headerBtnPressed]}
@@ -805,7 +920,7 @@ function SlideCard({
   onParagraphLongPress,
 }: {
   slide: SlideOutline;
-  deck: ConvertResult['deck'];
+  deck: SlideResult['deck'];
   active: boolean;
   width: number;
   onSelect: (slideIndex: number) => void;
@@ -917,6 +1032,28 @@ const styles = StyleSheet.create({
   },
   paneLabel: { fontSize: 11, letterSpacing: 0.6, color: '#666C78' },
   paneMeta: { fontSize: 11, color: '#666C78', fontVariant: ['tabular-nums'] },
+
+  formatSeg: {
+    flexDirection: 'row',
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: '#BFC4CD',
+    overflow: 'hidden',
+  },
+  formatBtn: { paddingHorizontal: 12, paddingVertical: 4, backgroundColor: '#FFFFFF' },
+  formatBtnOn: { backgroundColor: '#1B3FE0' },
+  formatText: { fontSize: 12, color: '#14161B' },
+  formatTextOn: { color: '#FFFFFF', fontWeight: '600' },
+
+  webPane: { flex: 1, paddingHorizontal: 20, paddingBottom: 20, gap: 12 },
+  webView: {
+    flex: 1,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#BFC4CD',
+    backgroundColor: '#FFFFFF',
+  },
+  webEmpty: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
   editor: {
     flex: 1,

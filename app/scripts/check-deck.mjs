@@ -110,4 +110,55 @@ t('ノートが該当スライドに載る', () => {
   assert.equal(withNotes.notes[0].runs.map((r) => r.text).join(''), 'ノート本文。');
 });
 
+/* ---------- Web プレビュー（to: html）の統合検査 ---------- */
+
+const webRes = await convert(
+  {
+    from: 'markdown-yaml_metadata_block+east_asian_line_breaks',
+    to: 'html',
+    standalone: true,
+    metadata: { title: '統合', author: '検査' },
+  },
+  md, {},
+);
+const webHtml = win.__morphoDecorateWebHtml(webRes.stdout);
+
+t('web: standalone HTML が出て CSS 注入される', () => {
+  assert.ok(webHtml.includes('<!DOCTYPE html'));
+  assert.ok(webHtml.includes('.notes{display:none}'));
+  assert.ok(webHtml.indexOf('.notes{display:none}') < webHtml.indexOf('</head>'));
+});
+t('web: 見出しと行内改行が実出力に残る', () => {
+  assert.match(webHtml, /<h1[^>]*>一枚目<\/h1>/);
+  assert.ok(webHtml.includes('改行位置を<br />'));
+});
+t('web: notes は div class="notes" で残る（CSS で隠す方針の前提）', () => {
+  assert.ok(webHtml.includes('class="notes"'));
+  assert.ok(webHtml.includes('ノート本文。'));
+});
+
+/* ---------- docx 書き出しのノート除去（落とし穴 8）の統合検査 ---------- */
+
+const docxRes = await convert(
+  {
+    from: 'markdown-yaml_metadata_block+east_asian_line_breaks',
+    to: 'docx',
+    'output-file': 'o.docx',
+    metadata: { title: '統合', author: '検査' },
+    filters: ['drop-notes.lua'],
+  },
+  md,
+  { 'drop-notes.lua': win.__morphoDropNotesLua },
+);
+const docxZip = unzipSync(new Uint8Array(await docxRes.files['o.docx'].arrayBuffer()));
+const documentXml = new TextDecoder().decode(docxZip['word/document.xml']);
+
+t('docx: ::: notes ::: が本文から除去される（落とし穴 8）', () => {
+  assert.ok(!documentXml.includes('ノート本文。'), 'ノートが docx 本文に漏れている');
+});
+t('docx: ノート以外の本文は残る', () => {
+  assert.ok(documentXml.includes('一枚目'));
+  assert.ok(documentXml.includes('箇条書き'));
+});
+
 console.log(`\n${n} 件すべて通過`);

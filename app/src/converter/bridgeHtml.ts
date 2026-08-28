@@ -74,6 +74,18 @@ var STRIP_LUA = [
   ''
 ].join('\\n');
 
+/* CLAUDE.md 落とし穴 8: ::: notes ::: は docx で無警告のまま本文に混入する */
+var DROP_NOTES_LUA = [
+  'function Div(el)',
+  "  if el.classes:includes('notes') then return {} end",
+  'end',
+  ''
+].join('\\n');
+
+/* CLAUDE.md 落とし穴 1・2: リーダーは固定し、Auto 検出には頼らない。
+   east_asian_line_breaks: 和文の行内折り返しが半角スペースにならない（実測済み） */
+var READER = 'markdown-yaml_metadata_block+east_asian_line_breaks';
+
 /* CLAUDE.md「警告の重要度分類」 */
 var RULES = [
   { re: /not found in resource path/i, kind: 'critical',
@@ -479,18 +491,65 @@ function classify(warnings, stderr) {
   return buckets;
 }
 
-async function convert(id, md, opts) {
-  return serialized(async function () { await doConvert(id, md, opts); });
+async function convert(id, md, opts, format) {
+  return serialized(async function () { await doConvert(id, md, opts, format); });
 }
 
-async function doConvert(id, md, opts) {
+/* Web プレビュー用: pandoc の standalone HTML に、日本語フォント指定と
+   .notes の非表示（発表者ノートはクラスを残したまま隠す）を注入する。
+   pandoc の既定 CSS は <style> で head に入るので、</head> 直前に置けば上書きが効く */
+var WEB_CSS = '<style>' +
+  'body{font-family:-apple-system,"Hiragino Sans","Hiragino Kaku Gothic ProN",sans-serif;}' +
+  '.notes{display:none}' +
+  '</style>';
+function decorateWebHtml(html) {
+  var i = html.indexOf('</head>');
+  if (i < 0) return WEB_CSS + html;
+  return html.slice(0, i) + WEB_CSS + html.slice(i);
+}
+window.__morphoDecorateWebHtml = decorateWebHtml;
+window.__morphoDropNotesLua = DROP_NOTES_LUA;
+
+async function doConvertWeb(id, md, opts) {
+  var options = {
+    from: READER,
+    to: 'html',
+    standalone: true
+  };
+  if (opts.metadata && Object.keys(opts.metadata).length) options.metadata = opts.metadata;
+  var files = {};
+  if (opts.stripHtmlComments) {
+    files['strip.lua'] = STRIP_LUA;
+    options.filters = ['strip.lua'];
+  }
+
+  var t0 = performance.now();
+  var res = await pandoc.convert(options, md, files);
+  var ms = Math.round(performance.now() - t0);
+
+  var html = res.stdout || '';
+  if (!html) throw new Error('pandoc produced no html');
+
+  RN({
+    id: id,
+    type: 'ok',
+    result: {
+      kind: 'web',
+      html: decorateWebHtml(html),
+      diagnostics: classify(res.warnings, res.stderr),
+      ms: ms,
+      bytes: new Blob([html]).size
+    }
+  });
+}
+
+async function doConvert(id, md, opts, format) {
   try {
     if (!pandoc) throw new Error('converter is not ready yet');
     opts = opts || {};
+    if (format === 'web') { await doConvertWeb(id, md, opts); return; }
     var options = {
-      /* CLAUDE.md 落とし穴 1・2: リーダーは固定し、Auto 検出には頼らない */
-      /* east_asian_line_breaks: 和文の行内折り返しが半角スペースにならない（実測済み） */
-      from: 'markdown-yaml_metadata_block+east_asian_line_breaks',
+      from: READER,
       to: 'pptx',
       'output-file': 'out.pptx'
     };
@@ -514,6 +573,7 @@ async function doConvert(id, md, opts) {
       id: id,
       type: 'ok',
       result: {
+        kind: 'slides',
         slideCount: parsed.slideCount,
         slides: parsed.slides,
         deck: parsed.deck,
@@ -527,7 +587,7 @@ async function doConvert(id, md, opts) {
   }
 }
 
-window.__morphoConvert = function (id, md, opts) { convert(id, md, opts); };
+window.__morphoConvert = function (id, md, opts, format) { convert(id, md, opts, format); };
 
 /* 書き出し。プレビューと同じ経路で変換し、出力ファイルを base64 で返す。
    FileReader.readAsDataURL は WKWebView で使える。btoa の 64KB 制限も踏まない */
@@ -541,8 +601,7 @@ async function doExport(id, md, opts, format) {
     opts = opts || {};
     var name = 'out.' + format;
     var options = {
-      /* east_asian_line_breaks: 和文の行内折り返しが半角スペースにならない（実測済み） */
-      from: 'markdown-yaml_metadata_block+east_asian_line_breaks',
+      from: READER,
       to: format,
       'output-file': name
     };
@@ -551,6 +610,12 @@ async function doExport(id, md, opts, format) {
     if (opts.stripHtmlComments) {
       files['strip.lua'] = STRIP_LUA;
       options.filters = ['strip.lua'];
+    }
+    if (format === 'docx') {
+      /* CLAUDE.md 落とし穴 8: notes が無警告のまま本文に混入するため除去する。
+         pptx では除去しない（ノート欄に隔離されるのが正しい挙動） */
+      files['drop-notes.lua'] = DROP_NOTES_LUA;
+      options.filters = (options.filters || []).concat(['drop-notes.lua']);
     }
 
     var t0 = performance.now();

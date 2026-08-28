@@ -9,7 +9,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 
-import type { ConvertResult } from '../converter/types';
+import type { SlideResult } from '../converter/types';
 import { SlideSurface } from './SlideSurface';
 
 const two = (n: number) => String(n).padStart(2, '0');
@@ -26,7 +26,7 @@ export function SlideShow({
   onClose,
 }: {
   visible: boolean;
-  result: ConvertResult | null;
+  result: SlideResult | null;
   initialIndex: number;
   onClose: () => void;
 }) {

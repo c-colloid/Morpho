@@ -10,6 +10,7 @@ import type {
   Converter,
   ExportFormat,
   ExportResult,
+  PreviewFormat,
 } from './types';
 
 /**
@@ -95,14 +96,19 @@ export function usePandocConverter(): {
   const converter = useMemo<Converter>(
     () => ({
       name: 'pandoc.wasm 1.1.0',
-      async convert(markdown: string, options: ConvertOptions = {}): Promise<ConvertResult> {
+      async convert(
+        markdown: string,
+        options: ConvertOptions & { format?: PreviewFormat } = {},
+      ): Promise<any> {
         await waitForReady();
         const id = nextId.current++;
         const promise = new Promise<ConvertResult>((resolve, reject) => {
           pending.current.set(id, { resolve, reject });
         });
+        const { format = 'slides', ...rest } = options;
         webRef.current?.injectJavaScript(
-          'window.__morphoConvert(' + id + ',' + toJsLiteral(markdown) + ',' + toJsLiteral(options) + '); true;',
+          'window.__morphoConvert(' + id + ',' + toJsLiteral(markdown) + ',' +
+            toJsLiteral(rest) + ',' + toJsLiteral(format) + '); true;',
         );
         return promise;
       },
