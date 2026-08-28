@@ -1,7 +1,9 @@
 /** 装飾プリセット・微調整・色解決の検査 */
 import assert from 'node:assert/strict';
-const { PRESETS, makePreset, nudge, decorationColorHex, copyToAllSlides, moveDecoration } =
-  await import('../src/design/presets.ts');
+const {
+  PRESETS, makePreset, nudge, decorationColorHex, copyToAllSlides, moveDecoration,
+  moveTo, resizeTo,
+} = await import('../src/design/presets.ts');
 
 let n = 0;
 const t = (name, fn) => { fn(); n++; console.log('  ok   ' + name); };
@@ -76,6 +78,31 @@ t('重なり順の入れ替え: 同一スライド内でだけ動き、端では
   assert.deepEqual(moveDecoration(list, 'a', 'back').map((d) => d.id), ['a', 'x', 'b']);
   assert.deepEqual(moveDecoration(list, 'b', 'front').map((d) => d.id), ['a', 'x', 'b']);
   assert.deepEqual(moveDecoration(list, 'zzz', 'back').map((d) => d.id), ['a', 'x', 'b']);
+});
+
+t('直接操作 moveTo: 0.5% スナップとスライド内クランプ', () => {
+  const d = makePreset('accentLine', 1, 'a', W, H);
+  const unitX = W / 200;
+  const m = moveTo(d, d.x + unitX * 3.4, d.y, W, H);
+  assert.equal(m.x % Math.round(unitX), 0, 'スナップされていない');
+  assert.equal(moveTo(d, -99999, -99999, W, H).x, 0);
+  assert.equal(moveTo(d, -99999, -99999, W, H).y, 0);
+  const far = moveTo(d, W * 2, H * 2, W, H);
+  assert.equal(far.x, W - d.w);
+  assert.equal(far.y, H - d.h);
+  assert.equal(m.w, d.w, '移動でサイズが変わった');
+});
+
+t('直接操作 resizeTo: 最小 1%・右下方向のクランプ・位置は不変', () => {
+  const d = makePreset('card', 1, 'a', W, H);
+  const r = resizeTo(d, 0, 0, W, H);
+  assert.equal(r.w, Math.round(W / 100));
+  assert.equal(r.h, Math.round(H / 100));
+  const big = resizeTo(d, W * 9, H * 9, W, H);
+  assert.equal(big.w, W - d.x);
+  assert.equal(big.h, H - d.y);
+  assert.equal(big.x, d.x);
+  assert.equal(big.y, d.y);
 });
 
 console.log(`\n${n} 件すべて通過`);

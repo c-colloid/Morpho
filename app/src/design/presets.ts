@@ -103,6 +103,50 @@ export function moveDecoration(
   return decorations.map((d) => (d.contentIndex === target.contentIndex ? reordered[i++] : d));
 }
 
+/** 直接操作のスナップ幅 = スライド寸法の 0.5%（ステッパーの 1% の半分） */
+const SNAP_DIV = 200;
+
+const snap = (v: number, unit: number) => Math.round(Math.round(v / unit) * unit);
+
+/**
+ * ドラッグ移動の確定値。0.5% グリッドへスナップし、スライド内にクランプする。
+ */
+export function moveTo(
+  d: SlideDecoration,
+  x: number,
+  y: number,
+  slideW: number,
+  slideH: number,
+): SlideDecoration {
+  const sx = snap(x, slideW / SNAP_DIV);
+  const sy = snap(y, slideH / SNAP_DIV);
+  return {
+    ...d,
+    x: Math.max(0, Math.min(slideW - d.w, sx)),
+    y: Math.max(0, Math.min(slideH - d.h, sy)),
+  };
+}
+
+/**
+ * リサイズの確定値（右下ハンドル想定・位置は固定）。
+ * 0.5% グリッドへスナップし、最小 1%・スライド内にクランプする。
+ */
+export function resizeTo(
+  d: SlideDecoration,
+  w: number,
+  h: number,
+  slideW: number,
+  slideH: number,
+): SlideDecoration {
+  const sw = snap(w, slideW / SNAP_DIV);
+  const sh = snap(h, slideH / SNAP_DIV);
+  return {
+    ...d,
+    w: Math.max(Math.round(slideW / 100), Math.min(slideW - d.x, sw)),
+    h: Math.max(Math.round(slideH / 100), Math.min(slideH - d.y, sh)),
+  };
+}
+
 /** 位置・サイズの微調整。1ステップ = スライド寸法の 1%。負のサイズは作らない */
 export function nudge(
   d: SlideDecoration,

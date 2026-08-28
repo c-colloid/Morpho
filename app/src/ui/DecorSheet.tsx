@@ -31,6 +31,8 @@ export function DecorSheet({
   contentIndex,
   decorations,
   deck,
+  selectedId,
+  onSelectItem,
   onAdd,
   onUpdate,
   onRemove,
@@ -45,6 +47,9 @@ export function DecorSheet({
   /** そのスライドの装飾（配列順 = 背面から前面） */
   decorations: SlideDecoration[];
   deck: DeckInfo | null;
+  /** 選択はプレビュー上の直接操作と共有（親が持つ） */
+  selectedId: string | null;
+  onSelectItem: (id: string | null) => void;
   onAdd: (kind: PresetKind) => void;
   onUpdate: (d: SlideDecoration) => void;
   onRemove: (id: string) => void;
@@ -55,7 +60,6 @@ export function DecorSheet({
 }) {
   const { width: winW, height: winH } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   /* パネル位置。座標系は EditorScreen のルート View（セーフエリア内）なので、
      クランプは window からインセットを引いた有効領域で行う。
@@ -154,7 +158,7 @@ export function DecorSheet({
             <View key={d.id} style={styles.item}>
               <Pressable
                 style={styles.itemHead}
-                onPress={() => setSelectedId(selectedId === d.id ? null : d.id)}
+                onPress={() => onSelectItem(selectedId === d.id ? null : d.id)}
               >
                 <View
                   style={[

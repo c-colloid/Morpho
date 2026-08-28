@@ -69,6 +69,7 @@ import {
   type PresetKind,
 } from '../design/presets';
 import { DecorSheet } from './DecorSheet';
+import { DecorEditLayer } from './DecorEditLayer';
 import { sanitizeFileName, shareExport } from '../store/exportShare';
 import { DocumentsModal } from './DocumentsModal';
 import { ExportMenu, type ExportChoice } from './ExportMenu';
@@ -637,6 +638,8 @@ export default function EditorScreen() {
 
   /* ---------- 装飾（飾る力） ---------- */
   const [decorSheetCi, setDecorSheetCi] = useState<number | null>(null);
+  /* パネルとプレビュー上の直接操作で共有する選択状態 */
+  const [selectedDecorId, setSelectedDecorId] = useState<string | null>(null);
 
   const handleEditDecor = useCallback(
     (slideIndex: number) => {
@@ -646,7 +649,10 @@ export default function EditorScreen() {
         Alert.alert('タイトルスライドの装飾は未対応です', 'front matter から生成されるためです');
         return;
       }
-      setDecorSheetCi(ci);
+      setDecorSheetCi((prev) => {
+        if (prev !== ci) setSelectedDecorId(null);
+        return ci;
+      });
     },
     [contentIndexOf],
   );
@@ -742,20 +748,25 @@ export default function EditorScreen() {
     );
   }, [decorSheetCi, mutateDesign]);
 
+  const titleOffset = useMemo(
+    () => (splitFrontMatter(source).metadata.title !== undefined ? 1 : 0),
+    [source],
+  );
+
   /* プレビュー用: スライド番号（タイトル込み）→ 装飾の対応表 */
   const decorBySlide = useMemo(() => {
     const map = new Map<number, SlideDecoration[]>();
-    if (design.decorations.length === 0) return map;
-    const { metadata } = splitFrontMatter(source);
-    const off = metadata.title !== undefined ? 1 : 0;
     for (const d of design.decorations) {
-      const idx = d.contentIndex + off;
+      const idx = d.contentIndex + titleOffset;
       const arr = map.get(idx);
       if (arr) arr.push(d);
       else map.set(idx, [d]);
     }
     return map;
-  }, [design, source]);
+  }, [design, titleOffset]);
+
+  /* 直接操作を有効にするスライド（パネルを開いているスライドのみ） */
+  const editingSlideIndex = decorSheetCi === null ? null : decorSheetCi + titleOffset;
 
   /* ---------- スライドショー ---------- */
   const [showOpen, setShowOpen] = useState(false);
@@ -979,6 +990,10 @@ export default function EditorScreen() {
                     active={s.index === highlighted}
                     width={Math.max(0, previewW - 40 - 26)}
                     decorations={decorBySlide.get(s.index)}
+                    editingDecor={s.index === editingSlideIndex}
+                    selectedDecorId={selectedDecorId}
+                    onSelectDecor={setSelectedDecorId}
+                    onCommitDecor={handleUpdateDecor}
                     onSelect={handleSelectSlide}
                     onEditNotes={handleEditNotes}
                     onEditDecor={handleEditDecor}
@@ -1009,13 +1024,18 @@ export default function EditorScreen() {
         contentIndex={decorSheetCi ?? 1}
         decorations={design.decorations.filter((d) => d.contentIndex === decorSheetCi)}
         deck={result?.deck ?? null}
+        selectedId={selectedDecorId}
+        onSelectItem={setSelectedDecorId}
         onAdd={handleAddDecor}
         onUpdate={handleUpdateDecor}
         onRemove={handleRemoveDecor}
         onDuplicate={handleDuplicateDecor}
         onReorder={handleReorderDecor}
         onCopyToAll={handleCopyDecorToAll}
-        onClose={() => setDecorSheetCi(null)}
+        onClose={() => {
+          setDecorSheetCi(null);
+          setSelectedDecorId(null);
+        }}
       />
       <SlideShow
         visible={showOpen}
@@ -1133,6 +1153,10 @@ function SlideCard({
   active,
   width,
   decorations,
+  editingDecor,
+  selectedDecorId,
+  onSelectDecor,
+  onCommitDecor,
   onSelect,
   onEditNotes,
   onEditDecor,
@@ -1143,6 +1167,11 @@ function SlideCard({
   active: boolean;
   width: number;
   decorations?: SlideDecoration[];
+  /** 装飾パネルを開いているスライド。直接操作レイヤーを重ねる */
+  editingDecor: boolean;
+  selectedDecorId: string | null;
+  onSelectDecor: (id: string | null) => void;
+  onCommitDecor: (d: SlideDecoration) => void;
   onSelect: (slideIndex: number) => void;
   onEditNotes: (slideIndex: number) => void;
   onEditDecor: (slideIndex: number) => void;
@@ -1150,6 +1179,17 @@ function SlideCard({
 }) {
   const [notesOpen, setNotesOpen] = useState(false);
   const hasNotes = slide.notes.length > 0;
+
+  /* 直接操作のドラッグ中の一時値。SlideSurface 側の描画を差し替えて
+     「本文の背面のまま」動かす（z 順が書き出しと一致し続ける） */
+  const [liveDecor, setLiveDecor] = useState<SlideDecoration | null>(null);
+  useEffect(() => {
+    if (!editingDecor) setLiveDecor(null);
+  }, [editingDecor]);
+  const shownDecorations =
+    editingDecor && liveDecor
+      ? decorations?.map((x) => (x.id === liveDecor.id ? liveDecor : x))
+      : decorations;
   return (
     <Pressable
       style={[styles.slide, active && styles.slideActive]}
@@ -1178,14 +1218,27 @@ function SlideCard({
       </View>
       {width > 0 && (
         <View style={styles.surfaceWrap}>
-          <SlideSurface
-            slide={slide}
-            deck={deck}
-            width={width}
-            decorations={decorations}
-            onParagraphPress={() => onSelect(slide.index)}
-            onParagraphLongPress={(p) => onParagraphLongPress(slide.index, p)}
-          />
+          <View>
+            <SlideSurface
+              slide={slide}
+              deck={deck}
+              width={width}
+              decorations={shownDecorations}
+              onParagraphPress={() => onSelect(slide.index)}
+              onParagraphLongPress={(p) => onParagraphLongPress(slide.index, p)}
+            />
+            {editingDecor && (
+              <DecorEditLayer
+                decorations={decorations ?? []}
+                deck={deck}
+                width={width}
+                selectedId={selectedDecorId}
+                onSelect={onSelectDecor}
+                onLive={setLiveDecor}
+                onCommit={onCommitDecor}
+              />
+            )}
+          </View>
         </View>
       )}
       {notesOpen && hasNotes && (
