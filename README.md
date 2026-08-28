@@ -44,12 +44,15 @@ iPad の Safari で開き、テンプレートを選んで「pptx に変換」�
 
 ## セットアップ
 
-GitHub Pages の有効化と、fixtures の基準出力（pandoc 3.1.3 で 64 枚、3.9 では
-52 枚になる）の再生成は `scripts/init.sh` が両方やる:
+`scripts/init.sh` が GitHub Pages を有効化し、ローカルに pandoc があれば
+fixtures の基準出力（pandoc 3.1.3 で 64 枚、3.9 では 52 枚になる）も再生成する:
 
 ```bash
 scripts/init.sh
 ```
+
+gh CLI が無い場合は、GitHub の Settings → Pages で Source を `main` / `/docs` に
+設定しても同じ。
 
 ## ライセンス
 
