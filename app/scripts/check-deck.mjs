@@ -33,6 +33,9 @@ const md = `# 一枚目
 - 箇条書き
   - 二階層
 
+改行位置を\\
+固定した段落。
+
 ::: notes
 ノート本文。
 :::
@@ -92,6 +95,15 @@ t('タイトルスライドの ctrTitle も座標を持つ', () => {
   const title = s1.shapes.find((s) => s.placeholder === 'ctrTitle' || s.placeholder === 'title');
   assert.ok(title && title.frame);
 });
+t('行末バックスラッシュの改行が端から端まで残る', () => {
+  const body = parsed.slides[1].shapes.find((s) => s.placeholder === 'body');
+  const withBreak = body.paragraphs.find((p) =>
+    p.runs.map((r) => r.text).join('').includes('\n'),
+  );
+  assert.ok(withBreak, '<a:br/> がプレビューの段落に反映されていない');
+  assert.equal(withBreak.runs.map((r) => r.text).join(''), '改行位置を\n固定した段落。');
+});
+
 t('ノートが該当スライドに載る', () => {
   const withNotes = parsed.slides.find((s) => s.notes.length > 0);
   assert.ok(withNotes);

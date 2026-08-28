@@ -163,9 +163,17 @@ var MONO_FACE = /courier|consolas|monaco|menlo|mono/i;
 
 function parseRuns(paragraphXml) {
   var runs = [];
-  var re = /<a:r>([\\s\\S]*?)<\\/a:r>/g;
+  /* <a:r> だけでなく、行内改行 <a:br/>（原稿の行末 \\ / スペース2つ由来）も
+     出現順に拾う。落とすとプレビューだけ改行が消える */
+  var re = /<a:r>([\\s\\S]*?)<\\/a:r>|<a:br\\s*\\/>/g;
   var m;
   while ((m = re.exec(paragraphXml)) !== null) {
+    if (m[1] === undefined) {
+      /* <a:br/>: 直前のランに改行を継ぎ足す（RN の Text は \\n で改行する） */
+      if (runs.length) runs[runs.length - 1].text += '\\n';
+      else runs.push({ text: '\\n' });
+      continue;
+    }
     var r = m[1];
     var t = /<a:t>([\\s\\S]*?)<\\/a:t>/.exec(r);
     if (!t) continue;

@@ -51,6 +51,13 @@ t('タイトルプレースホルダを見分ける', () => {
   assert.equal(shape.paragraphs[0].runs[0].text, '見出し');
 });
 
+t('行内改行 <a:br/> を \\n として拾う（原稿の行末バックスラッシュ由来）', () => {
+  const xml = sp('<p:ph idx="1"/>',
+    '<a:p><a:r><a:t>一行目は</a:t></a:r><a:br /><a:r><a:t>二行目に続く</a:t></a:r></a:p>');
+  const runs = parse(xml)[0].paragraphs[0].runs;
+  assert.equal(runs.map((r) => r.text).join(''), '一行目は\n二行目に続く');
+});
+
 t('type 省略のプレースホルダは body 扱い', () => {
   const xml = sp('<p:ph idx="1"/>', '<a:p><a:r><a:t>本文</a:t></a:r></a:p>');
   assert.equal(parse(xml)[0].placeholder, 'body');
