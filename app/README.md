@@ -32,8 +32,8 @@ App Store 未公開のため、サイドロードで入れます。
   原稿が外部サーバーへ送られることはありません
 - 無料 Apple ID の署名は7日で切れます。AltStore は AltServer と同一 Wi-Fi に
   いれば自動で再署名します（サイドロード枠は3アプリまで。AltStore 自身が1枠使用）
-- 最新版の ipa が Releases に無いときは、GitHub の
-  **Actions タブ → Build IPA → Run workflow** を実行すると約5分で公開されます
+- Releases はアプリ本体の push のたびに自動でビルド・更新されます（約5分）。
+  無いときは GitHub の **Actions タブ → Build IPA → Run workflow** で手動実行もできます
 
 ## 画面と操作
 

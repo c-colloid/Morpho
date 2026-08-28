@@ -13,11 +13,16 @@ name: Build IPA
 
 on:
   workflow_dispatch:
-  # 検証用: このファイル自身の変更でも走る（このセッションのトークンは
-  # workflow_dispatch を叩けないため）。アプリ本体の push では走らない
+  # アプリ本体が変わる push で自動ビルドし、Releases を最新に保つ。
+  # 文書だけの変更では走らない（バージョンバンプは app.json を触るので必ず走る）
   push:
     branches: [main]
-    paths: ['.github/workflows/build-ipa.yml']
+    paths:
+      - 'app/**'
+      - '!app/README.md'
+      - '!app/DEVELOPMENT.md'
+      - '!app/CHANGELOG.md'
+      - '.github/workflows/build-ipa.yml'
 
 # Releases への公開（タグ作成とアセット添付）に要る
 permissions:
