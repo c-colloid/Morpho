@@ -43,11 +43,10 @@ Markdown で内容を書けば、PowerPoint スライドや Word 文書に刷り
 ## 試す
 
 App Store 未公開のため、現状はサイドロードが必要です（iPadOS 15.1 以降）。
-手順は [`app/README.md`](app/README.md) にまとまっています。
 
-- 開発者向け: Expo Go + 開発サーバ（`npm install && npm start`）
-- 実機だけで試す: [Releases](https://github.com/c-colloid/Morpho/releases) の ipa を
-  AltStore / SideStore で入れる
+- 試す: [Releases](https://github.com/c-colloid/Morpho/releases) の ipa を
+  AltStore / SideStore で入れる。手順と使い方は [`app/README.md`](app/README.md)
+- 開発する: Expo Go + 開発サーバ。手順は [`app/DEVELOPMENT.md`](app/DEVELOPMENT.md)
 
 ## 仕組み
 

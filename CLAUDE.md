@@ -415,7 +415,7 @@ WebView は「Markdown を渡すと描画用 JSON を返す計算機」に徹す
 Expo Go では原理的に不可（picker はコピーしか返さない）で、
 development build + ネイティブ picker（asCopy: false）+ security-scoped bookmark が要る。
 つまり Mac 調達の問題ではなく **Developer Program（$99/年）の課金判断**に縮小された。
-詳細は `app/README.md` の「外部アプリ連携」。
+詳細は `app/DEVELOPMENT.md` の「外部アプリ連携の実装状況」。
 
 ## リポジトリ構成
 
@@ -427,7 +427,8 @@ notes/findings.md                    検証の経緯
 scripts/init.sh                      Pages 有効化と基準出力の再生成
 ```
 
-`app/` の中身と現在地は `app/README.md` を参照。
+`app/` の中身と現在地は `app/DEVELOPMENT.md`（開発者向け）と
+`app/README.md`（試用者向け）を参照。
 `src/converter/types.ts` がアーキテクチャ図の「差し替え可能な境界」にあたる。
 
 比較用の基準出力（pandoc 3.1.3 で 64 枚）はリポジトリに含めていない。次で再生成する:
