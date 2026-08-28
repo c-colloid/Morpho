@@ -5,7 +5,27 @@
 
 名前は「多形（polymorphism）」とモルフォ蝶から。
 
-現在は**企画検証フェーズ**。設計判断と実測結果は [`CLAUDE.md`](CLAUDE.md) にまとまっている。
+## 現在地
+
+企画検証を終え、**アプリ本体（`app/`）を実装中**。現在 **v0.4.1**。
+
+エディタ・実寸プレビュー・スライドショー・発表者ビュー・pptx / docx 書き出し・
+複数文書管理・プレビューからのノート / 改行位置編集までが iPad 実機で動く。
+使い方と開発手順は [`app/README.md`](app/README.md)、
+版ごとの変更は [`app/CHANGELOG.md`](app/CHANGELOG.md) を参照。
+
+設計判断と実測結果は [`CLAUDE.md`](CLAUDE.md) にまとまっている。
+ここに書いてあることは実際に動かして確認した内容で、再検証は不要。
+
+## リポジトリ構成
+
+| 場所 | 内容 |
+|---|---|
+| `app/` | アプリ本体（React Native + Expo） |
+| `docs/index.html` | GitHub Pages で公開する検証ハーネス |
+| `fixtures/pptx-benchmark.md` | 50枚規模のテストデッキ（自己診断型・**書き換えない**） |
+| `notes/` | 検証の経緯と機能ロードマップ |
+| `scripts/init.sh` | GitHub Pages 有効化と基準出力の再生成 |
 
 ## 検証ハーネス
 
@@ -22,30 +42,14 @@
 iPad の Safari で開き、テンプレートを選んで「pptx に変換」。
 初回は pandoc.wasm（55.9 MB）のダウンロードが入る。
 
-このファイルは将来 WKWebView に載せるブリッジのプロトタイプでもある。
-
-## fixtures
-
-| ファイル | 内容 |
-|---|---|
-| `pptx-benchmark.md` | 50枚規模のテストデッキ。各スライドに「何を検証しているか」が書いてある |
-
-比較用の基準出力は次で再生成する（pandoc 3.1.3 では 64 枚、3.9 では 52 枚になる）:
-
-```bash
-pandoc fixtures/pptx-benchmark.md -o fixtures/pptx-benchmark-reference.pptx
-```
-
 ## セットアップ
 
-GitHub Pages を有効化する:
+GitHub Pages の有効化と、fixtures の基準出力（pandoc 3.1.3 で 64 枚、3.9 では
+52 枚になる）の再生成は `scripts/init.sh` が両方やる:
 
 ```bash
-gh api repos/c-colloid/Morpho/pages -X POST \
-  -f 'source[branch]=main' -f 'source[path]=/docs'
+scripts/init.sh
 ```
-
-Settings → Pages で Source を `main` / `/docs` に設定しても同じ。
 
 ## ライセンス
 

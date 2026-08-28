@@ -404,9 +404,12 @@ WebView は「Markdown を渡すと描画用 JSON を返す計算機」に徹す
 | テンプレート適用 | — | 配線盤 UI。他にない機能 |
 | ハードウェアキーボード | — | Magic Keyboard 前提のショートカット |
 
-**注意:** DocumentGroup / UIDocumentBrowser は純ネイティブ API。RN からは直接使えないため、
-「iCloud の .md を開いて上書き保存」をどこまで実現するかは早期に検証すること。
-ここが妥協できないなら、Mac の調達が現実的な選択肢に戻る。
+**注意（検証済み・決着）:** 「iCloud の .md を開いて上書き保存」は検証した。
+読み込みと書き出しは Expo Go の今の構成で可能。その場の上書き（open in place）は
+Expo Go では原理的に不可（picker はコピーしか返さない）で、
+development build + ネイティブ picker（asCopy: false）+ security-scoped bookmark が要る。
+つまり Mac 調達の問題ではなく **Developer Program（$99/年）の課金判断**に縮小された。
+詳細は `app/README.md` の「外部アプリ連携」。
 
 ## リポジトリ構成
 
