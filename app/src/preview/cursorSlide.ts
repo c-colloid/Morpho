@@ -13,6 +13,55 @@ const H1 = /^#[ \t]/;
 const HR = /^ {0,3}([*_-])(?:[ \t]*\1){2,}[ \t]*$/;
 const FENCE = /^ {0,3}(```|~~~)/;
 
+/** 本文をコンテンツスライドごとの区間に切る。start/end は body 内のオフセット */
+export interface SlideSegment {
+  start: number;
+  end: number;
+}
+
+/**
+ * スライド区切り位置で本文を分割する。
+ * slideIndexAtCursor と同じ境界規則（h1 / hr、連続境界の合体、フェンス無視）。
+ * n 番目の区間 = n 番目のコンテンツスライド（タイトルスライドは含まない）。
+ */
+export function slideSegments(body: string): SlideSegment[] {
+  const segments: SlideSegment[] = [];
+  let segStart = 0;
+  let hasContent = false;
+  let inFence = false;
+  let offset = 0;
+  for (const line of body.split('\n')) {
+    const lineStart = offset;
+    offset += line.length + 1;
+    if (FENCE.test(line)) {
+      inFence = !inFence;
+      hasContent = true;
+      continue;
+    }
+    if (inFence) {
+      if (line.trim() !== '') hasContent = true;
+      continue;
+    }
+    if (H1.test(line)) {
+      if (hasContent) {
+        segments.push({ start: segStart, end: lineStart });
+        segStart = lineStart;
+      }
+      hasContent = true;
+    } else if (HR.test(line)) {
+      if (hasContent) {
+        segments.push({ start: segStart, end: lineStart });
+        segStart = lineStart;
+      }
+      hasContent = false;
+    } else if (line.trim() !== '') {
+      hasContent = true;
+    }
+  }
+  segments.push({ start: segStart, end: body.length });
+  return segments;
+}
+
 /**
  * @param body   front matter を取り除いた本文
  * @param cursor body 内のカーソル位置（文字オフセット）

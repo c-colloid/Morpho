@@ -27,10 +27,18 @@ import type {
   BootStatus,
   ConvertResult,
   Diagnostic,
+  Paragraph,
   SlideOutline,
   TextRun,
 } from '../converter/types';
-import { slideIndexAtCursor } from '../preview/cursorSlide';
+import { slideIndexAtCursor, slideSegments } from '../preview/cursorSlide';
+import { getNotes, setNotes } from '../preview/notesEdit.ts';
+import {
+  breakJoints,
+  findParagraph,
+  segmentJa,
+  stripHardBreaks,
+} from '../preview/lineBreakEdit.ts';
 import {
   createDoc,
   deleteDoc,
@@ -43,6 +51,8 @@ import {
 import { sanitizeFileName, shareExport } from '../store/exportShare';
 import { DocumentsModal } from './DocumentsModal';
 import { ExportMenu, type ExportChoice } from './ExportMenu';
+import { BreakEditSheet } from './BreakEditSheet';
+import { NotesEditSheet } from './NotesEditSheet';
 import { SlideShow } from './SlideShow';
 import { SlideSurface } from './SlideSurface';
 
@@ -124,6 +134,8 @@ export default function EditorScreen() {
   sourceRef.current = source;
   const statusRef = useRef(status.phase);
   statusRef.current = status.phase;
+  const resultRef = useRef<ConvertResult | null>(null);
+  resultRef.current = result;
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
   const dirtyRef = useRef(false);
@@ -361,6 +373,137 @@ export default function EditorScreen() {
     if (y !== undefined) previewRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
   }, [currentSlide, result]);
 
+  /* ---------- プレビューからの原稿編集（ノート・改行） ---------- */
+  const [notesSheet, setNotesSheet] = useState<{ ci: number; text: string } | null>(null);
+  const [breakSheet, setBreakSheet] = useState<{
+    chunks: string[];
+    joints: Set<number>;
+    start: number;
+    end: number;
+    /** 開いた時点の原稿抜粋。適用時に一致を確認して stale な splice を防ぐ */
+    raw: string;
+  } | null>(null);
+
+  /* front matter を保ったまま本文だけ差し替える */
+  const patchBody = useCallback(
+    (nextBody: string) => {
+      const src = sourceRef.current;
+      const { body } = splitFrontMatter(src);
+      onChangeSource(src.slice(0, src.length - body.length) + nextBody);
+    },
+    [onChangeSource],
+  );
+
+  /**
+   * プレビューの slide.index → 原稿のコンテンツスライド番号。
+   * 表の後ろのスライド分割（CLAUDE.md 落とし穴 5）などで pandoc のスライド数が
+   * 原稿の区間数と食い違うと対応が取れないので、その場合は null を返して
+   * 呼び出し側で編集を止める（誤った区間への書き込みを防ぐ）。
+   */
+  const contentIndexOf = useCallback(
+    (slideIndex: number): number | null => {
+      const { metadata, body } = splitFrontMatter(sourceRef.current);
+      const titleOffset = metadata.title !== undefined ? 1 : 0;
+      const slideCount = resultRef.current?.slideCount ?? 0;
+      if (slideCount - titleOffset !== slideSegments(body).length) {
+        Alert.alert(
+          'スライドと原稿の対応が取れません',
+          '表の後ろでスライドが分割されている場合など、番号がずれる構成では' +
+            'プレビューからの編集を使えません。原稿側で編集してください',
+        );
+        return null;
+      }
+      return slideIndex - titleOffset;
+    },
+    [],
+  );
+
+  const handleEditNotes = useCallback(
+    (slideIndex: number) => {
+      const ci = contentIndexOf(slideIndex);
+      if (ci === null) return;
+      if (ci < 1) {
+        Alert.alert('このスライドのノートは編集できません', 'タイトルスライドは front matter から生成されています');
+        return;
+      }
+      const { body } = splitFrontMatter(sourceRef.current);
+      setNotesSheet({ ci, text: getNotes(body, ci) ?? '' });
+    },
+    [contentIndexOf],
+  );
+
+  const handleSaveNotes = useCallback(
+    (text: string) => {
+      if (!notesSheet) return;
+      const { body } = splitFrontMatter(sourceRef.current);
+      const next = setNotes(body, notesSheet.ci, text);
+      if (next === null) {
+        Alert.alert('書き込めませんでした', '対象のスライドが原稿内に見つかりません');
+      } else {
+        patchBody(next);
+      }
+      setNotesSheet(null);
+    },
+    [notesSheet, patchBody],
+  );
+
+  const handleParagraphLongPress = useCallback(
+    (slideIndex: number, paragraph: Paragraph) => {
+      const ci = contentIndexOf(slideIndex);
+      if (ci === null) return;
+      if (ci < 1) {
+        Alert.alert('この段落は編集できません', 'タイトルスライドは front matter から生成されています');
+        return;
+      }
+      /* いちばん長いランを手がかりに、原稿内の段落ブロックを探す */
+      const needle = paragraph.runs.reduce((a, b) => (b.text.length > a.length ? b.text : a), '');
+      const { body } = splitFrontMatter(sourceRef.current);
+      const loc = findParagraph(body, ci, needle);
+      if (!loc) {
+        Alert.alert('原稿内で段落を特定できませんでした', '表など一部のブロックは未対応です');
+        return;
+      }
+      if (/^[ 	]*#/.test(loc.raw)) {
+        Alert.alert('見出しの改行編集は未対応です');
+        return;
+      }
+      if (/^[ 	]*([-*+]|\d+\.)[ 	]/m.test(loc.raw)) {
+        Alert.alert('箇条書きの改行編集は未対応です', '原稿側で行末に \\ を置いてください');
+        return;
+      }
+      const chunks = segmentJa(stripHardBreaks(loc.raw));
+      if (chunks.length < 2) {
+        Alert.alert('この段落は分割できませんでした');
+        return;
+      }
+      setBreakSheet({
+        chunks,
+        joints: breakJoints(loc.raw, chunks),
+        start: loc.start,
+        end: loc.end,
+        raw: loc.raw,
+      });
+    },
+    [contentIndexOf],
+  );
+
+  const handleApplyBreaks = useCallback(
+    (text: string) => {
+      if (!breakSheet) return;
+      const { body } = splitFrontMatter(sourceRef.current);
+      /* シートを開いている間に原稿が変わっていたら（ハードウェアキーボード等）
+         保存済みオフセットが無効なので適用しない */
+      if (body.slice(breakSheet.start, breakSheet.end) !== breakSheet.raw) {
+        Alert.alert('適用を中止しました', 'シートを開いている間に原稿が変更されています');
+        setBreakSheet(null);
+        return;
+      }
+      patchBody(body.slice(0, breakSheet.start) + text + body.slice(breakSheet.end));
+      setBreakSheet(null);
+    },
+    [breakSheet, patchBody],
+  );
+
   /* ---------- スライドショー ---------- */
   const [showOpen, setShowOpen] = useState(false);
   const [previewW, setPreviewW] = useState(0);
@@ -499,6 +642,8 @@ export default function EditorScreen() {
                   deck={result.deck}
                   active={s.index === highlighted}
                   width={Math.max(0, previewW - 40 - 26)}
+                  onEditNotes={handleEditNotes}
+                  onParagraphLongPress={handleParagraphLongPress}
                 />
               </View>
             ))}
@@ -506,6 +651,19 @@ export default function EditorScreen() {
         </View>
       </View>
 
+      <NotesEditSheet
+        visible={notesSheet !== null}
+        initialText={notesSheet?.text ?? ''}
+        onSave={handleSaveNotes}
+        onClose={() => setNotesSheet(null)}
+      />
+      <BreakEditSheet
+        visible={breakSheet !== null}
+        chunks={breakSheet?.chunks ?? []}
+        initialBreaks={breakSheet?.joints ?? new Set()}
+        onApply={handleApplyBreaks}
+        onClose={() => setBreakSheet(null)}
+      />
       <SlideShow
         visible={showOpen}
         result={result}
@@ -617,33 +775,47 @@ function SlideCard({
   deck,
   active,
   width,
+  onEditNotes,
+  onParagraphLongPress,
 }: {
   slide: SlideOutline;
   deck: ConvertResult['deck'];
   active: boolean;
   width: number;
+  onEditNotes: (slideIndex: number) => void;
+  onParagraphLongPress: (slideIndex: number, paragraph: Paragraph) => void;
 }) {
   const [notesOpen, setNotesOpen] = useState(false);
+  const hasNotes = slide.notes.length > 0;
   return (
     <View style={[styles.slide, active && styles.slideActive]}>
       <View style={styles.slideHead}>
         <Text style={styles.slideNum}>{slide.index}</Text>
         <Text style={styles.slideLayout}>{slide.layout ?? 'レイアウト不明'}</Text>
         <View style={styles.slideHeadSpace} />
-        {slide.notes.length > 0 && (
+        {hasNotes ? (
           <Pressable hitSlop={8} onPress={() => setNotesOpen((v) => !v)}>
             <Text style={[styles.notesToggle, notesOpen && styles.notesToggleOpen]}>
               ノート {notesOpen ? '▾' : '▸'}
             </Text>
           </Pressable>
+        ) : (
+          <Pressable hitSlop={8} onPress={() => onEditNotes(slide.index)}>
+            <Text style={styles.notesToggle}>ノート追加</Text>
+          </Pressable>
         )}
       </View>
       {width > 0 && (
         <View style={styles.surfaceWrap}>
-          <SlideSurface slide={slide} deck={deck} width={width} />
+          <SlideSurface
+            slide={slide}
+            deck={deck}
+            width={width}
+            onParagraphLongPress={(p) => onParagraphLongPress(slide.index, p)}
+          />
         </View>
       )}
-      {notesOpen && slide.notes.length > 0 && (
+      {notesOpen && hasNotes && (
         <View style={styles.notesBox}>
           {slide.notes.map((p, i) => (
             <Text key={i} style={styles.notesText}>
@@ -654,6 +826,9 @@ function SlideCard({
               ))}
             </Text>
           ))}
+          <Pressable hitSlop={8} onPress={() => onEditNotes(slide.index)}>
+            <Text style={styles.notesEdit}>編集</Text>
+          </Pressable>
         </View>
       )}
     </View>
@@ -786,6 +961,7 @@ const styles = StyleSheet.create({
     borderLeftColor: '#A8730A',
   },
   notesText: { fontSize: 13, lineHeight: 20, color: '#5A4A14', marginTop: 2 },
+  notesEdit: { fontSize: 12, color: '#1B3FE0', marginTop: 8 },
 
   surfaceWrap: { borderWidth: 1, borderColor: RULE, borderRadius: 4, alignSelf: 'flex-start' },
 

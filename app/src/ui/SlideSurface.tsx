@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { DeckInfo, Paragraph, SlideOutline, SlideShape, TextRun } from '../converter/types';
 
@@ -26,10 +26,13 @@ export function SlideSurface({
   slide,
   deck,
   width,
+  onParagraphLongPress,
 }: {
   slide: SlideOutline;
   deck: DeckInfo;
   width: number;
+  /** 段落の長押し（改行編集の入口）。未指定なら操作なしの表示専用 */
+  onParagraphLongPress?: (paragraph: Paragraph) => void;
 }) {
   const slideWpt = deck.w / EMU_PER_PT;
   const slideHpt = deck.h / EMU_PER_PT;
@@ -44,7 +47,13 @@ export function SlideSurface({
       ]}
     >
       {slide.shapes.map((shape, i) => (
-        <ShapeBox key={i} shape={shape} deck={deck} scale={scale} />
+        <ShapeBox
+          key={i}
+          shape={shape}
+          deck={deck}
+          scale={scale}
+          onParagraphLongPress={onParagraphLongPress}
+        />
       ))}
     </View>
   );
@@ -54,10 +63,12 @@ function ShapeBox({
   shape,
   deck,
   scale,
+  onParagraphLongPress,
 }: {
   shape: SlideShape;
   deck: DeckInfo;
   scale: number;
+  onParagraphLongPress?: (paragraph: Paragraph) => void;
 }) {
   if (!shape.frame) return null;
   const f = shape.frame;
@@ -82,17 +93,30 @@ function ShapeBox({
         justifyContent: isTitle ? 'flex-end' : 'flex-start',
       }}
     >
-      {shape.paragraphs.map((p, pi) => (
-        <SurfaceParagraph
-          key={pi}
-          paragraph={p}
-          isTitle={isTitle}
-          ordinal={numbers[pi]}
-          deck={deck}
-          scale={scale}
-          color={color}
-        />
-      ))}
+      {shape.paragraphs.map((p, pi) =>
+        onParagraphLongPress ? (
+          <Pressable key={pi} onLongPress={() => onParagraphLongPress(p)}>
+            <SurfaceParagraph
+              paragraph={p}
+              isTitle={isTitle}
+              ordinal={numbers[pi]}
+              deck={deck}
+              scale={scale}
+              color={color}
+            />
+          </Pressable>
+        ) : (
+          <SurfaceParagraph
+            key={pi}
+            paragraph={p}
+            isTitle={isTitle}
+            ordinal={numbers[pi]}
+            deck={deck}
+            scale={scale}
+            color={color}
+          />
+        ),
+      )}
     </View>
   );
 }
