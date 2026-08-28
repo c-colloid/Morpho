@@ -1,6 +1,7 @@
 {
   "name": "morpho",
   "version": "0.4.1",
+  "license": "MIT",
   "main": "index.ts",
   "dependencies": {
     "expo": "~57.0.17",

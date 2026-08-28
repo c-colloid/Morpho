@@ -1,61 +1,70 @@
 # Morpho
 
-一つの Markdown 原稿から、スライド・書籍・PDF・Web を刷り分ける iPad 向けエディタ。
-変換エンジンに [pandoc](https://pandoc.org/) の WebAssembly ビルドを使う。
+**一つの Markdown 原稿から、スライド・書籍・PDF・Web へ。**
 
-名前は「多形（polymorphism）」とモルフォ蝶から。
+Morpho は iPad で動く単一ソース出版エディタです。
+Markdown で内容を書けば、PowerPoint スライドや Word 文書に刷り分けられます。
+内容は Markdown に、見た目はテーマとデザインデータに——という分離を軸に、
+ルビ・傍点・縦書きといった日本語組版を最初から視野に入れて開発しています。
 
-## 現在地
+> 名前は「多形（polymorphism）」とモルフォ蝶から。
+> 一つのものが複数の形をとること、さなぎから姿を変えて現れること、
+> そして見る角度で色が変わる構造色——いずれもこの製品のコンセプトです。
 
-企画検証を終え、**アプリ本体（`app/`）を実装中**。現在 **v0.4.1**。
+## 特徴
 
-エディタ・実寸プレビュー・スライドショー・発表者ビュー・pptx / docx 書き出し・
-複数文書管理・プレビューからのノート / 改行位置編集までが iPad 実機で動く。
-使い方と開発手順は [`app/README.md`](app/README.md)、
-版ごとの変更は [`app/CHANGELOG.md`](app/CHANGELOG.md) を参照。
+- **日本語入力が壊れない** — エディタは iPad ネイティブのテキスト入力。
+  変換候補・確定前の下線・カーソル操作が OS そのまま
+- **実寸ライブプレビュー** — 変換結果の pptx（実際の出力そのもの）を解析し、
+  座標・配色・字サイズまで 16:9 の実寸で描画。手が止まると自動で更新
+- **スライドショーと発表者ビュー** — 全画面再生、ノート・次スライド・経過時間の表示
+- **プレビューから原稿を整える** — スライドをタップして該当箇所へジャンプ、
+  段落を長押しして改行位置を編集（語 / 字の粒度）、発表者ノートもその場で編集
+- **書き出しと連携** — pptx / docx / md を Files（iCloud）へ。Obsidian への送信にも対応
+- **オフライン完結** — 変換はすべて端末内（pandoc の WebAssembly ビルド）。
+  原稿が外部サーバーへ送られることはありません
 
-設計判断と実測結果は [`CLAUDE.md`](CLAUDE.md) にまとまっている。
-ここに書いてあることは実際に動かして確認した内容で、再検証は不要。
+## ステータス
 
-## リポジトリ構成
+開発中です。現在 **v0.4.1**（[変更履歴](app/CHANGELOG.md)）。
+上記の特徴はすべて iPad 実機で動作しています。
 
-| 場所 | 内容 |
+| 予定している主なもの | |
 |---|---|
-| `app/` | アプリ本体（React Native + Expo） |
-| `docs/index.html` | GitHub Pages で公開する検証ハーネス |
-| `fixtures/pptx-benchmark.md` | 50枚規模のテストデッキ（自己診断型・**書き換えない**） |
-| `notes/` | 検証の経緯と機能ロードマップ |
-| `scripts/init.sh` | GitHub Pages 有効化と基準出力の再生成 |
+| テンプレート適用 | 手持ちの pptx テンプレートのレイアウトを対応付ける「配線盤」UI |
+| 飾る力 | 図形・模様の装飾、要素のグループ化、テーマの分離 |
+| 日本語組版 | ルビ（青空文庫式 `｜親《ルビ》`）・傍点、その先に縦書き |
 
-## 検証ハーネス
+詳細は [`notes/roadmap-pptx.md`](notes/roadmap-pptx.md)。
 
-**https://c-colloid.github.io/Morpho/**
+## 試す
 
-ブラウザ内で完結する pandoc 3.9 の動作確認ツール。サーバーには何も送信しない。
+App Store 未公開のため、現状はサイドロードが必要です。
+手順は [`app/README.md`](app/README.md) にまとまっています。
 
-- PowerPoint テンプレート（`.pptx`）のレイアウト名が pandoc の要求と一致するか検査する
-- 一致しないレイアウトを手動で割り当て、変換前に名前を書き換える
-- Markdown を pptx に変換し、スライド数・変換時間・出力サイズを測る
-- 警告を重要度別に分類して表示する
-- 連続変換で WASM ヒープが増え続けないかを測る（ライブプレビュー可否の判定用）
+- 開発者向け: Expo Go + 開発サーバ（`npm install && npm start`）
+- 実機だけで試す: GitHub Actions がビルドする ipa を AltStore / SideStore で入れる
 
-iPad の Safari で開き、テンプレートを選んで「pptx に変換」。
-初回は pandoc.wasm（55.9 MB）のダウンロードが入る。
+## 仕組み
 
-## セットアップ
-
-`scripts/init.sh` が GitHub Pages を有効化し、ローカルに pandoc があれば
-fixtures の基準出力（pandoc 3.1.3 で 64 枚、3.9 では 52 枚になる）も再生成する:
-
-```bash
-scripts/init.sh
+```
+[エディタ (React Native)] ─ Markdown ─▶ [変換器] ─ 解析結果 ─▶ [プレビュー]
+                                          │
+                                          └─▶ pptx / docx（書き出し）
 ```
 
-gh CLI が無い場合は、GitHub の Settings → Pages で Source を `main` / `/docs` に
-設定しても同じ。
+変換器は不可視 WebView 上の [pandoc](https://pandoc.org/) WebAssembly ビルドです。
+エディタと変換器の間には差し替え可能な境界（`Converter` インターフェース）があり、
+エディタ側は変換器の実装を知りません。
+
+設計判断とその根拠（すべて実測に基づく）は [`CLAUDE.md`](CLAUDE.md)、
+検証の経緯は [`notes/findings.md`](notes/findings.md) にあります。
 
 ## ライセンス
 
-このリポジトリのコードは MIT。
-実行時に読み込む pandoc.wasm は **GPL-2.0-or-later**。
-配布形態の判断は `CLAUDE.md` の「制約とリスク」を参照。
+このリポジトリのコードと文書は [MIT ライセンス](LICENSE)です。
+
+変換エンジンとして利用している pandoc（WebAssembly ビルド）は
+**GPL-2.0-or-later** で、このリポジトリには含まれません（アプリが実行時に取得します）。
+pandoc.wasm を**同梱して配布**する場合は、その配布物が GPL の条件に従う必要があります。
+配布形態の検討は `CLAUDE.md` の「制約とリスク」を参照してください。
