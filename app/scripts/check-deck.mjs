@@ -180,6 +180,15 @@ const DECORS = [
     color: { hex: '#12AB34' },
     opacity: 15,
   },
+  {
+    id: 'dtest3',
+    contentIndex: 1,
+    shape: 'ellipse',
+    x: 457200, y: 360045, w: 617220, h: 617220,
+    color: { scheme: 'accent2' },
+    opacity: 100,
+    text: '3 <&>',
+  },
 ];
 
 /* metadata.title あり → タイトルスライドが1枚 → contentIndex 1 は slide2.xml */
@@ -203,15 +212,35 @@ t('装飾: テーマ参照色・不透明度・直接指定色が XML に出る'
   assert.ok(slide2.includes('<a:srgbClr val="12AB34"><a:alpha val="15000"/>'));
   assert.ok(slide2.includes('prst="roundRect"'));
 });
+t('装飾: 番号バッジは ellipse + 中央揃えの白文字で、テキストはエスケープされる', () => {
+  assert.ok(slide2.includes('prst="ellipse"'));
+  /* 字サイズ = 高さの 45%（617220 EMU = 48.6pt → 2187 = 21.87pt） */
+  const m = slide2.match(/<a:rPr lang="ja-JP" sz="(\d+)" b="1">/);
+  assert.ok(m, 'バッジの rPr が無い');
+  assert.equal(m[1], String(Math.round((617220 / 12700) * 0.45 * 100)));
+  assert.ok(slide2.includes('<a:bodyPr anchor="ctr"'));
+  assert.ok(slide2.includes('<a:t>3 &lt;&amp;&gt;</a:t>'), 'XML エスケープされていない');
+  assert.ok(
+    slide2.match(/b="1">\s*<a:solidFill><a:srgbClr val="FFFFFF"\/>/),
+    '文字色が白でない',
+  );
+});
+
 t('装飾: 注入後も zip は壊れず、既存の解析結果が変わらない', () => {
-  /* 注入図形はテキストを持たないので、テキスト中心の自前パーサには
+  /* 無地の注入図形はテキストを持たないので、テキスト中心の自前パーサには
      写らないのが正しい（プレビューの装飾はデザインデータから直接描く）。
-     ここで確かめるのは「壊していないこと」 */
+     バッジはテキストを持つため非プレースホルダ図形として写る。
+     ここで確かめるのは「既存の図形とノートを壊していないこと」 */
   const reparsed = win.__morphoParsePptx(new Uint8Array(decorated));
   assert.equal(reparsed.slideCount, parsed.slideCount);
-  assert.deepEqual(
-    Array.from(reparsed.slides[1].shapes, (s) => s.placeholder),
-    Array.from(parsed.slides[1].shapes, (s) => s.placeholder),
+  const phOf = (slide) => slide.shapes.filter((s) => s.placeholder).map((s) => s.placeholder);
+  assert.deepEqual(phOf(reparsed.slides[1]), phOf(parsed.slides[1]));
+  const extra = reparsed.slides[1].shapes.filter((s) => !s.placeholder);
+  assert.equal(extra.length, 1, 'バッジ以外の注入図形が写っている');
+  assert.equal(
+    extra[0].paragraphs.map((p) => p.runs.map((r) => r.text).join('')).join(''),
+    '3 <&>',
+    'バッジのテキストが往復で壊れた',
   );
   assert.equal(
     reparsed.slides[1].notes.map((p) => p.runs.map((r) => r.text).join('')).join(''),

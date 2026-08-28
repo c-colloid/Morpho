@@ -30,6 +30,14 @@ const INSET_Y_PT = 3.6;
 
 const TITLE_KINDS = ['title', 'ctrTitle'];
 
+/** '#RRGGBB' を透過つきの rgba() へ。想定外の書式なら素通し */
+function withAlpha(hex: string, alpha: number): string {
+  const m = /^#([0-9A-Fa-f]{6})$/.exec(hex);
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+}
+
 export function SlideSurface({
   slide,
   deck,
@@ -70,13 +78,39 @@ export function SlideSurface({
             top: px(d.y),
             width: px(d.w),
             height: px(d.h),
-            backgroundColor: decorationColorHex(d.color, deck.colors),
-            opacity: d.opacity / 100,
-            /* roundRect の既定半径 = 短辺の 16.67%（PowerPoint の adj 既定） */
+            /* 不透明度は塗りにだけ掛ける。書き出し（a:alpha は塗りのみ、
+               バッジ文字は不透過の白）と見た目を一致させる */
+            backgroundColor: withAlpha(
+              decorationColorHex(d.color, deck.colors),
+              d.opacity / 100,
+            ),
+            /* roundRect の既定半径 = 短辺の 16.67%（PowerPoint の adj 既定）。
+               ellipse は短辺の半分（バッジは正円なので実質円） */
             borderRadius:
-              d.shape === 'roundRect' ? Math.min(px(d.w), px(d.h)) * 0.1667 : 0,
+              d.shape === 'roundRect'
+                ? Math.min(px(d.w), px(d.h)) * 0.1667
+                : d.shape === 'ellipse'
+                  ? Math.min(px(d.w), px(d.h)) / 2
+                  : 0,
+            alignItems: 'center',
+            justifyContent: 'center',
           }}
-        />
+        >
+          {d.text != null && (
+            /* 書き出し（buildDecorSp）と同じ扱い: 白・太字・中央・高さの 45% */
+            <Text
+              style={{
+                color: '#FFFFFF',
+                fontWeight: '700',
+                fontSize: px(d.h) * 0.45,
+                lineHeight: px(d.h) * 0.55,
+              }}
+              numberOfLines={1}
+            >
+              {d.text}
+            </Text>
+          )}
+        </View>
       ))}
       {slide.shapes.map((shape, i) => (
         <ShapeBox

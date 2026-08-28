@@ -138,7 +138,7 @@ export type ConvertResult = SlideResult | WebResult;
  * データは EMU 座標とテーマ参照色で持ち、変換器を自前 writer に
  * 差し替えても生き残る形にする。pandoc 固有の語彙は含めない。
  */
-export type DecorationShape = 'rect' | 'roundRect';
+export type DecorationShape = 'rect' | 'roundRect' | 'ellipse';
 
 export interface DecorationColor {
   /** テーマ配色の参照（accent1〜accent6）。テンプレート差し替えに追従する */
@@ -161,6 +161,11 @@ export interface SlideDecoration {
   color: DecorationColor;
   /** 0〜100（%） */
   opacity: number;
+  /**
+   * 図形内に表示する短いテキスト（番号バッジ等）。白・太字・中央揃えで描く。
+   * 未指定なら無地の図形
+   */
+  text?: string;
 }
 
 export interface ConvertOptions {

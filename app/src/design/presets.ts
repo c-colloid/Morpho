@@ -7,13 +7,14 @@
  */
 import type { DecorationColor, SlideDecoration } from '../converter/types';
 
-export type PresetKind = 'bandTop' | 'bandBottom' | 'accentLine' | 'card';
+export type PresetKind = 'bandTop' | 'bandBottom' | 'accentLine' | 'card' | 'badge';
 
 export const PRESETS: Array<{ kind: PresetKind; label: string; hint: string }> = [
   { kind: 'bandTop', label: '上の帯', hint: 'スライド上端の色帯' },
   { kind: 'bandBottom', label: '下の帯', hint: 'スライド下端の色帯' },
   { kind: 'accentLine', label: 'アクセント線', hint: 'タイトル下の短い線' },
   { kind: 'card', label: '角丸カード', hint: '本文の背面に薄い角丸面' },
+  { kind: 'badge', label: '番号バッジ', hint: '番号入りの丸バッジ' },
 ];
 
 export function makePreset(
@@ -49,6 +50,16 @@ export function makePreset(
         x: pct(slideW, 4), y: pct(slideH, 22), w: pct(slideW, 92), h: pct(slideH, 72),
         color: { scheme: 'accent1' }, opacity: 12,
       };
+    case 'badge': {
+      /* 真円にするため寸法は高さ基準の EMU で揃える（% だと縦横比で歪む） */
+      const size = pct(slideH, 12);
+      return {
+        id, contentIndex, shape: 'ellipse',
+        x: pct(slideW, 5), y: pct(slideH, 7), w: size, h: size,
+        color: { scheme: 'accent2' }, opacity: 100,
+        text: '1',
+      };
+    }
   }
 }
 

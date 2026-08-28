@@ -6,6 +6,7 @@ const {
 const {
   makeGroup, dissolveGroup, pruneGroups, dragMembersOf, moveMembersBy, copyDesignToAllSlides,
 } = await import('../src/design/groups.ts');
+const { serializeDesign, parseDesignFile } = await import('../src/design/designFile.ts');
 
 let n = 0;
 const t = (name, fn) => { fn(); n++; console.log('  ok   ' + name); };
@@ -29,6 +30,70 @@ t('帯は全幅・カードは角丸', () => {
   assert.equal(makePreset('bandTop', 1, 'a', W, H).w, W);
   assert.equal(makePreset('bandBottom', 1, 'a', W, H).w, W);
   assert.equal(makePreset('card', 1, 'a', W, H).shape, 'roundRect');
+});
+
+t('番号バッジ: 正円（w=h）・テキスト付き', () => {
+  const b = makePreset('badge', 1, 'a', W, H);
+  assert.equal(b.shape, 'ellipse');
+  assert.equal(b.w, b.h, 'EMU で正方形でないと円にならない');
+  assert.equal(b.text, '1');
+});
+
+t('.morphodesign: 直列化 → パースの往復で同値', () => {
+  const a = makePreset('bandTop', 1, 'a', W, H);
+  const b = { ...makePreset('badge', 2, 'b', W, H), text: '7' };
+  const c = makePreset('card', 2, 'c', W, H);
+  const design = {
+    version: 1,
+    decorations: [a, b, c],
+    groups: [{ id: 'g1', contentIndex: 2, memberIds: ['b', 'c'] }],
+  };
+  const back = parseDesignFile(serializeDesign(design));
+  assert.deepEqual(back, design);
+});
+
+t('.morphodesign: 別物・壊れた要素は拒否または除外する', () => {
+  assert.equal(parseDesignFile('not json'), null);
+  assert.equal(parseDesignFile('{"foo":1}'), null);
+  assert.equal(parseDesignFile('{"kind":"morphodesign","version":2,"decorations":[]}'), null);
+  const a = makePreset('bandTop', 1, 'a', W, H);
+  const mixed = JSON.stringify({
+    kind: 'morphodesign',
+    version: 1,
+    decorations: [
+      a,
+      { ...a, id: 'bad-shape', shape: 'triangle' },
+      { ...a, id: 'bad-size', w: 0 },
+      { ...a, id: 'bad-color', color: { scheme: 'accent9' } },
+      { ...a, id: 'ok-hex', color: { hex: '#12AB34' } },
+      { ...a, id: 'a' } /* id 重複は最初の1件だけ */,
+      'garbage',
+    ],
+    groups: [
+      { id: 'g1', contentIndex: 1, memberIds: ['a', 'ok-hex'] },
+      { id: 'g2', contentIndex: 1, memberIds: ['a', 'bad-shape'] } /* 1人になるので捨てる */,
+      { id: 'g3', contentIndex: 9, memberIds: ['a', 'ok-hex'] } /* 別スライド参照 */,
+    ],
+  });
+  const out = parseDesignFile(mixed);
+  assert.deepEqual(out.decorations.map((d) => d.id).sort(), ['a', 'ok-hex']);
+  assert.deepEqual(out.groups.map((g) => g.id), ['g1']);
+});
+
+t('.morphodesign: XML を壊せる id・制御文字入りテキストを通さない', () => {
+  const a = makePreset('bandTop', 1, 'a', W, H);
+  const out = parseDesignFile(JSON.stringify({
+    kind: 'morphodesign',
+    version: 1,
+    decorations: [
+      { ...a, id: 'evil"><p:bad' } /* cNvPr name 属性を壊せる id */,
+      { ...makePreset('badge', 1, 'b1', W, H), text: '1\u0000\u0008' },
+      { ...makePreset('badge', 1, 'b2', W, H), text: '\u0007' } /* 除去後に空 → text 無し */,
+    ],
+  }));
+  assert.deepEqual(out.decorations.map((d) => d.id), ['b1', 'b2']);
+  assert.equal(out.decorations[0].text, '1', '制御文字が残っている');
+  assert.equal(out.decorations[1].text, undefined);
 });
 
 t('nudge: 1ステップ = 寸法の1%、サイズは1%未満にならない', () => {

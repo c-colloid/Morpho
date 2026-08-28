@@ -70,6 +70,7 @@ import {
   makeGroup,
   pruneGroups,
 } from '../design/groups';
+import { parseDesignFile, serializeDesign } from '../design/designFile';
 import { DecorSheet } from './DecorSheet';
 import { DecorEditLayer } from './DecorEditLayer';
 import { sanitizeFileName, shareExport } from '../store/exportShare';
@@ -671,13 +672,17 @@ export default function EditorScreen() {
       const ci = decorSheetCi;
       if (ci === null) return;
       const deck = resultRef.current?.deck;
-      mutateDesign((prev) => ({
-        ...prev,
-        decorations: [
-          ...prev.decorations,
-          makePreset(kind, ci, newDecorationId(), deck?.w ?? 9144000, deck?.h ?? 5143500),
-        ],
-      }));
+      mutateDesign((prev) => {
+        const d = makePreset(kind, ci, newDecorationId(), deck?.w ?? 9144000, deck?.h ?? 5143500);
+        if (d.text != null) {
+          /* 番号バッジは同一スライド内の既存バッジ数の続き番号にする */
+          const n = prev.decorations.filter(
+            (x) => x.contentIndex === ci && x.text != null,
+          ).length;
+          d.text = String(n + 1);
+        }
+        return { ...prev, decorations: [...prev.decorations, d] };
+      });
     },
     [decorSheetCi, mutateDesign],
   );
@@ -813,6 +818,59 @@ export default function EditorScreen() {
       ],
     );
   }, [decorSheetCi, mutateDesign]);
+
+  /* デザインの .morphodesign 書き出し（文書全体・Git 再現用） */
+  const handleExportDesign = useCallback(async () => {
+    try {
+      const fileName =
+        sanitizeFileName(titleOf(sourceRef.current, Date.now())) + '.morphodesign';
+      await shareExport(fileName, 'morphodesign', {
+        text: serializeDesign(designRef.current),
+      });
+    } catch (e) {
+      Alert.alert('書き出せませんでした', String(e instanceof Error ? e.message : e));
+    }
+  }, []);
+
+  const handleImportDesign = useCallback(async () => {
+    try {
+      /* .morphodesign は OS に未登録の拡張子なので型では絞れない */
+      const picked = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (picked.canceled || !picked.assets?.length) return;
+      const text = await FileSystem.readAsStringAsync(picked.assets[0].uri);
+      const parsed = parseDesignFile(text);
+      if (!parsed) {
+        Alert.alert(
+          '読み込めませんでした',
+          'このファイルは .morphodesign（Morpho のデザインデータ）ではないようです',
+        );
+        return;
+      }
+      Alert.alert(
+        'デザインを読み込む',
+        `装飾 ${parsed.decorations.length} 件を読み込みます。` +
+          'この文書の現在のデザインは置き換えられます。',
+        [
+          { text: 'キャンセル', style: 'cancel' },
+          {
+            text: '置き換える',
+            style: 'destructive',
+            onPress: () => {
+              mutateDesign(() => parsed);
+              setSelectedDecorId(null);
+              setMarkedIds(new Set());
+            },
+          },
+        ],
+      );
+    } catch (e) {
+      Alert.alert('読み込めませんでした', String(e instanceof Error ? e.message : e));
+    }
+  }, [mutateDesign]);
 
   const titleOffset = useMemo(
     () => (splitFrontMatter(source).metadata.title !== undefined ? 1 : 0),
@@ -1111,6 +1169,8 @@ export default function EditorScreen() {
         onDuplicate={handleDuplicateDecor}
         onReorder={handleReorderDecor}
         onCopyToAll={handleCopyDecorToAll}
+        onExportDesign={handleExportDesign}
+        onImportDesign={handleImportDesign}
         onClose={() => {
           setDecorSheetCi(null);
           setSelectedDecorId(null);

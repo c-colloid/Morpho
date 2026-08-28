@@ -506,9 +506,28 @@ function decorFillXml(color, opacity) {
   return '<a:solidFill><a:srgbClr val="' + hex + '">' + alpha + '</a:srgbClr></a:solidFill>';
 }
 
+function escapeXmlText(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function buildDecorSp(d, cNvPrId) {
-  var prst = d.shape === 'roundRect' ? 'roundRect' : 'rect';
+  var prst = d.shape === 'roundRect' ? 'roundRect' : d.shape === 'ellipse' ? 'ellipse' : 'rect';
   var opacity = d.opacity == null ? 100 : d.opacity;
+  var txBody;
+  if (d.text != null && d.text !== '') {
+    /* 番号バッジ等。白・太字・中央揃えで、字サイズは図形高さの 45%
+       （sz は 1/100 pt 単位。プレビュー SlideSurface と同じ比率） */
+    var sz = Math.max(600, Math.round((d.h / 12700) * 0.45 * 100));
+    txBody = '<p:txBody>' +
+      '<a:bodyPr anchor="ctr" lIns="0" tIns="0" rIns="0" bIns="0"/><a:lstStyle/>' +
+      '<a:p><a:pPr algn="ctr"/>' +
+      '<a:r><a:rPr lang="ja-JP" sz="' + sz + '" b="1">' +
+      '<a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill>' +
+      '</a:rPr><a:t>' + escapeXmlText(d.text) + '</a:t></a:r>' +
+      '</a:p></p:txBody>';
+  } else {
+    txBody = '<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr/></a:p></p:txBody>';
+  }
   return '<p:sp><p:nvSpPr>' +
     '<p:cNvPr id="' + cNvPrId + '" name="MorphoDecor ' + d.id + '"/>' +
     '<p:cNvSpPr/><p:nvPr/></p:nvSpPr>' +
@@ -520,7 +539,7 @@ function buildDecorSp(d, cNvPrId) {
     decorFillXml(d.color, opacity) +
     '<a:ln><a:noFill/></a:ln>' +
     '</p:spPr>' +
-    '<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr/></a:p></p:txBody>' +
+    txBody +
     '</p:sp>';
 }
 window.__morphoBuildDecorSp = buildDecorSp;

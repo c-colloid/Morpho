@@ -8,12 +8,14 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 
-export type ShareKind = 'pptx' | 'docx' | 'md';
+export type ShareKind = 'pptx' | 'docx' | 'md' | 'morphodesign';
 
 const MIME: Record<ShareKind, string> = {
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   md: 'text/markdown',
+  /* .morphodesign の中身は JSON */
+  morphodesign: 'application/json',
 };
 
 /* iOS の共有シートは UTI で挙動が決まる */
@@ -21,6 +23,7 @@ const UTI: Record<ShareKind, string> = {
   pptx: 'org.openxmlformats.presentationml.presentation',
   docx: 'org.openxmlformats.wordprocessingml.document',
   md: 'net.daringfireball.markdown',
+  morphodesign: 'public.json',
 };
 
 /** ファイル名に使えない文字を落とす。日本語はそのまま通す */

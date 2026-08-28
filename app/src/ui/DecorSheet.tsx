@@ -45,6 +45,8 @@ export function DecorSheet({
   onDuplicate,
   onReorder,
   onCopyToAll,
+  onExportDesign,
+  onImportDesign,
   onClose,
 }: {
   visible: boolean;
@@ -69,6 +71,10 @@ export function DecorSheet({
   onDuplicate: (id: string) => void;
   onReorder: (id: string, dir: 'back' | 'front') => void;
   onCopyToAll: () => void;
+  /** 文書全体のデザインを .morphodesign として共有シートへ */
+  onExportDesign: () => void;
+  /** .morphodesign を読み込んで文書全体のデザインを置き換える */
+  onImportDesign: () => void;
   onClose: () => void;
 }) {
   const { width: winW, height: winH } = useWindowDimensions();
@@ -130,8 +136,10 @@ export function DecorSheet({
   const slideH = deck?.h ?? 5143500;
   const selected = decorations.find((d) => d.id === selectedId) ?? null;
 
+  const shapeName = (d: SlideDecoration) =>
+    d.shape === 'roundRect' ? '角丸' : d.shape === 'ellipse' ? '丸' : '矩形';
   const label = (d: SlideDecoration, i: number) =>
-    `${i + 1}. ${d.shape === 'roundRect' ? '角丸' : '矩形'} · ` +
+    `${i + 1}. ${shapeName(d)}${d.text != null ? `「${d.text}」` : ''} · ` +
     `${Math.round((d.w / slideW) * 100)}×${Math.round((d.h / slideH) * 100)}%`;
 
   return (
@@ -223,6 +231,19 @@ export function DecorSheet({
                     ))}
                   </View>
 
+                  {d.text != null && (
+                    <Stepper
+                      label={`番号 ${d.text}`}
+                      onDec={() => {
+                        const n = parseInt(d.text ?? '1', 10);
+                        onUpdate({ ...d, text: String(Math.max(1, (Number.isNaN(n) ? 1 : n) - 1)) });
+                      }}
+                      onInc={() => {
+                        const n = parseInt(d.text ?? '1', 10);
+                        onUpdate({ ...d, text: String(Math.min(99, (Number.isNaN(n) ? 0 : n) + 1)) });
+                      }}
+                    />
+                  )}
                   <Stepper
                     label={`不透明度 ${d.opacity}%`}
                     onDec={() => onUpdate({ ...d, opacity: Math.max(5, d.opacity - 5) })}
@@ -278,6 +299,15 @@ export function DecorSheet({
               <Text style={styles.copyAllText}>このスライドの装飾を全スライドへコピー</Text>
             </Pressable>
           )}
+
+          <View style={styles.fileRow}>
+            <Pressable style={styles.fileBtn} onPress={onExportDesign}>
+              <Text style={styles.fileText}>デザインを書き出す</Text>
+            </Pressable>
+            <Pressable style={styles.fileBtn} onPress={onImportDesign}>
+              <Text style={styles.fileText}>読み込む</Text>
+            </Pressable>
+          </View>
         </ScrollView>
       </View>
     </Animated.View>
@@ -441,4 +471,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   copyAllText: { fontSize: 13, color: '#1B3FE0', fontWeight: '600' },
+
+  fileRow: { flexDirection: 'row', gap: 6, marginTop: 10 },
+  fileBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: RULE,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+  },
+  fileText: { fontSize: 12, color: '#14161B' },
 });
