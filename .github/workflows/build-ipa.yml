@@ -136,10 +136,13 @@ jobs:
             echo "---"
             echo "インストール手順: https://github.com/${{ github.repository }}/blob/main/app/README.md"
           } >> notes.md
+          # AltStore / SideStore の「ソース」。固定 URL
+          # releases/latest/download/source.json で配るため毎リリースに添付する
+          node scripts/make-source.mjs "$VERSION" "Morpho-${VERSION}.ipa" notes.md source.json
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "Morpho-${VERSION}.ipa" --clobber
+            gh release upload "$TAG" "Morpho-${VERSION}.ipa" source.json --clobber
             gh release edit "$TAG" --notes-file notes.md
           else
-            gh release create "$TAG" "Morpho-${VERSION}.ipa" \
+            gh release create "$TAG" "Morpho-${VERSION}.ipa" source.json \
               --title "Morpho ${VERSION}" --notes-file notes.md
           fi

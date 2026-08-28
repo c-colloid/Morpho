@@ -1,7 +1,7 @@
 # Morpho アプリ
 
 Markdown で書いた原稿から PowerPoint スライドを作る iPad アプリ。
-現在 **0.5.0**（[変更履歴](CHANGELOG.md)）。
+現在 **0.5.1**（[変更履歴](CHANGELOG.md)）。
 プロジェクト全体の紹介は [リポジトリのトップ](../README.md) にあります。
 
 開発サーバでの実行・ビルド・検査など開発者向けの情報は
@@ -34,6 +34,21 @@ App Store 未公開のため、サイドロードで入れます。
   いれば自動で再署名します（サイドロード枠は3アプリまで。AltStore 自身が1枠使用）
 - Releases はアプリ本体の push のたびに自動でビルド・更新されます（約5分）。
   無いときは GitHub の **Actions タブ → Build IPA → Run workflow** で手動実行もできます
+
+**アップデート**
+
+新しい版が公開されると、アプリ起動時にバナーで知らせます。
+入れ替えをワンタップにするには、AltStore / SideStore に Morpho の
+「ソース」を一度登録しておきます:
+
+1. AltStore: Browse → Sources → ＋ / SideStore: Sources → ＋ で次の URL を追加
+
+   ```
+   https://github.com/c-colloid/Morpho/releases/latest/download/source.json
+   ```
+
+2. 以後はストアの Update に新しい版が並び、タップで入れ替えられます
+   （AltStore + 常駐 AltServer なら自動更新も効く）。アプリ内の文書は残ります
 
 ## 画面と操作
 

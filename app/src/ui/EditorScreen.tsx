@@ -52,6 +52,7 @@ import {
   titleOf,
   type DocMeta,
 } from '../store/documents';
+import { checkForUpdate, type UpdateInfo } from '../store/updateCheck';
 import { sanitizeFileName, shareExport } from '../store/exportShare';
 import { DocumentsModal } from './DocumentsModal';
 import { ExportMenu, type ExportChoice } from './ExportMenu';
@@ -195,6 +196,18 @@ export default function EditorScreen() {
     },
     [flushSave],
   );
+
+  /* ---------- 更新チェック（起動時に1回・失敗は黙って無視） ---------- */
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void checkForUpdate(VERSION).then((u) => {
+      if (alive && u) setUpdate(u);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   /* 起動時: 既存の文書を開く。無ければサンプルで1冊作る */
   useEffect(() => {
@@ -661,6 +674,20 @@ export default function EditorScreen() {
         onPlay={() => setShowOpen(true)}
       />
 
+      {update && (
+        <View style={styles.updateBar}>
+          <Text style={styles.updateText}>
+            新しい版 v{update.version} が公開されています（現在 v{VERSION}）
+          </Text>
+          <Pressable hitSlop={8} onPress={() => void Linking.openURL(update.url)}>
+            <Text style={styles.updateLink}>リリースを開く</Text>
+          </Pressable>
+          <Pressable hitSlop={8} onPress={() => setUpdate(null)}>
+            <Text style={styles.updateDismiss}>閉じる</Text>
+          </Pressable>
+        </View>
+      )}
+
       <View style={[styles.panes, wide && styles.panesWide]}>
         <View style={[styles.pane, styles.editorPane]}>
           <View style={styles.paneLabelRow}>
@@ -1044,6 +1071,20 @@ const styles = StyleSheet.create({
   formatBtnOn: { backgroundColor: '#1B3FE0' },
   formatText: { fontSize: 12, color: '#14161B' },
   formatTextOn: { color: '#FFFFFF', fontWeight: '600' },
+
+  updateBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    backgroundColor: '#E9EDFB',
+    borderBottomWidth: 1,
+    borderBottomColor: '#BFC4CD',
+  },
+  updateText: { flex: 1, fontSize: 13, color: '#14161B' },
+  updateLink: { fontSize: 13, color: '#1B3FE0', fontWeight: '600' },
+  updateDismiss: { fontSize: 13, color: '#666C78' },
 
   webPane: { flex: 1, paddingHorizontal: 20, paddingBottom: 20, gap: 12 },
   webView: {
