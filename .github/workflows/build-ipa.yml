@@ -7,7 +7,7 @@
 #
 # 使い方（iPad だけで完結）:
 #   GitHub の Actions タブ → Build IPA → Run workflow
-#   → 完了後 Artifacts から Morpho-ipa をダウンロード → 展開
+#   → 完了後 Releases に Morpho-x.y.z.ipa が公開される（ログイン・zip 展開不要）
 #   → AltStore（要 同一LAN の AltServer）か SideStore で ipa を開く
 name: Build IPA
 
@@ -18,6 +18,10 @@ on:
   push:
     branches: [main]
     paths: ['.github/workflows/build-ipa.yml']
+
+# Releases への公開（タグ作成とアセット添付）に要る
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -102,3 +106,35 @@ jobs:
           name: Morpho-ipa
           path: app/*.ipa
           retention-days: 14
+
+      # Artifacts は一時保存（14日で消える・要ログイン・zip 展開が要る）なので、
+      # 恒久の置き場として Releases にも公開する。iPad の Safari から直接落とせる。
+      # 同じバージョンで再ビルドしたときはアセットを差し替える。
+      - name: Releases に公開（main のみ）
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(node -p "require('./app.json').expo.version")
+          TAG="v${VERSION}"
+          # リリースノート: CHANGELOG の該当版の節を抜き出す（無ければ定型文）
+          awk -v ver="$VERSION" '
+            index($0, "## " ver " ") == 1 { hit = 1; next }
+            hit && /^## / { exit }
+            hit { print }
+          ' CHANGELOG.md > notes.md
+          if ! [ -s notes.md ]; then
+            echo "Morpho ${VERSION} の署名なし ipa。AltStore / SideStore で署名し直して入れる。" > notes.md
+          fi
+          {
+            echo ""
+            echo "---"
+            echo "インストール手順: https://github.com/${{ github.repository }}/blob/main/app/README.md"
+          } >> notes.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "Morpho-${VERSION}.ipa" --clobber
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" "Morpho-${VERSION}.ipa" \
+              --title "Morpho ${VERSION}" --notes-file notes.md
+          fi

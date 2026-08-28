@@ -48,7 +48,8 @@ App Store 未公開のため、現状はサイドロードが必要です（iPad
 手順は [`app/README.md`](app/README.md) にまとまっています。
 
 - 開発者向け: Expo Go + 開発サーバ（`npm install && npm start`）
-- 実機だけで試す: GitHub Actions がビルドする ipa を AltStore / SideStore で入れる
+- 実機だけで試す: [Releases](https://github.com/c-colloid/Morpho/releases) の ipa を
+  AltStore / SideStore で入れる
 
 ## 仕組み
 

@@ -164,10 +164,15 @@ CI 側の署名も Apple Developer Program も不要。**検証済み・成果�
 手順（iPad だけで完結する）:
 
 1. GitHub の **Actions タブ → Build IPA → Run workflow**
-2. 完了（約5分）後、run のページ下部 **Artifacts → Morpho-ipa** をダウンロード
-3. zip を展開して `Morpho-x.y.z.ipa` を取り出す
-4. **AltStore**（＋ボタン → ipa を選択。同一 LAN に AltServer が必要）か
+2. 完了（約5分）後、**[Releases](https://github.com/c-colloid/Morpho/releases) に
+   `Morpho-x.y.z.ipa` が公開される**。Safari でそのままダウンロードできる
+   （ログイン・zip 展開は不要）
+3. **AltStore**（＋ボタン → ipa を選択。同一 LAN に AltServer が必要）か
    **SideStore**（初回ペアリング後は完全に iPad 単体）で開く
+
+リリースノートは `CHANGELOG.md` の該当版の節が自動で入る。
+同じバージョンで再ビルドすると Releases のアセットは差し替えられる。
+Actions の Artifacts（Morpho-ipa・14日で消える）にも同じものが残る。
 
 Expo Go 版との違い:
 
