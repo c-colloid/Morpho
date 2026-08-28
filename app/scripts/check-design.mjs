@@ -1,6 +1,6 @@
 /** 装飾プリセット・微調整・色解決の検査 */
 import assert from 'node:assert/strict';
-const { PRESETS, makePreset, nudge, decorationColorHex } =
+const { PRESETS, makePreset, nudge, decorationColorHex, copyToAllSlides, moveDecoration } =
   await import('../src/design/presets.ts');
 
 let n = 0;
@@ -41,6 +41,41 @@ t('色解決: テーマ参照 → 実色、未知は灰色、hex はそのまま
   assert.equal(decorationColorHex({ scheme: 'accent1' }, colors), '#4472C4');
   assert.equal(decorationColorHex({ scheme: 'accent2' }, colors), '#888888');
   assert.equal(decorationColorHex({ hex: '#12AB34' }, colors), '#12AB34');
+});
+
+t('全スライドへコピー: 元は保持・他は置き換え・id は新規で一意', () => {
+  let seq = 0;
+  const gen = () => `g${seq++}`;
+  const decorations = [
+    makePreset('bandTop', 2, 'src1', W, H),
+    makePreset('accentLine', 2, 'src2', W, H),
+    makePreset('card', 1, 'old1', W, H),
+    makePreset('card', 3, 'old3', W, H),
+  ];
+  const out = copyToAllSlides(decorations, 2, 4, gen);
+  assert.equal(out.filter((d) => d.contentIndex === 2).length, 2);
+  assert.ok(out.some((d) => d.id === 'src1') && out.some((d) => d.id === 'src2'));
+  assert.ok(!out.some((d) => d.id === 'old1') && !out.some((d) => d.id === 'old3'));
+  for (const ci of [1, 3, 4]) {
+    const s = out.filter((d) => d.contentIndex === ci);
+    assert.equal(s.length, 2, `ci=${ci}`);
+    assert.equal(s[0].shape, 'rect');
+  }
+  const ids = out.map((d) => d.id);
+  assert.equal(new Set(ids).size, ids.length, 'id が重複');
+});
+
+t('重なり順の入れ替え: 同一スライド内でだけ動き、端では何もしない', () => {
+  const a = makePreset('bandTop', 1, 'a', W, H);
+  const b = makePreset('card', 1, 'b', W, H);
+  const x = makePreset('card', 2, 'x', W, H);
+  const list = [a, x, b];
+  const moved = moveDecoration(list, 'b', 'back');
+  assert.deepEqual(moved.map((d) => d.id), ['b', 'x', 'a'], 'スライド1内で入れ替わる');
+  assert.equal(moved[1].id, 'x', '他スライドの位置は不変');
+  assert.deepEqual(moveDecoration(list, 'a', 'back').map((d) => d.id), ['a', 'x', 'b']);
+  assert.deepEqual(moveDecoration(list, 'b', 'front').map((d) => d.id), ['a', 'x', 'b']);
+  assert.deepEqual(moveDecoration(list, 'zzz', 'back').map((d) => d.id), ['a', 'x', 'b']);
 });
 
 console.log(`\n${n} 件すべて通過`);

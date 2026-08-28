@@ -61,6 +61,48 @@ export function decorationColorHex(
   return color.hex ?? '#888888';
 }
 
+/**
+ * あるスライドの装飾を全スライドへ複製する（置き換え方式）。
+ * 元スライドの装飾はそのまま、他のスライドの既存装飾はすべて捨てて
+ * 元のコピー（新しい id・contentIndex 差し替え）を置く。
+ * totalSlides はコンテンツスライドの数（タイトルを含まない）。
+ */
+export function copyToAllSlides(
+  decorations: SlideDecoration[],
+  fromCi: number,
+  totalSlides: number,
+  genId: () => string,
+): SlideDecoration[] {
+  const src = decorations.filter((d) => d.contentIndex === fromCi);
+  const out: SlideDecoration[] = [...src];
+  for (let ci = 1; ci <= totalSlides; ci++) {
+    if (ci === fromCi) continue;
+    for (const d of src) out.push({ ...d, id: genId(), contentIndex: ci });
+  }
+  return out;
+}
+
+/**
+ * 同じスライド内での重なり順の入れ替え（配列順 = 背面から前面）。
+ * 端では何もしない。他のスライドの装飾の位置は動かさない。
+ */
+export function moveDecoration(
+  decorations: SlideDecoration[],
+  id: string,
+  dir: 'back' | 'front',
+): SlideDecoration[] {
+  const target = decorations.find((d) => d.id === id);
+  if (!target) return decorations;
+  const siblings = decorations.filter((d) => d.contentIndex === target.contentIndex);
+  const at = siblings.findIndex((d) => d.id === id);
+  const to = dir === 'back' ? at - 1 : at + 1;
+  if (to < 0 || to >= siblings.length) return decorations;
+  const reordered = [...siblings];
+  [reordered[at], reordered[to]] = [reordered[to], reordered[at]];
+  let i = 0;
+  return decorations.map((d) => (d.contentIndex === target.contentIndex ? reordered[i++] : d));
+}
+
 /** 位置・サイズの微調整。1ステップ = スライド寸法の 1%。負のサイズは作らない */
 export function nudge(
   d: SlideDecoration,

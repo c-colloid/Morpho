@@ -62,7 +62,12 @@ import {
   saveDesign,
   type DesignData,
 } from '../store/designs';
-import { makePreset, type PresetKind } from '../design/presets';
+import {
+  copyToAllSlides,
+  makePreset,
+  moveDecoration,
+  type PresetKind,
+} from '../design/presets';
 import { DecorSheet } from './DecorSheet';
 import { sanitizeFileName, shareExport } from '../store/exportShare';
 import { DocumentsModal } from './DocumentsModal';
@@ -682,6 +687,61 @@ export default function EditorScreen() {
     [mutateDesign],
   );
 
+  const handleDuplicateDecor = useCallback(
+    (id: string) => {
+      const deck = resultRef.current?.deck;
+      const w = deck?.w ?? 9144000;
+      const h = deck?.h ?? 5143500;
+      mutateDesign((prev) => {
+        const src = prev.decorations.find((x) => x.id === id);
+        if (!src) return prev;
+        /* 元と重ならないよう 2% ずらして複製 */
+        const copy: SlideDecoration = {
+          ...src,
+          id: newDecorationId(),
+          x: Math.round(src.x + w / 50),
+          y: Math.round(src.y + h / 50),
+        };
+        return { ...prev, decorations: [...prev.decorations, copy] };
+      });
+    },
+    [mutateDesign],
+  );
+
+  const handleReorderDecor = useCallback(
+    (id: string, dir: 'back' | 'front') => {
+      mutateDesign((prev) => ({
+        ...prev,
+        decorations: moveDecoration(prev.decorations, id, dir),
+      }));
+    },
+    [mutateDesign],
+  );
+
+  const handleCopyDecorToAll = useCallback(() => {
+    const ci = decorSheetCi;
+    if (ci === null) return;
+    const { body } = splitFrontMatter(sourceRef.current);
+    const total = slideSegments(body).length;
+    Alert.alert(
+      '全スライドへコピー',
+      `スライド ${ci} の装飾を全 ${total} 枚へコピーします。` +
+        '他のスライドの既存の装飾は置き換えられます。',
+      [
+        { text: 'キャンセル', style: 'cancel' },
+        {
+          text: 'コピー',
+          style: 'destructive',
+          onPress: () =>
+            mutateDesign((prev) => ({
+              ...prev,
+              decorations: copyToAllSlides(prev.decorations, ci, total, newDecorationId),
+            })),
+        },
+      ],
+    );
+  }, [decorSheetCi, mutateDesign]);
+
   /* プレビュー用: スライド番号（タイトル込み）→ 装飾の対応表 */
   const decorBySlide = useMemo(() => {
     const map = new Map<number, SlideDecoration[]>();
@@ -952,6 +1012,9 @@ export default function EditorScreen() {
         onAdd={handleAddDecor}
         onUpdate={handleUpdateDecor}
         onRemove={handleRemoveDecor}
+        onDuplicate={handleDuplicateDecor}
+        onReorder={handleReorderDecor}
+        onCopyToAll={handleCopyDecorToAll}
         onClose={() => setDecorSheetCi(null)}
       />
       <SlideShow
