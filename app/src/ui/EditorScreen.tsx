@@ -1330,6 +1330,7 @@ function SlideCard({
                 width={width}
                 selectedId={selectedDecorId}
                 dragMembers={dragMembers}
+                live={liveDecors}
                 onSelect={onSelectDecor}
                 onLive={handleLive}
                 onCommit={onCommitDecors}
