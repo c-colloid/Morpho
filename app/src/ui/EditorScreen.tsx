@@ -674,12 +674,13 @@ export default function EditorScreen() {
       const deck = resultRef.current?.deck;
       mutateDesign((prev) => {
         const d = makePreset(kind, ci, newDecorationId(), deck?.w ?? 9144000, deck?.h ?? 5143500);
-        if (d.text != null) {
-          /* 番号バッジは同一スライド内の既存バッジ数の続き番号にする */
-          const n = prev.decorations.filter(
-            (x) => x.contentIndex === ci && x.text != null,
-          ).length;
-          d.text = String(n + 1);
+        if (kind === 'badge') {
+          /* 番号バッジは同一スライド内の数字テキストの最大値の続き番号にする
+             （どの図形にもテキストを載せられるので、数だけ数えるとずれる） */
+          const max = prev.decorations
+            .filter((x) => x.contentIndex === ci && x.text != null && /^\d+$/.test(x.text))
+            .reduce((m, x) => Math.max(m, Number(x.text)), 0);
+          d.text = String(max + 1);
         }
         return { ...prev, decorations: [...prev.decorations, d] };
       });
@@ -936,6 +937,7 @@ export default function EditorScreen() {
             stripHtmlComments: true,
             /* 装飾は pptx にだけ焼き込まれる（ブリッジ側で無関係な形式は無視） */
             decorations: design.decorations,
+            groups: design.groups,
           });
           await shareExport(fileName, choice, { base64: out.base64 });
         }

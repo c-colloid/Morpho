@@ -7,7 +7,9 @@
  */
 import type { DecorationColor, SlideDecoration } from '../converter/types';
 
-export type PresetKind = 'bandTop' | 'bandBottom' | 'accentLine' | 'card' | 'badge';
+export type PresetKind =
+  | 'bandTop' | 'bandBottom' | 'accentLine' | 'card' | 'badge'
+  | 'triangle' | 'diamond' | 'hexagon' | 'star5' | 'rightArrow';
 
 export const PRESETS: Array<{ kind: PresetKind; label: string; hint: string }> = [
   { kind: 'bandTop', label: '上の帯', hint: 'スライド上端の色帯' },
@@ -15,6 +17,15 @@ export const PRESETS: Array<{ kind: PresetKind; label: string; hint: string }> =
   { kind: 'accentLine', label: 'アクセント線', hint: 'タイトル下の短い線' },
   { kind: 'card', label: '角丸カード', hint: '本文の背面に薄い角丸面' },
   { kind: 'badge', label: '番号バッジ', hint: '番号入りの丸バッジ' },
+];
+
+/** 基本図形（中央に置く。用途を決めないプリセット） */
+export const SHAPE_PRESETS: Array<{ kind: PresetKind; label: string }> = [
+  { kind: 'triangle', label: '▲' },
+  { kind: 'diamond', label: '◆' },
+  { kind: 'hexagon', label: '⬡' },
+  { kind: 'star5', label: '★' },
+  { kind: 'rightArrow', label: '➜' },
 ];
 
 export function makePreset(
@@ -58,6 +69,25 @@ export function makePreset(
         x: pct(slideW, 5), y: pct(slideH, 7), w: size, h: size,
         color: { scheme: 'accent2' }, opacity: 100,
         text: '1',
+      };
+    }
+    case 'rightArrow':
+      return {
+        id, contentIndex, shape: 'rightArrow',
+        x: pct(slideW, 38), y: pct(slideH, 44), w: pct(slideW, 24), h: pct(slideH, 12),
+        color: { scheme: 'accent1' }, opacity: 100,
+      };
+    case 'triangle':
+    case 'diamond':
+    case 'hexagon':
+    case 'star5': {
+      /* 基本図形は縦横同寸（EMU）で中央に置く */
+      const size = pct(slideH, 20);
+      return {
+        id, contentIndex, shape: kind,
+        x: Math.round((slideW - size) / 2), y: Math.round((slideH - size) / 2),
+        w: size, h: size,
+        color: { scheme: 'accent1' }, opacity: 100,
       };
     }
   }

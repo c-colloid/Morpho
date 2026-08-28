@@ -1,8 +1,9 @@
 /** 装飾プリセット・微調整・色解決の検査 */
 import assert from 'node:assert/strict';
 const {
-  PRESETS, makePreset, nudge, decorationColorHex, moveDecoration, moveTo, resizeTo,
+  PRESETS, SHAPE_PRESETS, makePreset, nudge, decorationColorHex, moveDecoration, moveTo, resizeTo,
 } = await import('../src/design/presets.ts');
+const { shapePoints } = await import('../src/design/shapeGeometry.ts');
 const {
   makeGroup, dissolveGroup, pruneGroups, dragMembersOf, moveMembersBy, copyDesignToAllSlides,
 } = await import('../src/design/groups.ts');
@@ -15,7 +16,7 @@ const W = 9144000;
 const H = 5143500;
 
 t('全プリセットがスライド内に収まり、正の寸法を持つ', () => {
-  for (const p of PRESETS) {
+  for (const p of [...PRESETS, ...SHAPE_PRESETS]) {
     const d = makePreset(p.kind, 1, 'id1', W, H);
     assert.ok(d.w > 0 && d.h > 0, p.kind);
     assert.ok(d.x >= 0 && d.y >= 0, p.kind);
@@ -37,6 +38,50 @@ t('番号バッジ: 正円（w=h）・テキスト付き', () => {
   assert.equal(b.shape, 'ellipse');
   assert.equal(b.w, b.h, 'EMU で正方形でないと円にならない');
   assert.equal(b.text, '1');
+});
+
+t('図形の外形: 頂点数が正しく、すべて図形の枠内に収まる', () => {
+  const counts = { triangle: 3, diamond: 4, hexagon: 6, star5: 10, rightArrow: 7 };
+  for (const [shape, count] of Object.entries(counts)) {
+    const pts = shapePoints(shape, 400, 300);
+    assert.equal(pts.length, count, shape);
+    for (const [x, y] of pts) {
+      assert.ok(x >= -0.001 && x <= 400.001 && y >= -0.001 && y <= 300.001,
+        `${shape} の頂点 (${x},${y}) が枠外`);
+    }
+  }
+  assert.equal(shapePoints('rect', 400, 300), null);
+  assert.equal(shapePoints('roundRect', 400, 300), null);
+  assert.equal(shapePoints('ellipse', 400, 300), null);
+  /* 基本図形プリセットは正方形（星・多角形が歪まない） */
+  for (const kind of ['triangle', 'diamond', 'hexagon', 'star5']) {
+    const d = makePreset(kind, 1, 'a', W, H);
+    assert.equal(d.w, d.h, kind);
+    assert.equal(d.shape, kind);
+  }
+});
+
+t('.morphodesign: 枠線・塗りなしの検証（不正は捨て、不可視は塗りに戻す）', () => {
+  const a = makePreset('bandTop', 1, 'a', W, H);
+  const parse = (list) => parseDesignFile(JSON.stringify({
+    kind: 'morphodesign', version: 1, decorations: list,
+  }));
+  const ok = parse([{
+    ...a, id: 'ok', noFill: true,
+    line: { color: { scheme: 'accent3' }, widthPt: 2 },
+  }]).decorations[0];
+  assert.equal(ok.noFill, true);
+  assert.deepEqual(ok.line, { color: { scheme: 'accent3' }, widthPt: 2 });
+  const bads = parse([
+    { ...a, id: 'b1', line: { color: { scheme: 'accent9' }, widthPt: 2 } },
+    { ...a, id: 'b2', line: { color: { scheme: 'accent1' }, widthPt: 0 } },
+    { ...a, id: 'b3', noFill: true } /* 枠が無いのに塗りなし → 塗りに戻す */,
+    { ...a, id: 'b4', line: { color: { scheme: 'accent1' }, widthPt: 99 } },
+  ]).decorations;
+  assert.equal(bads[0].line, undefined, '不正な枠色が通った');
+  assert.equal(bads[1].line, undefined, '太さ0が通った');
+  assert.equal(bads[2].noFill, undefined, '不可視の図形が通った');
+  assert.equal(bads[3].line.widthPt, 12, '太さがクランプされていない');
 });
 
 t('.morphodesign: 直列化 → パースの往復で同値', () => {
@@ -62,7 +107,7 @@ t('.morphodesign: 別物・壊れた要素は拒否または除外する', () =>
     version: 1,
     decorations: [
       a,
-      { ...a, id: 'bad-shape', shape: 'triangle' },
+      { ...a, id: 'bad-shape', shape: 'pentagon' },
       { ...a, id: 'bad-size', w: 0 },
       { ...a, id: 'bad-color', color: { scheme: 'accent9' } },
       { ...a, id: 'ok-hex', color: { hex: '#12AB34' } },

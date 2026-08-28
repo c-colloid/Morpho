@@ -9,7 +9,10 @@ import type {
   SlideShape,
   TextRun,
 } from '../converter/types';
+import Svg, { Polygon } from 'react-native-svg';
+
 import { decorationColorHex } from '../design/presets';
+import { shapePoints } from '../design/shapeGeometry';
 
 /**
  * 実寸プレビュー。
@@ -36,6 +39,104 @@ function withAlpha(hex: string, alpha: number): string {
   if (!m) return hex;
   const n = parseInt(m[1], 16);
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+}
+
+/**
+ * 装飾ひとつの描画。
+ *
+ * - 不透明度は塗りにだけ掛ける。書き出し（a:alpha は塗りのみ、
+ *   バッジ文字は不透過の白）と見た目を一致させる
+ * - rect / roundRect / ellipse は View、多角形は SVG（外形は
+ *   shapeGeometry の OOXML 既定 adj 近似）
+ * - 枠線は中心線引き（SVG）。View 側は内側に引かれる近似
+ */
+function DecorBox({
+  d,
+  deck,
+  px,
+  scale,
+}: {
+  d: SlideDecoration;
+  deck: DeckInfo;
+  px: (emu: number) => number;
+  scale: number;
+}) {
+  const w = px(d.w);
+  const h = px(d.h);
+  const fill = d.noFill
+    ? 'transparent'
+    : withAlpha(decorationColorHex(d.color, deck.colors), d.opacity / 100);
+  const lineW = d.line && d.line.widthPt > 0 ? d.line.widthPt * scale : 0;
+  const lineColor = d.line ? decorationColorHex(d.line.color, deck.colors) : 'transparent';
+  const pts = shapePoints(d.shape, w, h);
+  /* SVG は枠線の中心引きで外へはみ出すぶんだけ広げて描く */
+  const pad = lineW / 2 + 1;
+  return (
+    <View
+      style={{
+        position: 'absolute',
+        left: px(d.x),
+        top: px(d.y),
+        width: w,
+        height: h,
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      {pts ? (
+        <Svg
+          pointerEvents="none"
+          style={{ position: 'absolute', left: -pad, top: -pad }}
+          width={w + pad * 2}
+          height={h + pad * 2}
+          viewBox={`${-pad} ${-pad} ${w + pad * 2} ${h + pad * 2}`}
+        >
+          <Polygon
+            points={pts.map((p) => `${p[0]},${p[1]}`).join(' ')}
+            fill={fill}
+            stroke={lineW > 0 ? lineColor : 'none'}
+            strokeWidth={lineW}
+            strokeLinejoin="round"
+          />
+        </Svg>
+      ) : (
+        <View
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: fill,
+            /* roundRect の既定半径 = 短辺の 16.67%（PowerPoint の adj 既定）。
+               ellipse は短辺の半分（バッジは正円なので実質円） */
+            borderRadius:
+              d.shape === 'roundRect'
+                ? Math.min(w, h) * 0.1667
+                : d.shape === 'ellipse'
+                  ? Math.min(w, h) / 2
+                  : 0,
+            borderWidth: lineW > 0 ? lineW : undefined,
+            borderColor: lineW > 0 ? lineColor : undefined,
+          }}
+        />
+      )}
+      {d.text != null && (
+        /* 書き出し（buildDecorSp）と同じ扱い: 白・太字・中央・高さの 45% */
+        <Text
+          style={{
+            color: '#FFFFFF',
+            fontWeight: '700',
+            fontSize: h * 0.45,
+            lineHeight: h * 0.55,
+          }}
+          numberOfLines={1}
+        >
+          {d.text}
+        </Text>
+      )}
+    </View>
+  );
 }
 
 export function SlideSurface({
@@ -70,47 +171,7 @@ export function SlideSurface({
       ]}
     >
       {decorations?.map((d) => (
-        <View
-          key={d.id}
-          style={{
-            position: 'absolute',
-            left: px(d.x),
-            top: px(d.y),
-            width: px(d.w),
-            height: px(d.h),
-            /* 不透明度は塗りにだけ掛ける。書き出し（a:alpha は塗りのみ、
-               バッジ文字は不透過の白）と見た目を一致させる */
-            backgroundColor: withAlpha(
-              decorationColorHex(d.color, deck.colors),
-              d.opacity / 100,
-            ),
-            /* roundRect の既定半径 = 短辺の 16.67%（PowerPoint の adj 既定）。
-               ellipse は短辺の半分（バッジは正円なので実質円） */
-            borderRadius:
-              d.shape === 'roundRect'
-                ? Math.min(px(d.w), px(d.h)) * 0.1667
-                : d.shape === 'ellipse'
-                  ? Math.min(px(d.w), px(d.h)) / 2
-                  : 0,
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          {d.text != null && (
-            /* 書き出し（buildDecorSp）と同じ扱い: 白・太字・中央・高さの 45% */
-            <Text
-              style={{
-                color: '#FFFFFF',
-                fontWeight: '700',
-                fontSize: px(d.h) * 0.45,
-                lineHeight: px(d.h) * 0.55,
-              }}
-              numberOfLines={1}
-            >
-              {d.text}
-            </Text>
-          )}
-        </View>
+        <DecorBox key={d.id} d={d} deck={deck} px={px} scale={scale} />
       ))}
       {slide.shapes.map((shape, i) => (
         <ShapeBox

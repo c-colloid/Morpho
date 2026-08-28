@@ -12,7 +12,9 @@ import type { DecorGroup, DesignData } from '../store/designs';
 
 export const DESIGN_FILE_KIND = 'morphodesign';
 
-const SHAPES: DecorationShape[] = ['rect', 'roundRect', 'ellipse'];
+const SHAPES: DecorationShape[] = [
+  'rect', 'roundRect', 'ellipse', 'triangle', 'diamond', 'hexagon', 'star5', 'rightArrow',
+];
 const SCHEMES = ['accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6'];
 
 export function serializeDesign(design: DesignData): string {
@@ -30,11 +32,30 @@ export function serializeDesign(design: DesignData): string {
 
 const isFiniteNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 
+function sanitizeColor(v: unknown): SlideDecoration['color'] | null {
+  const color = (typeof v === 'object' && v !== null ? v : {}) as Record<string, unknown>;
+  if (SCHEMES.includes(color.scheme as string)) {
+    return { scheme: color.scheme as SlideDecoration['color']['scheme'] };
+  }
+  if (typeof color.hex === 'string' && /^#[0-9A-Fa-f]{6}$/.test(color.hex)) {
+    return { hex: color.hex };
+  }
+  return null;
+}
+
 /* id は XML 属性（cNvPr name）へ素で入るので、生成器と同等の文字種に限る */
 const ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
 /* XML 1.0 ではエスケープしても書けない制御文字 */
 // eslint-disable-next-line no-control-regex
 const XML_INVALID_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+
+/**
+ * 図形テキストの浄化（アプリ内入力・.morphodesign 読み込みの共通経路）。
+ * 制御文字は pptx の <a:t> に入ると XML として不正になるため除去する
+ */
+export function sanitizeDecorText(text: string): string {
+  return text.replace(XML_INVALID_RE, '').slice(0, 20);
+}
 
 function sanitizeDecoration(v: unknown): SlideDecoration | null {
   if (typeof v !== 'object' || v === null) return null;
@@ -44,15 +65,8 @@ function sanitizeDecoration(v: unknown): SlideDecoration | null {
   if (!SHAPES.includes(o.shape as DecorationShape)) return null;
   if (!isFiniteNum(o.x) || !isFiniteNum(o.y) || !isFiniteNum(o.w) || !isFiniteNum(o.h)) return null;
   if (o.w <= 0 || o.h <= 0) return null;
-  const color = (typeof o.color === 'object' && o.color !== null
-    ? (o.color as Record<string, unknown>)
-    : {}) as Record<string, unknown>;
-  const scheme = SCHEMES.includes(color.scheme as string)
-    ? (color.scheme as SlideDecoration['color']['scheme'])
-    : undefined;
-  const hex =
-    typeof color.hex === 'string' && /^#[0-9A-Fa-f]{6}$/.test(color.hex) ? color.hex : undefined;
-  if (!scheme && !hex) return null;
+  const fillColor = sanitizeColor(o.color);
+  if (!fillColor) return null;
   const d: SlideDecoration = {
     id: o.id,
     contentIndex: Math.round(o.contentIndex),
@@ -61,13 +75,23 @@ function sanitizeDecoration(v: unknown): SlideDecoration | null {
     y: Math.round(o.y),
     w: Math.round(o.w),
     h: Math.round(o.h),
-    color: scheme ? { scheme } : { hex },
+    color: fillColor,
     opacity: isFiniteNum(o.opacity) ? Math.max(5, Math.min(100, Math.round(o.opacity))) : 100,
   };
   if (typeof o.text === 'string') {
-    const text = o.text.replace(XML_INVALID_RE, '').slice(0, 20);
+    const text = sanitizeDecorText(o.text);
     if (text.length > 0) d.text = text;
   }
+  if (o.noFill === true) d.noFill = true;
+  if (typeof o.line === 'object' && o.line !== null) {
+    const l = o.line as Record<string, unknown>;
+    const lineColor = sanitizeColor(l.color);
+    if (lineColor && isFiniteNum(l.widthPt) && l.widthPt > 0) {
+      d.line = { color: lineColor, widthPt: Math.min(12, Math.max(0.25, l.widthPt)) };
+    }
+  }
+  /* 塗りも枠も無い図形は見えないので、塗りに戻す */
+  if (d.noFill && !d.line) delete d.noFill;
   return d;
 }
 

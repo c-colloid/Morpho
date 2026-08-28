@@ -138,7 +138,16 @@ export type ConvertResult = SlideResult | WebResult;
  * データは EMU 座標とテーマ参照色で持ち、変換器を自前 writer に
  * 差し替えても生き残る形にする。pandoc 固有の語彙は含めない。
  */
-export type DecorationShape = 'rect' | 'roundRect' | 'ellipse';
+/** OOXML の presetGeometry 名と一致させる（自前 writer でもそのまま使える語彙） */
+export type DecorationShape =
+  | 'rect'
+  | 'roundRect'
+  | 'ellipse'
+  | 'triangle'
+  | 'diamond'
+  | 'hexagon'
+  | 'star5'
+  | 'rightArrow';
 
 export interface DecorationColor {
   /** テーマ配色の参照（accent1〜accent6）。テンプレート差し替えに追従する */
@@ -166,6 +175,10 @@ export interface SlideDecoration {
    * 未指定なら無地の図形
    */
   text?: string;
+  /** 枠線。未指定なら枠なし */
+  line?: { color: DecorationColor; widthPt: number };
+  /** 塗りなし（枠線だけの図形用）。既定 false */
+  noFill?: boolean;
 }
 
 export interface ConvertOptions {
@@ -178,6 +191,11 @@ export interface ConvertOptions {
    * 他形式では無視される
    */
   decorations?: SlideDecoration[];
+  /**
+   * 装飾のグループ。メンバーは pptx 書き出しで p:grpSp に包まれ、
+   * PowerPoint 上でもまとめて選択・移動できる
+   */
+  groups?: Array<{ id: string; contentIndex: number; memberIds: string[] }>;
 }
 
 /** 変換器が生成できる出力形式。md はエディタの内容そのものなので含めない */

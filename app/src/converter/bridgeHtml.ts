@@ -510,9 +510,17 @@ function escapeXmlText(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/* DecorationShape は OOXML の presetGeometry 名と一致させている（types.ts） */
+var DECOR_PRSTS = ['rect', 'roundRect', 'ellipse', 'triangle', 'diamond', 'hexagon', 'star5', 'rightArrow'];
+
 function buildDecorSp(d, cNvPrId) {
-  var prst = d.shape === 'roundRect' ? 'roundRect' : d.shape === 'ellipse' ? 'ellipse' : 'rect';
+  var prst = DECOR_PRSTS.indexOf(d.shape) >= 0 ? d.shape : 'rect';
   var opacity = d.opacity == null ? 100 : d.opacity;
+  var fill = d.noFill ? '<a:noFill/>' : decorFillXml(d.color, opacity);
+  var ln = d.line && d.line.widthPt > 0
+    ? '<a:ln w="' + Math.round(d.line.widthPt * 12700) + '">' +
+      decorFillXml(d.line.color, 100) + '</a:ln>'
+    : '<a:ln><a:noFill/></a:ln>';
   var txBody;
   if (d.text != null && d.text !== '') {
     /* 番号バッジ等。白・太字・中央揃えで、字サイズは図形高さの 45%
@@ -536,17 +544,39 @@ function buildDecorSp(d, cNvPrId) {
     '<a:ext cx="' + Math.round(d.w) + '" cy="' + Math.round(d.h) + '"/>' +
     '</a:xfrm>' +
     '<a:prstGeom prst="' + prst + '"><a:avLst/></a:prstGeom>' +
-    decorFillXml(d.color, opacity) +
-    '<a:ln><a:noFill/></a:ln>' +
+    fill +
+    ln +
     '</p:spPr>' +
     txBody +
     '</p:sp>';
 }
 window.__morphoBuildDecorSp = buildDecorSp;
 
+/* グループの p:grpSp を組み立てる。子座標系（chOff/chExt）を外形と同一に
+   すると、子の座標をスライド絶対値のまま使える */
+function buildGroupSp(group, ds, firstId) {
+  var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  ds.forEach(function (d) {
+    minX = Math.min(minX, d.x); minY = Math.min(minY, d.y);
+    maxX = Math.max(maxX, d.x + d.w); maxY = Math.max(maxY, d.y + d.h);
+  });
+  var children = ds.map(function (d, i) { return buildDecorSp(d, firstId + 1 + i); }).join('');
+  return '<p:grpSp><p:nvGrpSpPr>' +
+    '<p:cNvPr id="' + firstId + '" name="MorphoGroup ' + group.id + '"/>' +
+    '<p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>' +
+    '<p:grpSpPr><a:xfrm>' +
+    '<a:off x="' + Math.round(minX) + '" y="' + Math.round(minY) + '"/>' +
+    '<a:ext cx="' + Math.round(maxX - minX) + '" cy="' + Math.round(maxY - minY) + '"/>' +
+    '<a:chOff x="' + Math.round(minX) + '" y="' + Math.round(minY) + '"/>' +
+    '<a:chExt cx="' + Math.round(maxX - minX) + '" cy="' + Math.round(maxY - minY) + '"/>' +
+    '</a:xfrm></p:grpSpPr>' +
+    children + '</p:grpSp>';
+}
+
 /* zip 内の slideN.xml へ装飾を注入して zip を作り直す。
-   contentIndex はタイトルスライドを含まない 1 始まり。titleOffset で実スライドへ写す */
-function applyDecorations(bytes, decorations, titleOffset) {
+   contentIndex はタイトルスライドを含まない 1 始まり。titleOffset で実スライドへ写す。
+   groups のメンバーは p:grpSp に包む（z 順は先頭メンバーの位置） */
+function applyDecorations(bytes, decorations, titleOffset, groups) {
   if (!decorations || !decorations.length) return bytes;
   var zip = unzipSync(bytes);
   var dec2 = new TextDecoder();
@@ -554,6 +584,10 @@ function applyDecorations(bytes, decorations, titleOffset) {
   decorations.forEach(function (d) {
     var n = d.contentIndex + titleOffset;
     (bySlide[n] = bySlide[n] || []).push(d);
+  });
+  var groupOf = {};
+  (groups || []).forEach(function (g) {
+    g.memberIds.forEach(function (m) { groupOf[m] = g; });
   });
   Object.keys(bySlide).forEach(function (n) {
     var name = 'ppt/slides/slide' + n + '.xml';
@@ -566,9 +600,26 @@ function applyDecorations(bytes, decorations, titleOffset) {
     while ((im = idRe.exec(xml)) !== null) {
       if (Number(im[1]) > maxId) maxId = Number(im[1]);
     }
-    var sps = bySlide[n]
-      .map(function (d, i) { return buildDecorSp(d, maxId + 1 + i); })
-      .join('');
+    /* グループのメンバーは先頭メンバーの位置でまとめて grpSp に包む */
+    var units = [];
+    var unitByGroup = {};
+    bySlide[n].forEach(function (d) {
+      var g = groupOf[d.id];
+      if (!g) { units.push({ ds: [d], group: null }); return; }
+      if (unitByGroup[g.id]) { unitByGroup[g.id].ds.push(d); return; }
+      var u = { ds: [d], group: g };
+      unitByGroup[g.id] = u;
+      units.push(u);
+    });
+    var nextId = maxId + 1;
+    var sps = units.map(function (u) {
+      if (u.group && u.ds.length >= 2) {
+        var x = buildGroupSp(u.group, u.ds, nextId);
+        nextId += 1 + u.ds.length;
+        return x;
+      }
+      return u.ds.map(function (d) { return buildDecorSp(d, nextId++); }).join('');
+    }).join('');
     var marker = '</p:grpSpPr>';
     var at = xml.indexOf(marker);
     if (at < 0) return;
@@ -717,7 +768,7 @@ async function doExport(id, md, opts, format) {
     if (format === 'pptx' && opts.decorations && opts.decorations.length) {
       var titleOffset = opts.metadata && opts.metadata.title ? 1 : 0;
       var processed = applyDecorations(
-        new Uint8Array(await out.arrayBuffer()), opts.decorations, titleOffset);
+        new Uint8Array(await out.arrayBuffer()), opts.decorations, titleOffset, opts.groups);
       out = new Blob([processed]);
     }
 

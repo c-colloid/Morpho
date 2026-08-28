@@ -6,16 +6,43 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import type { DeckInfo, SlideDecoration } from '../converter/types';
+import type { DecorationShape, DeckInfo, SlideDecoration } from '../converter/types';
 import type { DecorGroup } from '../store/designs';
-import { PRESETS, decorationColorHex, nudge, type PresetKind } from '../design/presets';
+import {
+  PRESETS, SHAPE_PRESETS, decorationColorHex, nudge, type PresetKind,
+} from '../design/presets';
+import { sanitizeDecorText } from '../design/designFile';
 
 const SCHEMES = ['accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6'] as const;
+
+/** 図形切り替え行の表示（DecorationShape 全種） */
+const SHAPE_GLYPHS: Array<{ shape: DecorationShape; glyph: string }> = [
+  { shape: 'rect', glyph: '▬' },
+  { shape: 'roundRect', glyph: '▢' },
+  { shape: 'ellipse', glyph: '●' },
+  { shape: 'triangle', glyph: '▲' },
+  { shape: 'diamond', glyph: '◆' },
+  { shape: 'hexagon', glyph: '⬡' },
+  { shape: 'star5', glyph: '★' },
+  { shape: 'rightArrow', glyph: '➜' },
+];
+
+const SHAPE_NAMES: Record<DecorationShape, string> = {
+  rect: '矩形',
+  roundRect: '角丸',
+  ellipse: '丸',
+  triangle: '三角',
+  diamond: 'ひし形',
+  hexagon: '六角形',
+  star5: '星',
+  rightArrow: '矢印',
+};
 
 const PANEL_W = 336;
 
@@ -136,10 +163,8 @@ export function DecorSheet({
   const slideH = deck?.h ?? 5143500;
   const selected = decorations.find((d) => d.id === selectedId) ?? null;
 
-  const shapeName = (d: SlideDecoration) =>
-    d.shape === 'roundRect' ? '角丸' : d.shape === 'ellipse' ? '丸' : '矩形';
   const label = (d: SlideDecoration, i: number) =>
-    `${i + 1}. ${shapeName(d)}${d.text != null ? `「${d.text}」` : ''} · ` +
+    `${i + 1}. ${SHAPE_NAMES[d.shape] ?? d.shape}${d.text ? `「${d.text}」` : ''} · ` +
     `${Math.round((d.w / slideW) * 100)}×${Math.round((d.h / slideH) * 100)}%`;
 
   return (
@@ -166,6 +191,11 @@ export function DecorSheet({
           <Text style={styles.section}>追加（プリセット）</Text>
           <View style={styles.presetRow}>
             {PRESETS.map((p) => (
+              <Pressable key={p.kind} style={styles.presetBtn} onPress={() => onAdd(p.kind)}>
+                <Text style={styles.presetLabel}>{p.label}</Text>
+              </Pressable>
+            ))}
+            {SHAPE_PRESETS.map((p) => (
               <Pressable key={p.kind} style={styles.presetBtn} onPress={() => onAdd(p.kind)}>
                 <Text style={styles.presetLabel}>{p.label}</Text>
               </Pressable>
@@ -217,38 +247,126 @@ export function DecorSheet({
 
               {selected?.id === d.id && (
                 <View style={styles.controls}>
-                  <View style={styles.swatchRow}>
+                  <View style={styles.swatchLine}>
+                    <Text style={styles.swatchLabel}>形</Text>
+                    {SHAPE_GLYPHS.map((s) => (
+                      <Pressable
+                        key={s.shape}
+                        style={[styles.shapeBtn, d.shape === s.shape && styles.shapeOn]}
+                        onPress={() => onUpdate({ ...d, shape: s.shape })}
+                      >
+                        <Text style={styles.shapeGlyph}>{s.glyph}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+
+                  <View style={styles.swatchLine}>
+                    <Text style={styles.swatchLabel}>塗り</Text>
                     {SCHEMES.map((s) => (
                       <Pressable
                         key={s}
                         style={[
                           styles.swatch,
                           { backgroundColor: colors[s] ?? '#888888' },
-                          d.color.scheme === s && styles.swatchOn,
+                          !d.noFill && d.color.scheme === s && styles.swatchOn,
                         ]}
-                        onPress={() => onUpdate({ ...d, color: { scheme: s } })}
+                        onPress={() => {
+                          const { noFill: _n, ...rest } = d;
+                          onUpdate({ ...rest, color: { scheme: s } });
+                        }}
                       />
                     ))}
+                    <Pressable
+                      style={[styles.noFillChip, d.noFill && styles.swatchOn]}
+                      onPress={() => {
+                        if (d.noFill) {
+                          const { noFill: _n, ...rest } = d;
+                          onUpdate(rest);
+                        } else {
+                          /* 塗りも枠も無いと見えなくなるので、枠線を伴わせる */
+                          onUpdate({
+                            ...d,
+                            noFill: true,
+                            line: d.line ?? { color: d.color, widthPt: 1 },
+                          });
+                        }
+                      }}
+                    >
+                      <Text style={styles.noFillText}>なし</Text>
+                    </Pressable>
                   </View>
 
-                  {d.text != null && (
-                    <Stepper
-                      label={`番号 ${d.text}`}
-                      onDec={() => {
-                        const n = parseInt(d.text ?? '1', 10);
-                        onUpdate({ ...d, text: String(Math.max(1, (Number.isNaN(n) ? 1 : n) - 1)) });
-                      }}
-                      onInc={() => {
-                        const n = parseInt(d.text ?? '1', 10);
-                        onUpdate({ ...d, text: String(Math.min(99, (Number.isNaN(n) ? 0 : n) + 1)) });
-                      }}
-                    />
+                  {d.text != null ? (
+                    <View style={styles.textRow}>
+                      <Text style={styles.stepperLabel}>テキスト</Text>
+                      <TextInput
+                        key={d.id}
+                        style={styles.textInput}
+                        defaultValue={d.text}
+                        maxLength={20}
+                        onChangeText={(t) => onUpdate({ ...d, text: sanitizeDecorText(t) })}
+                        placeholder="1"
+                      />
+                      <Pressable
+                        hitSlop={6}
+                        onPress={() => {
+                          const { text: _t, ...rest } = d;
+                          onUpdate(rest);
+                        }}
+                      >
+                        <Text style={styles.itemTool}>✕</Text>
+                      </Pressable>
+                    </View>
+                  ) : (
+                    <Pressable
+                      style={styles.removeBtn}
+                      onPress={() => onUpdate({ ...d, text: '' })}
+                    >
+                      <Text style={styles.ungroupText}>テキストを追加</Text>
+                    </Pressable>
                   )}
+
                   <Stepper
                     label={`不透明度 ${d.opacity}%`}
                     onDec={() => onUpdate({ ...d, opacity: Math.max(5, d.opacity - 5) })}
                     onInc={() => onUpdate({ ...d, opacity: Math.min(100, d.opacity + 5) })}
                   />
+                  <Stepper
+                    label={`枠線 ${d.line ? `${d.line.widthPt}pt` : 'なし'}`}
+                    onDec={() => {
+                      if (!d.line) return;
+                      const w = Math.round((d.line.widthPt - 0.5) * 2) / 2;
+                      if (w <= 0) {
+                        /* 枠を消すとき、塗りなしのままだと見えなくなるので塗りも戻す */
+                        const { line: _l, noFill: _n, ...rest } = d;
+                        onUpdate(rest);
+                      } else {
+                        onUpdate({ ...d, line: { ...d.line, widthPt: w } });
+                      }
+                    }}
+                    onInc={() => {
+                      const w = Math.min(12, Math.round(((d.line?.widthPt ?? 0) + 0.5) * 2) / 2);
+                      onUpdate({ ...d, line: { color: d.line?.color ?? d.color, widthPt: w } });
+                    }}
+                  />
+                  {d.line && (
+                    <View style={styles.swatchLine}>
+                      <Text style={styles.swatchLabel}>枠色</Text>
+                      {SCHEMES.map((s) => (
+                        <Pressable
+                          key={s}
+                          style={[
+                            styles.swatch,
+                            { backgroundColor: colors[s] ?? '#888888' },
+                            d.line?.color.scheme === s && styles.swatchOn,
+                          ]}
+                          onPress={() =>
+                            onUpdate({ ...d, line: { ...d.line!, color: { scheme: s } } })
+                          }
+                        />
+                      ))}
+                    </View>
+                  )}
                   <Stepper
                     label="位置 左右"
                     onDec={() => onUpdate(nudge(d, 'x', -1, slideW, slideH))}
@@ -428,6 +546,45 @@ const styles = StyleSheet.create({
   swatchRow: { flexDirection: 'row', gap: 7 },
   swatch: { width: 28, height: 28, borderRadius: 6, borderWidth: 1, borderColor: 'rgba(0,0,0,0.15)' },
   swatchOn: { borderWidth: 3, borderColor: '#14161B' },
+
+  swatchLine: { flexDirection: 'row', alignItems: 'center', gap: 5, flexWrap: 'wrap' },
+  swatchLabel: { width: 30, fontSize: 11, color: '#666C78' },
+  shapeBtn: {
+    width: 29,
+    height: 29,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: RULE,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shapeOn: { borderWidth: 2, borderColor: '#1B3FE0', backgroundColor: '#E9EDFB' },
+  shapeGlyph: { fontSize: 14, color: '#14161B' },
+  noFillChip: {
+    paddingHorizontal: 7,
+    height: 28,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: RULE,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  noFillText: { fontSize: 11, color: '#14161B' },
+
+  textRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  textInput: {
+    flex: 1,
+    height: 32,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: RULE,
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 8,
+    fontSize: 13,
+    color: '#14161B',
+  },
 
   stepperRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   stepperLabel: { flex: 1, fontSize: 12, color: '#14161B' },

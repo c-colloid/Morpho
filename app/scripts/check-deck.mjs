@@ -189,10 +189,23 @@ const DECORS = [
     opacity: 100,
     text: '3 <&>',
   },
+  {
+    id: 'dtest4',
+    contentIndex: 1,
+    shape: 'star5',
+    x: 2000000, y: 2000000, w: 1000000, h: 1000000,
+    color: { scheme: 'accent3' },
+    opacity: 100,
+    noFill: true,
+    line: { color: { hex: '#AB12CD' }, widthPt: 1.5 },
+  },
 ];
 
+/* dtest1 と dtest2 をグループに（bbox は dtest1 が x/y、dtest2 が右下を決める） */
+const GROUPS = [{ id: 'gtest1', contentIndex: 1, memberIds: ['dtest1', 'dtest2'] }];
+
 /* metadata.title あり → タイトルスライドが1枚 → contentIndex 1 は slide2.xml */
-const decorated = win.__morphoApplyDecorations(bytes, DECORS, 1);
+const decorated = win.__morphoApplyDecorations(bytes, DECORS, 1, GROUPS);
 const dzip = unzipSync(new Uint8Array(decorated));
 const slide2 = strFromU8(dzip['ppt/slides/slide2.xml']);
 
@@ -224,6 +237,30 @@ t('装飾: 番号バッジは ellipse + 中央揃えの白文字で、テキス�
     slide2.match(/b="1">\s*<a:solidFill><a:srgbClr val="FFFFFF"\/>/),
     '文字色が白でない',
   );
+});
+
+t('装飾: 枠線と塗りなしが XML に出る', () => {
+  assert.ok(slide2.includes('prst="star5"'));
+  /* noFill: spPr の塗りが <a:noFill/>（枠線の noFill とは別に存在する） */
+  const star = slide2.slice(slide2.indexOf('MorphoDecor dtest4'));
+  const noFillAt = star.indexOf('<a:noFill/>');
+  assert.ok(noFillAt >= 0 && noFillAt < star.indexOf('<a:ln'), '塗りなしになっていない');
+  /* 1.5pt = 19050 EMU */
+  assert.ok(star.includes('<a:ln w="19050"><a:solidFill><a:srgbClr val="AB12CD">'),
+    '枠線の太さ・色が出ていない');
+});
+
+t('装飾: グループが p:grpSp に包まれ、外形が bbox・子座標系は恒等', () => {
+  assert.ok(slide2.includes('MorphoGroup gtest1'));
+  const g = slide2.slice(slide2.indexOf('<p:grpSp>'), slide2.indexOf('</p:grpSp>'));
+  assert.ok(g.includes('MorphoDecor dtest1') && g.includes('MorphoDecor dtest2'),
+    'メンバーがグループの中にいない');
+  assert.ok(!g.includes('MorphoDecor dtest3'), '非メンバーが混入');
+  /* bbox: 左上 (0,0) は dtest1、右端 9144000 も dtest1（全幅）、下端 4000000 は dtest2 */
+  assert.ok(g.includes('<a:off x="0" y="0"/>'));
+  assert.ok(g.includes('<a:ext cx="9144000" cy="4000000"/>'));
+  assert.ok(g.includes('<a:chOff x="0" y="0"/>'));
+  assert.ok(g.includes('<a:chExt cx="9144000" cy="4000000"/>'));
 });
 
 t('装飾: 注入後も zip は壊れず、既存の解析結果が変わらない', () => {
