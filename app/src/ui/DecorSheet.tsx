@@ -12,6 +12,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { DeckInfo, SlideDecoration } from '../converter/types';
+import type { DecorGroup } from '../store/designs';
 import { PRESETS, decorationColorHex, nudge, type PresetKind } from '../design/presets';
 
 const SCHEMES = ['accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6'] as const;
@@ -33,6 +34,11 @@ export function DecorSheet({
   deck,
   selectedId,
   onSelectItem,
+  markedIds,
+  onToggleMark,
+  groups,
+  onGroupMarked,
+  onUngroup,
   onAdd,
   onUpdate,
   onRemove,
@@ -50,6 +56,13 @@ export function DecorSheet({
   /** 選択はプレビュー上の直接操作と共有（親が持つ） */
   selectedId: string | null;
   onSelectItem: (id: string | null) => void;
+  /** グループ化のための複数マーク */
+  markedIds: Set<string>;
+  onToggleMark: (id: string) => void;
+  /** このスライドのグループ */
+  groups: DecorGroup[];
+  onGroupMarked: () => void;
+  onUngroup: (groupId: string) => void;
   onAdd: (kind: PresetKind) => void;
   onUpdate: (d: SlideDecoration) => void;
   onRemove: (id: string) => void;
@@ -160,6 +173,11 @@ export function DecorSheet({
                 style={styles.itemHead}
                 onPress={() => onSelectItem(selectedId === d.id ? null : d.id)}
               >
+                <Pressable hitSlop={6} onPress={() => onToggleMark(d.id)}>
+                  <Text style={[styles.mark, markedIds.has(d.id) && styles.markOn]}>
+                    {markedIds.has(d.id) ? '●' : '○'}
+                  </Text>
+                </Pressable>
                 <View
                   style={[
                     styles.chip,
@@ -170,7 +188,13 @@ export function DecorSheet({
                     },
                   ]}
                 />
-                <Text style={styles.itemLabel}>{label(d, i)}</Text>
+                <Text style={styles.itemLabel}>
+                  {label(d, i)}
+                  {(() => {
+                    const gi = groups.findIndex((g) => g.memberIds.includes(d.id));
+                    return gi >= 0 ? `  G${gi + 1}` : '';
+                  })()}
+                </Text>
                 <Pressable hitSlop={6} onPress={() => onReorder(d.id, 'back')}>
                   <Text style={styles.itemTool}>↑</Text>
                 </Pressable>
@@ -225,6 +249,14 @@ export function DecorSheet({
                     onInc={() => onUpdate(nudge(d, 'h', 1, slideW, slideH))}
                   />
 
+                  {(() => {
+                    const g = groups.find((x) => x.memberIds.includes(d.id));
+                    return g ? (
+                      <Pressable style={styles.removeBtn} onPress={() => onUngroup(g.id)}>
+                        <Text style={styles.ungroupText}>グループ解除</Text>
+                      </Pressable>
+                    ) : null;
+                  })()}
                   <Pressable style={styles.removeBtn} onPress={() => onRemove(d.id)}>
                     <Text style={styles.removeText}>この装飾を削除</Text>
                   </Pressable>
@@ -232,6 +264,14 @@ export function DecorSheet({
               )}
             </View>
           ))}
+
+          {markedIds.size >= 2 && (
+            <Pressable style={styles.groupBtn} onPress={onGroupMarked}>
+              <Text style={styles.groupText}>
+                マークした {markedIds.size} 件をグループ化（一緒に動く）
+              </Text>
+            </Pressable>
+          )}
 
           {decorations.length > 0 && (
             <Pressable style={styles.copyAllBtn} onPress={onCopyToAll}>
@@ -375,6 +415,21 @@ const styles = StyleSheet.create({
 
   removeBtn: { alignSelf: 'flex-start', marginTop: 2 },
   removeText: { fontSize: 12, color: '#B01030', fontWeight: '600' },
+  ungroupText: { fontSize: 12, color: '#1B3FE0', fontWeight: '600' },
+
+  mark: { fontSize: 14, color: '#9AA0AC', paddingHorizontal: 1 },
+  markOn: { color: '#1B3FE0' },
+
+  groupBtn: {
+    marginTop: 6,
+    paddingVertical: 9,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#1B3FE0',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+  },
+  groupText: { fontSize: 13, color: '#1B3FE0', fontWeight: '600' },
 
   copyAllBtn: {
     marginTop: 6,

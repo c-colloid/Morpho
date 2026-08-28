@@ -62,12 +62,14 @@ import {
   saveDesign,
   type DesignData,
 } from '../store/designs';
+import { makePreset, moveDecoration, type PresetKind } from '../design/presets';
 import {
-  copyToAllSlides,
-  makePreset,
-  moveDecoration,
-  type PresetKind,
-} from '../design/presets';
+  copyDesignToAllSlides,
+  dissolveGroup,
+  dragMembersOf,
+  makeGroup,
+  pruneGroups,
+} from '../design/groups';
 import { DecorSheet } from './DecorSheet';
 import { DecorEditLayer } from './DecorEditLayer';
 import { sanitizeFileName, shareExport } from '../store/exportShare';
@@ -640,6 +642,10 @@ export default function EditorScreen() {
   const [decorSheetCi, setDecorSheetCi] = useState<number | null>(null);
   /* パネルとプレビュー上の直接操作で共有する選択状態 */
   const [selectedDecorId, setSelectedDecorId] = useState<string | null>(null);
+  /* グループ化のための複数マーク（一時的な UI 状態） */
+  const [markedIds, setMarkedIds] = useState<Set<string>>(new Set());
+  /* 装飾ドラッグ中はプレビューの縦スクロールを止める（実機での競合対策） */
+  const [decorDragging, setDecorDragging] = useState(false);
 
   const handleEditDecor = useCallback(
     (slideIndex: number) => {
@@ -650,7 +656,10 @@ export default function EditorScreen() {
         return;
       }
       setDecorSheetCi((prev) => {
-        if (prev !== ci) setSelectedDecorId(null);
+        if (prev !== ci) {
+          setSelectedDecorId(null);
+          setMarkedIds(new Set());
+        }
         return ci;
       });
     },
@@ -685,10 +694,68 @@ export default function EditorScreen() {
 
   const handleRemoveDecor = useCallback(
     (id: string) => {
+      mutateDesign((prev) => {
+        const decorations = prev.decorations.filter((x) => x.id !== id);
+        return { ...prev, decorations, groups: pruneGroups(prev.groups, decorations) };
+      });
+      /* 消した装飾のマークも忘れる（グループ化ボタンの件数が嘘をつかないように） */
+      setMarkedIds((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    },
+    [mutateDesign],
+  );
+
+  /* 直接操作の確定はグループぶんまとめて来る */
+  const handleUpdateDecors = useCallback(
+    (ds: SlideDecoration[]) => {
       mutateDesign((prev) => ({
         ...prev,
-        decorations: prev.decorations.filter((x) => x.id !== id),
+        decorations: prev.decorations.map((x) => ds.find((n) => n.id === x.id) ?? x),
       }));
+    },
+    [mutateDesign],
+  );
+
+  const decorDragMembers = useCallback(
+    (id: string) => dragMembersOf(designRef.current.groups, id),
+    [],
+  );
+
+  const handleToggleMark = useCallback((id: string) => {
+    setMarkedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const handleGroupMarked = useCallback(() => {
+    const ids = [...markedIds];
+    const next = makeGroup(
+      designRef.current.groups,
+      designRef.current.decorations,
+      ids,
+      newDecorationId(),
+    );
+    if (!next) {
+      Alert.alert(
+        'グループ化できません',
+        '同じスライドの、まだグループに入っていない装飾を2つ以上マークしてください',
+      );
+      return;
+    }
+    mutateDesign((prev) => ({ ...prev, groups: next }));
+    setMarkedIds(new Set());
+  }, [markedIds, mutateDesign]);
+
+  const handleUngroup = useCallback(
+    (groupId: string) => {
+      mutateDesign((prev) => ({ ...prev, groups: dissolveGroup(prev.groups, groupId) }));
     },
     [mutateDesign],
   );
@@ -739,10 +806,9 @@ export default function EditorScreen() {
           text: 'コピー',
           style: 'destructive',
           onPress: () =>
-            mutateDesign((prev) => ({
-              ...prev,
-              decorations: copyToAllSlides(prev.decorations, ci, total, newDecorationId),
-            })),
+            mutateDesign((prev) =>
+              copyDesignToAllSlides(prev, ci, total, newDecorationId),
+            ),
         },
       ],
     );
@@ -969,7 +1035,13 @@ export default function EditorScreen() {
               )}
             </View>
           ) : (
-            <ScrollView ref={previewRef} contentContainerStyle={styles.previewBody}>
+            <ScrollView
+              ref={previewRef}
+              contentContainerStyle={styles.previewBody}
+              /* 装飾ドラッグ中はネイティブスクロールを止める（JS レスポンダの
+                 拒否だけでは実機の縦スクロールに勝てない・実機フィードバック） */
+              scrollEnabled={!decorDragging}
+            >
               {error && (
                 <View style={[styles.diag, styles.critical]}>
                   <Text style={styles.diagLabel}>変換に失敗しました</Text>
@@ -992,8 +1064,10 @@ export default function EditorScreen() {
                     decorations={decorBySlide.get(s.index)}
                     editingDecor={s.index === editingSlideIndex}
                     selectedDecorId={selectedDecorId}
+                    dragMembers={decorDragMembers}
                     onSelectDecor={setSelectedDecorId}
-                    onCommitDecor={handleUpdateDecor}
+                    onCommitDecors={handleUpdateDecors}
+                    onDragActive={setDecorDragging}
                     onSelect={handleSelectSlide}
                     onEditNotes={handleEditNotes}
                     onEditDecor={handleEditDecor}
@@ -1026,6 +1100,11 @@ export default function EditorScreen() {
         deck={result?.deck ?? null}
         selectedId={selectedDecorId}
         onSelectItem={setSelectedDecorId}
+        markedIds={markedIds}
+        onToggleMark={handleToggleMark}
+        groups={design.groups.filter((g) => g.contentIndex === decorSheetCi)}
+        onGroupMarked={handleGroupMarked}
+        onUngroup={handleUngroup}
         onAdd={handleAddDecor}
         onUpdate={handleUpdateDecor}
         onRemove={handleRemoveDecor}
@@ -1035,6 +1114,8 @@ export default function EditorScreen() {
         onClose={() => {
           setDecorSheetCi(null);
           setSelectedDecorId(null);
+          setMarkedIds(new Set());
+          setDecorDragging(false);
         }}
       />
       <SlideShow
@@ -1155,8 +1236,10 @@ function SlideCard({
   decorations,
   editingDecor,
   selectedDecorId,
+  dragMembers,
   onSelectDecor,
-  onCommitDecor,
+  onCommitDecors,
+  onDragActive,
   onSelect,
   onEditNotes,
   onEditDecor,
@@ -1170,8 +1253,11 @@ function SlideCard({
   /** 装飾パネルを開いているスライド。直接操作レイヤーを重ねる */
   editingDecor: boolean;
   selectedDecorId: string | null;
+  dragMembers: (id: string) => string[];
   onSelectDecor: (id: string | null) => void;
-  onCommitDecor: (d: SlideDecoration) => void;
+  onCommitDecors: (ds: SlideDecoration[]) => void;
+  /** ドラッグ中は親がプレビューのスクロールを止める */
+  onDragActive: (active: boolean) => void;
   onSelect: (slideIndex: number) => void;
   onEditNotes: (slideIndex: number) => void;
   onEditDecor: (slideIndex: number) => void;
@@ -1182,13 +1268,23 @@ function SlideCard({
 
   /* 直接操作のドラッグ中の一時値。SlideSurface 側の描画を差し替えて
      「本文の背面のまま」動かす（z 順が書き出しと一致し続ける） */
-  const [liveDecor, setLiveDecor] = useState<SlideDecoration | null>(null);
+  const [liveDecors, setLiveDecors] = useState<SlideDecoration[] | null>(null);
   useEffect(() => {
-    if (!editingDecor) setLiveDecor(null);
-  }, [editingDecor]);
+    if (!editingDecor) {
+      setLiveDecors(null);
+      /* ドラッグ中に編集対象が切り替わった場合もスクロールロックを必ず解く */
+      onDragActive(false);
+    }
+  }, [editingDecor, onDragActive]);
+  /* カードごとアンマウントされた場合（再変換でスライド構成が変わる等）も解く */
+  useEffect(() => () => onDragActive(false), [onDragActive]);
+  const handleLive = (ds: SlideDecoration[] | null) => {
+    setLiveDecors(ds);
+    onDragActive(ds !== null);
+  };
   const shownDecorations =
-    editingDecor && liveDecor
-      ? decorations?.map((x) => (x.id === liveDecor.id ? liveDecor : x))
+    editingDecor && liveDecors
+      ? decorations?.map((x) => liveDecors.find((l) => l.id === x.id) ?? x)
       : decorations;
   return (
     <Pressable
@@ -1233,9 +1329,10 @@ function SlideCard({
                 deck={deck}
                 width={width}
                 selectedId={selectedDecorId}
+                dragMembers={dragMembers}
                 onSelect={onSelectDecor}
-                onLive={setLiveDecor}
-                onCommit={onCommitDecor}
+                onLive={handleLive}
+                onCommit={onCommitDecors}
               />
             )}
           </View>

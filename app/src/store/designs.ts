@@ -10,12 +10,20 @@ import * as FileSystem from 'expo-file-system/legacy';
 
 import type { SlideDecoration } from '../converter/types';
 
+/** 装飾のグループ（roadmap: データはメンバー ID の配列）。同一スライド内のみ */
+export interface DecorGroup {
+  id: string;
+  contentIndex: number;
+  memberIds: string[];
+}
+
 export interface DesignData {
   version: 1;
   decorations: SlideDecoration[];
+  groups: DecorGroup[];
 }
 
-export const EMPTY_DESIGN: DesignData = { version: 1, decorations: [] };
+export const EMPTY_DESIGN: DesignData = { version: 1, decorations: [], groups: [] };
 
 const DIR = FileSystem.documentDirectory + 'morpho/';
 const pathOf = (docId: string) => DIR + 'design-' + docId + '.json';
@@ -29,7 +37,12 @@ export async function loadDesign(docId: string): Promise<DesignData> {
     const raw = await FileSystem.readAsStringAsync(pathOf(docId));
     const parsed = JSON.parse(raw) as Partial<DesignData>;
     if (parsed.version === 1 && Array.isArray(parsed.decorations)) {
-      return { version: 1, decorations: parsed.decorations };
+      return {
+        version: 1,
+        decorations: parsed.decorations,
+        /* 0.6.2 以前のファイルには groups が無い */
+        groups: Array.isArray(parsed.groups) ? parsed.groups : [],
+      };
     }
   } catch {
     // 無い・壊れている → 空

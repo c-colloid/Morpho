@@ -1,9 +1,11 @@
 /** 装飾プリセット・微調整・色解決の検査 */
 import assert from 'node:assert/strict';
 const {
-  PRESETS, makePreset, nudge, decorationColorHex, copyToAllSlides, moveDecoration,
-  moveTo, resizeTo,
+  PRESETS, makePreset, nudge, decorationColorHex, moveDecoration, moveTo, resizeTo,
 } = await import('../src/design/presets.ts');
+const {
+  makeGroup, dissolveGroup, pruneGroups, dragMembersOf, moveMembersBy, copyDesignToAllSlides,
+} = await import('../src/design/groups.ts');
 
 let n = 0;
 const t = (name, fn) => { fn(); n++; console.log('  ok   ' + name); };
@@ -45,26 +47,60 @@ t('色解決: テーマ参照 → 実色、未知は灰色、hex はそのまま
   assert.equal(decorationColorHex({ hex: '#12AB34' }, colors), '#12AB34');
 });
 
-t('全スライドへコピー: 元は保持・他は置き換え・id は新規で一意', () => {
+t('全スライドへコピー（design 版）: 元は保持・他は置き換え・グループも複製される', () => {
   let seq = 0;
   const gen = () => `g${seq++}`;
-  const decorations = [
-    makePreset('bandTop', 2, 'src1', W, H),
-    makePreset('accentLine', 2, 'src2', W, H),
-    makePreset('card', 1, 'old1', W, H),
-    makePreset('card', 3, 'old3', W, H),
-  ];
-  const out = copyToAllSlides(decorations, 2, 4, gen);
-  assert.equal(out.filter((d) => d.contentIndex === 2).length, 2);
-  assert.ok(out.some((d) => d.id === 'src1') && out.some((d) => d.id === 'src2'));
-  assert.ok(!out.some((d) => d.id === 'old1') && !out.some((d) => d.id === 'old3'));
-  for (const ci of [1, 3, 4]) {
-    const s = out.filter((d) => d.contentIndex === ci);
+  const a = makePreset('bandTop', 2, 'a', W, H);
+  const b = makePreset('accentLine', 2, 'b', W, H);
+  const old1 = makePreset('card', 1, 'old1', W, H);
+  const design = {
+    version: 1,
+    decorations: [a, b, old1],
+    groups: [{ id: 'grp', contentIndex: 2, memberIds: ['a', 'b'] }],
+  };
+  const out = copyDesignToAllSlides(design, 2, 3, gen);
+  assert.equal(out.decorations.filter((d) => d.contentIndex === 2).length, 2);
+  assert.ok(!out.decorations.some((d) => d.id === 'old1'), '他スライドの旧装飾が残っている');
+  for (const ci of [1, 3]) {
+    const s = out.decorations.filter((d) => d.contentIndex === ci);
     assert.equal(s.length, 2, `ci=${ci}`);
-    assert.equal(s[0].shape, 'rect');
+    const g = out.groups.find((x) => x.contentIndex === ci);
+    assert.ok(g, `ci=${ci} のグループが複製されていない`);
+    assert.deepEqual([...g.memberIds].sort(), s.map((d) => d.id).sort());
   }
-  const ids = out.map((d) => d.id);
+  assert.ok(out.groups.some((g) => g.id === 'grp'), '元のグループが消えた');
+  const ids = out.decorations.map((d) => d.id);
   assert.equal(new Set(ids).size, ids.length, 'id が重複');
+});
+
+t('グループ: 作成の妥当性検査と解散・整理', () => {
+  const a = makePreset('bandTop', 1, 'a', W, H);
+  const b = makePreset('card', 1, 'b', W, H);
+  const c = makePreset('card', 2, 'c', W, H);
+  assert.equal(makeGroup([], [a, b, c], ['a'], 'g1'), null, '1件では作れない');
+  assert.equal(makeGroup([], [a, b, c], ['a', 'c'], 'g1'), null, '別スライド混在は不可');
+  const groups = makeGroup([], [a, b, c], ['a', 'b'], 'g1');
+  assert.ok(groups && groups.length === 1);
+  assert.equal(makeGroup(groups, [a, b, c], ['a', 'c'], 'g2'), null, '既所属メンバーは不可');
+  assert.deepEqual(dragMembersOf(groups, 'a').sort(), ['a', 'b']);
+  assert.deepEqual(dragMembersOf(groups, 'c'), ['c']);
+  assert.equal(dissolveGroup(groups, 'g1').length, 0);
+  /* a が消えたら 1人になるので解散 */
+  assert.equal(pruneGroups(groups, [b, c]).length, 0);
+});
+
+t('グループ: 全員一括移動は 0.5% スナップ・全員が収まる範囲でクランプ', () => {
+  const a = { ...makePreset('accentLine', 1, 'a', W, H), x: 0, y: 0 };
+  const b = { ...makePreset('accentLine', 1, 'b', W, H), x: Math.round(W * 0.5), y: 0 };
+  const list = [a, b, makePreset('card', 2, 'c', W, H)];
+  const moved = moveMembersBy(list, ['a', 'b'], W, H, W, H);
+  const ma = moved.find((d) => d.id === 'a');
+  const mb = moved.find((d) => d.id === 'b');
+  /* 右端の制約は b が決める（形は崩れない） */
+  assert.equal(mb.x + mb.w, W);
+  assert.equal(mb.x - b.x, ma.x - a.x, '移動量が揃っていない');
+  assert.equal(moved.find((d) => d.id === 'c').x, list[2].x, '他スライドが動いた');
+  assert.equal(moveMembersBy(list, ['a', 'b'], 0, 0, W, H), list, '0移動で新配列を作らない');
 });
 
 t('重なり順の入れ替え: 同一スライド内でだけ動き、端では何もしない', () => {

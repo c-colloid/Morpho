@@ -2,7 +2,8 @@ import React, { useRef, useState } from 'react';
 import { PanResponder, StyleSheet, Text, View } from 'react-native';
 
 import type { DeckInfo, SlideDecoration } from '../converter/types';
-import { moveTo, resizeTo } from '../design/presets';
+import { resizeTo } from '../design/presets';
+import { moveMembersBy } from '../design/groups';
 
 const EMU_PER_PT = 12700;
 const HANDLE = 18;
@@ -23,6 +24,7 @@ export function DecorEditLayer({
   deck,
   width,
   selectedId,
+  dragMembers,
   onSelect,
   onLive,
   onCommit,
@@ -31,14 +33,29 @@ export function DecorEditLayer({
   deck: DeckInfo;
   width: number;
   selectedId: string | null;
+  /** その装飾とともに動くメンバー ID（グループ。自分を含む） */
+  dragMembers: (id: string) => string[];
   onSelect: (id: string | null) => void;
   /** ドラッグ中の一時値（null = ドラッグ終了）。保存はしない */
-  onLive: (d: SlideDecoration | null) => void;
-  onCommit: (d: SlideDecoration) => void;
+  onLive: (ds: SlideDecoration[] | null) => void;
+  onCommit: (ds: SlideDecoration[]) => void;
 }) {
   const scale = width / (deck.w / EMU_PER_PT);
   const pxOf = (emu: number) => (emu / EMU_PER_PT) * scale;
   const emuOf = (px: number) => (px / scale) * EMU_PER_PT;
+
+  /* 群移動の計算。ドラッグ中も基準は確定値（decorations）なので ref で最新を読む */
+  const decorationsRef = useRef(decorations);
+  decorationsRef.current = decorations;
+  const dragMembersRef = useRef(dragMembers);
+  dragMembersRef.current = dragMembers;
+  const computeMove = (id: string, dxEmu: number, dyEmu: number): SlideDecoration[] => {
+    const members = dragMembersRef.current(id);
+    const moved = moveMembersBy(
+      decorationsRef.current, members, dxEmu, dyEmu, deck.w, deck.h,
+    );
+    return moved.filter((x) => members.includes(x.id));
+  };
 
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
@@ -50,6 +67,7 @@ export function DecorEditLayer({
           pxOf={pxOf}
           emuOf={emuOf}
           selected={selectedId === d.id}
+          computeMove={computeMove}
           onSelect={onSelect}
           onLive={onLive}
           onCommit={onCommit}
@@ -65,6 +83,7 @@ function EditableDecor({
   pxOf,
   emuOf,
   selected,
+  computeMove,
   onSelect,
   onLive,
   onCommit,
@@ -74,14 +93,15 @@ function EditableDecor({
   pxOf: (emu: number) => number;
   emuOf: (px: number) => number;
   selected: boolean;
+  computeMove: (id: string, dxEmu: number, dyEmu: number) => SlideDecoration[];
   onSelect: (id: string | null) => void;
-  onLive: (d: SlideDecoration | null) => void;
-  onCommit: (d: SlideDecoration) => void;
+  onLive: (ds: SlideDecoration[] | null) => void;
+  onCommit: (ds: SlideDecoration[]) => void;
 }) {
-  /* ドラッグ中のプレビュー値。null なら確定値（d）に当たり判定を置く */
-  const [live, setLive] = useState<SlideDecoration | null>(null);
-  const liveRef = useRef<SlideDecoration | null>(null);
-  const setLiveBoth = (v: SlideDecoration | null) => {
+  /* ドラッグ中のプレビュー値（群全員分）。null なら確定値（d）に当たり判定を置く */
+  const [live, setLive] = useState<SlideDecoration[] | null>(null);
+  const liveRef = useRef<SlideDecoration[] | null>(null);
+  const setLiveBoth = (v: SlideDecoration[] | null) => {
     liveRef.current = v;
     setLive(v);
     onLive(v);
@@ -92,6 +112,8 @@ function EditableDecor({
   dRef.current = d;
   const emuOfRef = useRef(emuOf);
   emuOfRef.current = emuOf;
+  const computeMoveRef = useRef(computeMove);
+  computeMoveRef.current = computeMove;
 
   const start = useRef(d);
   const moved = useRef(false);
@@ -115,15 +137,15 @@ function EditableDecor({
       onPanResponderMove: (_e, g) => {
         if (Math.abs(g.dx) + Math.abs(g.dy) > 3) moved.current = true;
         if (!moved.current) return;
-        const next = moveTo(
-          start.current,
-          start.current.x + emuOfRef.current(g.dx),
-          start.current.y + emuOfRef.current(g.dy),
-          deck.w,
-          deck.h,
+        /* グループなら全員分。基準は常に確定値なので累積誤差が出ない */
+        const next = computeMoveRef.current(
+          dRef.current.id,
+          emuOfRef.current(g.dx),
+          emuOfRef.current(g.dy),
         );
-        const prev = liveRef.current;
-        if (!prev || prev.x !== next.x || prev.y !== next.y) setLiveBoth(next);
+        const prev = liveRef.current?.find((x) => x.id === dRef.current.id);
+        const self = next.find((x) => x.id === dRef.current.id);
+        if (!prev || !self || prev.x !== self.x || prev.y !== self.y) setLiveBoth(next);
       },
       onPanResponderRelease: finish,
       onPanResponderTerminate: () => setLiveBoth(null),
@@ -148,8 +170,8 @@ function EditableDecor({
           deck.w,
           deck.h,
         );
-        const prev = liveRef.current;
-        if (!prev || prev.w !== next.w || prev.h !== next.h) setLiveBoth(next);
+        const prev = liveRef.current?.[0];
+        if (!prev || prev.w !== next.w || prev.h !== next.h) setLiveBoth([next]);
       },
       onPanResponderRelease: () => {
         const v = liveRef.current;
@@ -160,7 +182,7 @@ function EditableDecor({
     }),
   ).current;
 
-  const cur = live ?? d;
+  const cur = live?.find((x) => x.id === d.id) ?? d;
 
   return (
     <View

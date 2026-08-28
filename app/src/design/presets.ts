@@ -62,27 +62,6 @@ export function decorationColorHex(
 }
 
 /**
- * あるスライドの装飾を全スライドへ複製する（置き換え方式）。
- * 元スライドの装飾はそのまま、他のスライドの既存装飾はすべて捨てて
- * 元のコピー（新しい id・contentIndex 差し替え）を置く。
- * totalSlides はコンテンツスライドの数（タイトルを含まない）。
- */
-export function copyToAllSlides(
-  decorations: SlideDecoration[],
-  fromCi: number,
-  totalSlides: number,
-  genId: () => string,
-): SlideDecoration[] {
-  const src = decorations.filter((d) => d.contentIndex === fromCi);
-  const out: SlideDecoration[] = [...src];
-  for (let ci = 1; ci <= totalSlides; ci++) {
-    if (ci === fromCi) continue;
-    for (const d of src) out.push({ ...d, id: genId(), contentIndex: ci });
-  }
-  return out;
-}
-
-/**
  * 同じスライド内での重なり順の入れ替え（配列順 = 背面から前面）。
  * 端では何もしない。他のスライドの装飾の位置は動かさない。
  */
