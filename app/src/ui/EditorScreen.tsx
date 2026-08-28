@@ -34,10 +34,9 @@ import type {
 import { slideIndexAtCursor, slideSegments } from '../preview/cursorSlide';
 import { getNotes, setNotes } from '../preview/notesEdit.ts';
 import {
-  breakJoints,
-  findParagraph,
-  segmentJa,
-  stripHardBreaks,
+  locateEditable,
+  rebuildBlock,
+  type EditableBlock,
 } from '../preview/lineBreakEdit.ts';
 import {
   createDoc,
@@ -87,8 +86,10 @@ author: "フテイケイ"
 行末にバックスラッシュを置く。
 
 - 箇条書き
-- 入れ子を試す
+- 入れ子は半角スペース2つ（またはタブ）で字下げする
   - 二階層目
+    - 三階層目
+- 半角1つでは入れ子にならず、全角スペースだと箇条書き自体が壊れる
 
 1. 番号付き
 2. ふたつめ
@@ -141,6 +142,17 @@ export default function EditorScreen() {
   const dirtyRef = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  /* エディタは非制御（defaultValue）。value= で制御すると、長い原稿では
+     キーストロークごとの JS 往復でネイティブに text が再設定され、
+     そのたびにスクロールがカーソル位置へ飛ぶ。native 側を真実とし、
+     プログラム的に原稿を差し替える時だけ epoch を上げて remount で反映する */
+  const editorRef = useRef<TextInput>(null);
+  const [editorEpoch, setEditorEpoch] = useState(0);
+  const setSourceProgrammatic = useCallback((text: string) => {
+    setSource(text);
+    setEditorEpoch((e) => e + 1);
+  }, []);
+
   /* デバウンス中でも、書き込み先は必ず「その編集が起きた文書」。
      文書切替の前に必ず flush するので、ref 参照で取り違えは起きない */
   const flushSave = useCallback(async () => {
@@ -180,11 +192,11 @@ export default function EditorScreen() {
         const { id, docs: next } = await createDoc(SAMPLE);
         setDocs(next);
         setActiveId(id);
-        setSource(SAMPLE);
+        setSourceProgrammatic(SAMPLE);
       } else {
         setDocs(existing);
         setActiveId(existing[0].id);
-        setSource((await loadDoc(existing[0].id)) ?? '');
+        setSourceProgrammatic((await loadDoc(existing[0].id)) ?? '');
       }
     })();
   }, []);
@@ -224,7 +236,7 @@ export default function EditorScreen() {
         const text = await loadDoc(id);
         if (text === null) return;
         setActiveId(id);
-        setSource(text);
+        setSourceProgrammatic(text);
         setSaveState({ kind: 'saved', at: Date.now() });
         resetPreviewFor(text);
         setDocsOpen(false);
@@ -241,7 +253,7 @@ export default function EditorScreen() {
       const { id, docs: next } = await createDoc(NEW_DOC);
       setDocs(next);
       setActiveId(id);
-      setSource(NEW_DOC);
+      setSourceProgrammatic(NEW_DOC);
       setSaveState({ kind: 'saved', at: Date.now() });
       resetPreviewFor(NEW_DOC);
       setDocsOpen(false);
@@ -263,7 +275,7 @@ export default function EditorScreen() {
       const { id, docs: next } = await createDoc(text);
       setDocs(next);
       setActiveId(id);
-      setSource(text);
+      setSourceProgrammatic(text);
       setSaveState({ kind: 'saved', at: Date.now() });
       resetPreviewFor(text);
       setDocsOpen(false);
@@ -292,13 +304,13 @@ export default function EditorScreen() {
           if (next.length > 0) {
             const text = (await loadDoc(next[0].id)) ?? '';
             setActiveId(next[0].id);
-            setSource(text);
+            setSourceProgrammatic(text);
             resetPreviewFor(text);
           } else {
             const created = await createDoc(NEW_DOC);
             setDocs(created.docs);
             setActiveId(created.id);
-            setSource(NEW_DOC);
+            setSourceProgrammatic(NEW_DOC);
             resetPreviewFor(NEW_DOC);
           }
           setSaveState({ kind: 'saved', at: Date.now() });
@@ -373,16 +385,32 @@ export default function EditorScreen() {
     if (y !== undefined) previewRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
   }, [currentSlide, result]);
 
+  /* プレビューのスライドをタップ → 原稿の該当区間の先頭へカーソルを移す。
+     読み取り専用の移動なので、スライド数と区間数がずれていても実害はなく
+     最寄りの区間へ寄せる（contentIndexOf のような中止はしない） */
+  const handleSelectSlide = useCallback((slideIndex: number) => {
+    const src = sourceRef.current;
+    const { metadata, body } = splitFrontMatter(src);
+    const fmOffset = src.length - body.length;
+    const titleOffset = metadata.title !== undefined ? 1 : 0;
+    const ci = slideIndex - titleOffset;
+    let pos = 0; // タイトルスライドは front matter 由来なので先頭へ
+    if (ci >= 1) {
+      const segments = slideSegments(body);
+      const seg = segments[Math.min(ci, segments.length) - 1];
+      if (seg) pos = fmOffset + seg.start;
+    }
+    setCurrentSlide(slideIndex);
+    const input = editorRef.current;
+    if (!input) return;
+    input.focus();
+    // focus 直後の setSelection は無視されることがあるので1フレーム置く
+    requestAnimationFrame(() => editorRef.current?.setSelection(pos, pos));
+  }, []);
+
   /* ---------- プレビューからの原稿編集（ノート・改行） ---------- */
   const [notesSheet, setNotesSheet] = useState<{ ci: number; text: string } | null>(null);
-  const [breakSheet, setBreakSheet] = useState<{
-    chunks: string[];
-    joints: Set<number>;
-    start: number;
-    end: number;
-    /** 開いた時点の原稿抜粋。適用時に一致を確認して stale な splice を防ぐ */
-    raw: string;
-  } | null>(null);
+  const [breakSheet, setBreakSheet] = useState<EditableBlock | null>(null);
 
   /* front matter を保ったまま本文だけ差し替える */
   const patchBody = useCallback(
@@ -390,6 +418,8 @@ export default function EditorScreen() {
       const src = sourceRef.current;
       const { body } = splitFrontMatter(src);
       onChangeSource(src.slice(0, src.length - body.length) + nextBody);
+      /* エディタは非制御なので、プログラム的な差し替えは remount で画面へ反映する */
+      setEditorEpoch((e) => e + 1);
     },
     [onChangeSource],
   );
@@ -455,40 +485,31 @@ export default function EditorScreen() {
         Alert.alert('この段落は編集できません', 'タイトルスライドは front matter から生成されています');
         return;
       }
-      /* いちばん長いランを手がかりに、原稿内の段落ブロックを探す */
+      /* いちばん長いランを手がかりに、原稿内のブロックを探す */
       const needle = paragraph.runs.reduce((a, b) => (b.text.length > a.length ? b.text : a), '');
       const { body } = splitFrontMatter(sourceRef.current);
-      const loc = findParagraph(body, ci, needle);
-      if (!loc) {
-        Alert.alert('原稿内で段落を特定できませんでした', '表など一部のブロックは未対応です');
+      const loc = locateEditable(body, ci, needle);
+      if (!loc.ok) {
+        if (loc.reason === 'heading') {
+          Alert.alert('見出しの改行編集は未対応です');
+        } else if (loc.reason === 'table') {
+          Alert.alert('表の改行編集は未対応です');
+        } else {
+          Alert.alert('原稿内で段落を特定できませんでした');
+        }
         return;
       }
-      if (/^[ 	]*#/.test(loc.raw)) {
-        Alert.alert('見出しの改行編集は未対応です');
+      if (loc.block.plain.length < 2) {
+        Alert.alert('この段落は短すぎて分割できません');
         return;
       }
-      if (/^[ 	]*([-*+]|\d+\.)[ 	]/m.test(loc.raw)) {
-        Alert.alert('箇条書きの改行編集は未対応です', '原稿側で行末に \\ を置いてください');
-        return;
-      }
-      const chunks = segmentJa(stripHardBreaks(loc.raw));
-      if (chunks.length < 2) {
-        Alert.alert('この段落は分割できませんでした');
-        return;
-      }
-      setBreakSheet({
-        chunks,
-        joints: breakJoints(loc.raw, chunks),
-        start: loc.start,
-        end: loc.end,
-        raw: loc.raw,
-      });
+      setBreakSheet(loc.block);
     },
     [contentIndexOf],
   );
 
   const handleApplyBreaks = useCallback(
-    (text: string) => {
+    (offsets: Set<number>) => {
       if (!breakSheet) return;
       const { body } = splitFrontMatter(sourceRef.current);
       /* シートを開いている間に原稿が変わっていたら（ハードウェアキーボード等）
@@ -498,7 +519,8 @@ export default function EditorScreen() {
         setBreakSheet(null);
         return;
       }
-      patchBody(body.slice(0, breakSheet.start) + text + body.slice(breakSheet.end));
+      const rebuilt = rebuildBlock(breakSheet, offsets);
+      patchBody(body.slice(0, breakSheet.start) + rebuilt + body.slice(breakSheet.end));
       setBreakSheet(null);
     },
     [breakSheet, patchBody],
@@ -601,7 +623,9 @@ export default function EditorScreen() {
             </Text>
           </View>
           <TextInput
-            value={source}
+            ref={editorRef}
+            key={editorEpoch}
+            defaultValue={source}
             onChangeText={onChangeSource}
             onSelectionChange={onSelectionChange}
             multiline
@@ -642,6 +666,7 @@ export default function EditorScreen() {
                   deck={result.deck}
                   active={s.index === highlighted}
                   width={Math.max(0, previewW - 40 - 26)}
+                  onSelect={handleSelectSlide}
                   onEditNotes={handleEditNotes}
                   onParagraphLongPress={handleParagraphLongPress}
                 />
@@ -659,8 +684,8 @@ export default function EditorScreen() {
       />
       <BreakEditSheet
         visible={breakSheet !== null}
-        chunks={breakSheet?.chunks ?? []}
-        initialBreaks={breakSheet?.joints ?? new Set()}
+        plain={breakSheet?.plain ?? ''}
+        initialOffsets={breakSheet?.breakOffsets ?? new Set()}
         onApply={handleApplyBreaks}
         onClose={() => setBreakSheet(null)}
       />
@@ -775,6 +800,7 @@ function SlideCard({
   deck,
   active,
   width,
+  onSelect,
   onEditNotes,
   onParagraphLongPress,
 }: {
@@ -782,13 +808,17 @@ function SlideCard({
   deck: ConvertResult['deck'];
   active: boolean;
   width: number;
+  onSelect: (slideIndex: number) => void;
   onEditNotes: (slideIndex: number) => void;
   onParagraphLongPress: (slideIndex: number, paragraph: Paragraph) => void;
 }) {
   const [notesOpen, setNotesOpen] = useState(false);
   const hasNotes = slide.notes.length > 0;
   return (
-    <View style={[styles.slide, active && styles.slideActive]}>
+    <Pressable
+      style={[styles.slide, active && styles.slideActive]}
+      onPress={() => onSelect(slide.index)}
+    >
       <View style={styles.slideHead}>
         <Text style={styles.slideNum}>{slide.index}</Text>
         <Text style={styles.slideLayout}>{slide.layout ?? 'レイアウト不明'}</Text>
@@ -811,6 +841,7 @@ function SlideCard({
             slide={slide}
             deck={deck}
             width={width}
+            onParagraphPress={() => onSelect(slide.index)}
             onParagraphLongPress={(p) => onParagraphLongPress(slide.index, p)}
           />
         </View>
@@ -831,7 +862,7 @@ function SlideCard({
           </Pressable>
         </View>
       )}
-    </View>
+    </Pressable>
   );
 }
 

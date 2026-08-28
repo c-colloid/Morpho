@@ -189,10 +189,19 @@ function parseParagraphs(txBodyXml) {
   while ((m = re.exec(txBodyXml)) !== null) {
     var body = m[1];
     var level = 0;
+    /* pandoc は普通の段落に marL="0" indent="0" を明示し、箇条書きは
+       マスターの lvl 既定（marL=342900*(n+1), indent=-342900）に任せる。
+       字下げの実寸を出すため、上書きの有無ごと持ち帰る（null = 継承） */
+    var marL = null;
+    var indent = null;
     var pPr = /<a:pPr\\b([^>]*)/.exec(body);
     if (pPr) {
       var lvl = /\\blvl="(\\d+)"/.exec(pPr[1]);
       if (lvl) level = Number(lvl[1]);
+      var ml = /\\bmarL="(-?\\d+)"/.exec(pPr[1]);
+      if (ml) marL = Number(ml[1]);
+      var ind = /\\bindent="(-?\\d+)"/.exec(pPr[1]);
+      if (ind) indent = Number(ind[1]);
     }
     /* pandoc は箇条書きでない段落に buNone を明示する。
        箇条書きは何も書かずレイアウトの既定（行頭記号）に任せるので、
@@ -201,7 +210,7 @@ function parseParagraphs(txBodyXml) {
     if (/<a:buNone\\s*\\/>/.test(body)) bullet = 'none';
     else if (/<a:buAutoNum\\b/.test(body)) bullet = 'number';
     var runs = parseRuns(body);
-    if (runs.length) out.push({ runs: runs, level: level, bullet: bullet });
+    if (runs.length) out.push({ runs: runs, level: level, bullet: bullet, marL: marL, indent: indent });
   }
   return out;
 }
@@ -294,7 +303,12 @@ window.__morphoFindFrame = findFrame;
 
 /* デッキ情報: 寸法・配色・既定の文字サイズ */
 function parseDeck(zip, dec) {
-  var deck = { w: 9144000, h: 5143500, colors: {}, titleSz: 3300, bodySz: [2400, 2100, 1800, 1500, 1500] };
+  var deck = { w: 9144000, h: 5143500, colors: {}, titleSz: 3300, bodySz: [2400, 2100, 1800, 1500, 1500], bodyMarL: [], bodyIndent: [] };
+  /* 既定はマスターの実測値: marL=342900*(n+1), indent=-342900（27pt 刻みのぶら下げ） */
+  for (var di = 0; di < 9; di++) {
+    deck.bodyMarL.push(342900 * (di + 1));
+    deck.bodyIndent.push(-342900);
+  }
   try {
     var pres = dec.decode(zip['ppt/presentation.xml']);
     var sz = /<p:sldSz\\s+cx="(\\d+)"\\s+cy="(\\d+)"/.exec(pres);
@@ -327,6 +341,16 @@ function parseDeck(zip, dec) {
       while ((lm = lre.exec(bs[0])) !== null) sizes[Number(lm[1]) - 1] = Number(lm[2]);
       for (var i2 = 0; i2 < 5; i2++) if (!sizes[i2]) sizes[i2] = deck.bodySz[i2];
       deck.bodySz = sizes.slice(0, 5);
+      /* テンプレートごとの字下げ幅。lvlNpPr の属性から marL / indent を拾う */
+      var pre = /<a:lvl(\\d)pPr([^>]*)>/g;
+      var pm;
+      while ((pm = pre.exec(bs[0])) !== null) {
+        var lv = Number(pm[1]) - 1;
+        var ml2 = /\\bmarL="(-?\\d+)"/.exec(pm[2]);
+        if (ml2) deck.bodyMarL[lv] = Number(ml2[1]);
+        var in2 = /\\bindent="(-?\\d+)"/.exec(pm[2]);
+        if (in2) deck.bodyIndent[lv] = Number(in2[1]);
+      }
     }
     deck.masterPh = parsePlaceholderFrames(master);
   } catch (e) { deck.masterPh = []; }
@@ -412,7 +436,7 @@ function parsePptx(u8) {
   return {
     slideCount: slides.length,
     slides: slides,
-    deck: { w: deck.w, h: deck.h, colors: deck.colors, titleSz: deck.titleSz, bodySz: deck.bodySz }
+    deck: { w: deck.w, h: deck.h, colors: deck.colors, titleSz: deck.titleSz, bodySz: deck.bodySz, bodyMarL: deck.bodyMarL, bodyIndent: deck.bodyIndent }
   };
 }
 window.__morphoParsePptx = parsePptx;

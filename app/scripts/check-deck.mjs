@@ -65,6 +65,20 @@ t('字サイズ既定（タイトル33pt・本文24pt）', () => {
   assert.equal(parsed.deck.titleSz, 3300);
   assert.equal(parsed.deck.bodySz[0], 2400);
 });
+t('マスターの字下げ（marL / indent）が取れる', () => {
+  assert.equal(parsed.deck.bodyMarL[0], 342900);
+  assert.equal(parsed.deck.bodyMarL[1], 685800);
+  assert.equal(parsed.deck.bodyIndent[0], -342900);
+});
+t('段落の字下げ上書き: 普通の段落は 0/0 明示、箇条書きは継承', () => {
+  const body = parsed.slides[1].shapes.find((s) => s.placeholder === 'body');
+  const plain = body.paragraphs.find((p) => p.bullet === 'none');
+  assert.equal(plain.marL, 0);
+  assert.equal(plain.indent, 0);
+  const nested = body.paragraphs.find((p) => p.level === 1);
+  assert.equal(nested.marL, null);
+  assert.equal(nested.indent, null);
+});
 t('全図形の frame がマスター継承で解決される', () => {
   for (const slide of parsed.slides) {
     for (const sh of slide.shapes) {

@@ -1,10 +1,36 @@
-/** 改行編集の検査 */
+/** 改行編集の検査（offsets 方式の新 API） */
 import assert from 'node:assert/strict';
-const { segmentJa, stripHardBreaks, applyBreaks, findParagraph, breakJoints } =
-  await import('../src/preview/lineBreakEdit.ts');
+const {
+  normalizeParagraph,
+  segmentWords,
+  segmentChars,
+  applyBreaksAtOffsets,
+  locateEditable,
+  rebuildBlock,
+} = await import('../src/preview/lineBreakEdit.ts');
 
 let n = 0;
 const t = (name, fn) => { fn(); n++; console.log('  ok   ' + name); };
+
+/* ---------- normalizeParagraph ---------- */
+
+t('和文の軟改行は直結、英文は空白で繋ぐ', () => {
+  assert.equal(normalizeParagraph('折り\n返し').plain, '折り返し');
+  assert.equal(normalizeParagraph('Hello\nWorld').plain, 'Hello World');
+});
+t('明示改行（\\ と 行末スペース2つ）は breakOffsets に残る', () => {
+  const a = normalizeParagraph('一行目\\\n二行目');
+  assert.equal(a.plain, '一行目二行目');
+  assert.deepEqual([...a.breakOffsets], [3]);
+  const b = normalizeParagraph('first  \nsecond');
+  assert.equal(b.plain, 'first second');
+  assert.deepEqual([...b.breakOffsets], [5]);
+});
+t('継続行の字下げは食われる', () => {
+  assert.equal(normalizeParagraph('一行目\\\n  二行目').plain, '一行目二行目');
+});
+
+/* ---------- segmentWords / segmentChars ---------- */
 
 t('分割して結合すると元に戻る（不変条件）', () => {
   for (const s of [
@@ -12,101 +38,138 @@ t('分割して結合すると元に戻る（不変条件）', () => {
     'これは箇条書きではない普通の段落です。',
     'Hello world, this is a test.',
   ]) {
-    assert.equal(segmentJa(s).join(''), s);
+    assert.equal(segmentWords(s).join(''), s);
+    assert.equal(segmentChars(s).join(''), s);
   }
 });
-t('句読点は前の塊に付く', () => {
-  const chunks = segmentJa('青い蝶が、飛ぶ。');
-  assert.ok(chunks.every((c) => !/^[、。]/.test(c) || c.length > 1));
-  assert.equal(chunks.join(''), '青い蝶が、飛ぶ。');
+t('句読点・閉じ括弧は前の塊に付く', () => {
+  for (const c of segmentWords('青い蝶（モルフォ）が、飛ぶ。')) {
+    assert.ok(!/^[、。）]/.test(c), `「${c}」が約物で始まっている`);
+  }
 });
-t('既存の明示改行を外せる', () => {
-  assert.equal(stripHardBreaks('一行目\\\n二行目'), '一行目二行目');
-  assert.equal(stripHardBreaks('一行目  \n二行目'), '一行目二行目');
-  assert.equal(stripHardBreaks('折り\n返し'), '折り返し');
+t('語の粒度は字の粒度より粗い', () => {
+  const s = '構造色のモルフォ蝶';
+  assert.ok(segmentWords(s).length < segmentChars(s).length);
 });
-t('選んだ継ぎ目に \\ 改行が入る', () => {
-  const out = applyBreaks(['青い蝶が、', '飛ぶ。'], new Set([0]));
-  assert.equal(out, '青い蝶が、\\\n飛ぶ。');
+
+/* ---------- applyBreaksAtOffsets ---------- */
+
+t('オフセット位置に \\ 改行が入る', () => {
+  assert.equal(applyBreaksAtOffsets('青い蝶が、飛ぶ。', new Set([5])), '青い蝶が、\\\n飛ぶ。');
 });
-t('末尾の継ぎ目は無視する', () => {
-  const out = applyBreaks(['A', 'B'], new Set([1]));
-  assert.equal(out, 'AB');
+t('範囲外のオフセット（0 と末尾）は無視する', () => {
+  assert.equal(applyBreaksAtOffsets('ABC', new Set([0, 3])), 'ABC');
 });
+t('英文の結合空白は改行に置き換わる（行頭・行末に空白を残さない）', () => {
+  assert.equal(applyBreaksAtOffsets('Hello World', new Set([6])), 'Hello\\\nWorld');
+  assert.equal(applyBreaksAtOffsets('Hello World', new Set([5])), 'Hello\\\nWorld');
+});
+t('継続行の indent が付く', () => {
+  assert.equal(applyBreaksAtOffsets('一行目二行目', new Set([3]), '  '), '一行目\\\n  二行目');
+});
+t('normalize → apply の往復で明示改行が保存される', () => {
+  const raw = '一行目\\\n二行目';
+  const { plain, breakOffsets } = normalizeParagraph(raw);
+  assert.equal(applyBreaksAtOffsets(plain, breakOffsets), raw);
+});
+
+/* ---------- locateEditable ---------- */
 
 const doc = `# 一枚目
 
 これは**太字**を含む段落です。
 
-別の段落。
+- 箇条書きの項目
+- 長い項目は\\
+  ここに続く
 
 ***
 
 # 二枚目
 
-二枚目の本文。
+| a | b |
+|---|---|
+| 1 | 2 |
+
+二枚目の段落。同じ文面。
+
+***
+
+# 三枚目
+
+二枚目の段落。同じ文面。
 `;
-t('代表テキストで原稿の段落を見つける', () => {
-  const loc = findParagraph(doc, 1, 'を含む段落です。');
-  assert.ok(loc);
-  assert.equal(loc.raw, 'これは**太字**を含む段落です。');
+
+t('普通の段落が見つかる（強調記号は照合から除外）', () => {
+  const loc = locateEditable(doc, 1, 'これは太字を含む段落です。');
+  assert.ok(loc.ok);
+  assert.equal(loc.block.raw, 'これは**太字**を含む段落です。');
+  assert.equal(loc.block.prefix, '');
 });
-t('改行済みの段落も見つかる', () => {
-  const d = doc.replace('別の段落。', '別の\\\n段落。');
-  const loc = findParagraph(d, 1, '別の段落。');
-  assert.ok(loc);
-  assert.equal(loc.raw, '別の\\\n段落。');
+t('箇条書きの1項目が prefix 付きで見つかる', () => {
+  const loc = locateEditable(doc, 1, '箇条書きの項目');
+  assert.ok(loc.ok);
+  assert.equal(loc.block.prefix, '- ');
+  assert.equal(loc.block.plain, '箇条書きの項目');
 });
-t('他のスライドの段落は拾わない', () => {
-  assert.equal(findParagraph(doc, 1, '二枚目の本文。'), null);
-  assert.ok(findParagraph(doc, 2, '二枚目の本文。'));
+t('継続行を含む項目は1行に正規化され、明示改行が offsets に残る', () => {
+  const loc = locateEditable(doc, 1, '長い項目は');
+  assert.ok(loc.ok);
+  assert.equal(loc.block.plain, '長い項目はここに続く');
+  assert.deepEqual([...loc.block.breakOffsets], [5]);
 });
-t('見つからなければ null', () => {
-  assert.equal(findParagraph(doc, 1, '存在しない文'), null);
+t('入れ子の箇条書きも項目単位で見つかる', () => {
+  const nested = '# 見出し\n\n- 親項目\n  - 子の項目\n';
+  const loc = locateEditable(nested, 1, '子の項目');
+  assert.ok(loc.ok);
+  assert.equal(loc.block.prefix, '  - ');
+  assert.equal(loc.block.plain, '子の項目');
 });
-t('置換の往復: 改行を入れて外すと元に戻る', () => {
-  const loc = findParagraph(doc, 1, 'を含む段落です。');
-  const chunks = segmentJa(stripHardBreaks(loc.raw));
-  const withBreak = applyBreaks(chunks, new Set([0]));
-  const d2 = doc.slice(0, loc.start) + withBreak + doc.slice(loc.end);
-  const loc2 = findParagraph(d2, 1, 'を含む段落です。');
-  assert.ok(loc2);
-  assert.equal(stripHardBreaks(loc2.raw), loc.raw);
+t('見出しは reason: heading で断る', () => {
+  const loc = locateEditable(doc, 1, '一枚目');
+  assert.deepEqual(loc, { ok: false, reason: 'heading' });
+});
+t('表は reason: table で断る', () => {
+  const loc = locateEditable(doc, 2, '| 1 | 2 |'.replace(/[|\s]/g, '') || '1');
+  // 表のセル由来の needle は行儀が悪いので、セルテキストで直接引く
+  const loc2 = locateEditable('# t\n\n| a | b |\n|---|---|\n| 找我 | x |\n', 1, '找我');
+  assert.deepEqual(loc2, { ok: false, reason: 'table' });
+});
+t('同じ文面でもスライド区間の中だけを探す', () => {
+  const loc = locateEditable(doc, 3, '二枚目の段落。同じ文面。');
+  assert.ok(loc.ok);
+  assert.ok(loc.block.start > doc.indexOf('# 三枚目'));
+});
+t('見つからなければ reason: not-found', () => {
+  assert.deepEqual(locateEditable(doc, 1, '存在しない文'), { ok: false, reason: 'not-found' });
 });
 
-t('既存の改行が継ぎ目に写る', () => {
-  const raw = '青い蝶が、\\\n飛ぶ。';
-  const chunks = segmentJa(stripHardBreaks(raw));
-  const joints = breakJoints(raw, chunks);
-  // 「青い蝶が、」の後ろの継ぎ目が立つ
-  const acc = [];
-  let sum = 0;
-  for (const c of chunks) { sum += c.length; acc.push(sum); }
-  assert.ok(joints.size >= 1);
-  assert.equal(applyBreaks(chunks, joints), raw);
-});
-t('継ぎ目に一致しない改行は無視される', () => {
-  const raw = '青い蝶\\\nが飛ぶ。'; // 「蝶」と「が」の間 = 文節の途中
-  const chunks = segmentJa(stripHardBreaks(raw));
-  const joints = breakJoints(raw, chunks);
-  assert.equal(applyBreaks(chunks, joints).includes('\\'), joints.size > 0);
-});
+/* ---------- rebuildBlock ---------- */
 
-t('英文の軟改行は空白で繋がる（語の連結を防ぐ）', () => {
-  assert.equal(stripHardBreaks('Hello\nWorld, this continues.'), 'Hello World, this continues.');
-  assert.equal(stripHardBreaks('Hello\\\nWorld'), 'Hello World');
+t('段落: オフセットどおりに \\ 改行が入る', () => {
+  const loc = locateEditable('# t\n\n蝶が飛ぶ。\n', 1, '蝶が飛ぶ。');
+  assert.ok(loc.ok);
+  assert.equal(rebuildBlock(loc.block, new Set([2])), '蝶が\\\n飛ぶ。');
 });
-t('和文と英文の混在でも適切に繋がる', () => {
-  assert.equal(stripHardBreaks('日本語の\n続き'), '日本語の続き');
-  assert.equal(stripHardBreaks('英語 word\nの続き'), '英語 wordの続き');
+t('箇条書き: prefix が戻り、継続行は同じ幅で字下げされる', () => {
+  const loc = locateEditable('# t\n\n- 長い項目を折り返す\n', 1, '長い項目を折り返す');
+  assert.ok(loc.ok);
+  assert.equal(rebuildBlock(loc.block, new Set([5])), '- 長い項目を\\\n  折り返す');
 });
-t('英文でも継ぎ目写像とプレーン長が一致する', () => {
-  const raw = 'Hello\\\nWorld again';
-  const chunks = segmentJa(stripHardBreaks(raw));
-  const joints = breakJoints(raw, chunks);
-  assert.equal(chunks.join(''), stripHardBreaks(raw));
-  // Hello の後ろに継ぎ目が立つ（空白は前の塊に付く）
-  assert.ok(joints.size >= 0);
+t('オフセットを空にすると1行に戻る（改行の解除）', () => {
+  const loc = locateEditable('# t\n\n- 長い項目は\\\n  ここに続く\n', 1, '長い項目は');
+  assert.ok(loc.ok);
+  assert.equal(rebuildBlock(loc.block, new Set()), '- 長い項目はここに続く');
+});
+t('locate → rebuild を原稿に書き戻しても他の行を壊さない', () => {
+  const body = doc;
+  const loc = locateEditable(body, 1, '箇条書きの項目');
+  assert.ok(loc.ok);
+  const rebuilt = rebuildBlock(loc.block, new Set([5]));
+  const next = body.slice(0, loc.block.start) + rebuilt + body.slice(loc.block.end);
+  assert.ok(next.includes('- 箇条書きの\\\n  項目'));
+  assert.ok(next.includes('これは**太字**を含む段落です。'));
+  assert.ok(next.includes('# 二枚目'));
 });
 
 console.log(`\n${n} 件すべて通過`);

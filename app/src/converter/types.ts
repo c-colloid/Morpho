@@ -46,6 +46,12 @@ export interface Paragraph {
   /** 箇条書きの階層。0 が最上位 */
   level: number;
   bullet: BulletKind;
+  /**
+   * 段落自身の字下げ上書き（EMU）。null はマスターの lvl 既定を継承。
+   * pandoc は普通の段落に marL="0" indent="0" を明示し、箇条書きは継承に任せる
+   */
+  marL?: number | null;
+  indent?: number | null;
 }
 
 /** スライド上の図形ひとつ。pptx の <p:sp> にあたる */
@@ -90,6 +96,10 @@ export interface DeckInfo {
   titleSz: number;
   /** 箇条書き階層 lvl1..lvl5 の字サイズ */
   bodySz: number[];
+  /** 箇条書き階層ごとの左余白（EMU）。テキストの左端 */
+  bodyMarL: number[];
+  /** 同・先頭行のぶら下げ（EMU、通常は負）。行頭記号の位置 = marL + indent */
+  bodyIndent: number[];
 }
 
 export interface ConvertResult {

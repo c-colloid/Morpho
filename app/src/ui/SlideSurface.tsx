@@ -26,11 +26,14 @@ export function SlideSurface({
   slide,
   deck,
   width,
+  onParagraphPress,
   onParagraphLongPress,
 }: {
   slide: SlideOutline;
   deck: DeckInfo;
   width: number;
+  /** 段落のタップ。段落は Pressable がタップを吸うので、親のタップ処理へ流すために使う */
+  onParagraphPress?: () => void;
   /** 段落の長押し（改行編集の入口）。未指定なら操作なしの表示専用 */
   onParagraphLongPress?: (paragraph: Paragraph) => void;
 }) {
@@ -52,6 +55,7 @@ export function SlideSurface({
           shape={shape}
           deck={deck}
           scale={scale}
+          onParagraphPress={onParagraphPress}
           onParagraphLongPress={onParagraphLongPress}
         />
       ))}
@@ -63,11 +67,13 @@ function ShapeBox({
   shape,
   deck,
   scale,
+  onParagraphPress,
   onParagraphLongPress,
 }: {
   shape: SlideShape;
   deck: DeckInfo;
   scale: number;
+  onParagraphPress?: () => void;
   onParagraphLongPress?: (paragraph: Paragraph) => void;
 }) {
   if (!shape.frame) return null;
@@ -95,7 +101,7 @@ function ShapeBox({
     >
       {shape.paragraphs.map((p, pi) =>
         onParagraphLongPress ? (
-          <Pressable key={pi} onLongPress={() => onParagraphLongPress(p)}>
+          <Pressable key={pi} onPress={onParagraphPress} onLongPress={() => onParagraphLongPress(p)}>
             <SurfaceParagraph
               paragraph={p}
               isTitle={isTitle}
@@ -141,7 +147,13 @@ function SurfaceParagraph({
     ? deck.titleSz
     : deck.bodySz[Math.min(paragraph.level, deck.bodySz.length - 1)] ?? 1800;
   const fontSize = (szHundredths / 100) * scale;
-  const indentPt = 18 * paragraph.level;
+  /* 字下げは実出力の marL / indent から。段落の上書きが無ければマスターの
+     lvl 既定を継承する（pandoc 既定は marL=342900*(n+1), indent=-342900）。
+     行頭記号の位置 = marL + indent なので、行の左端はその和 */
+  const lvl = Math.min(paragraph.level, deck.bodyMarL.length - 1);
+  const marL = paragraph.marL ?? deck.bodyMarL[lvl] ?? 0;
+  const hang = paragraph.indent ?? deck.bodyIndent[lvl] ?? 0;
+  const indentPt = Math.max(0, (marL + hang) / EMU_PER_PT);
 
   const glyph =
     isTitle || paragraph.bullet === 'none'
