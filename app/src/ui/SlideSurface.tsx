@@ -12,7 +12,7 @@ import type {
 import Svg, { Polygon } from 'react-native-svg';
 
 import { decorationColorHex } from '../design/presets';
-import { shapePoints } from '../design/shapeGeometry';
+import { shapePoints, textRect } from '../design/shapeGeometry';
 
 /**
  * 実寸プレビュー。
@@ -79,8 +79,6 @@ function DecorBox({
         top: px(d.y),
         width: w,
         height: h,
-        alignItems: 'center',
-        justifyContent: 'center',
       }}
     >
       {pts ? (
@@ -121,20 +119,40 @@ function DecorBox({
           }}
         />
       )}
-      {d.text != null && (
-        /* 書き出し（buildDecorSp）と同じ扱い: 白・太字・中央・高さの 45% */
-        <Text
-          style={{
-            color: '#FFFFFF',
-            fontWeight: '700',
-            fontSize: h * 0.45,
-            lineHeight: h * 0.55,
-          }}
-          numberOfLines={1}
-        >
-          {d.text}
-        </Text>
-      )}
+      {d.text != null &&
+        (() => {
+          /* 書き出しと同じ配置: 図形固有のテキスト矩形（textRect）の中心に、
+             折り返しなし（bodyPr wrap="none" anchorCtr="1" 相当）で置く。
+             幅の広い箱を矩形中心に重ねることで折り返しを起こさない */
+          const tr = textRect(d.shape, w, h);
+          const wide = Math.max(w, h) * 4;
+          return (
+            <View
+              pointerEvents="none"
+              style={{
+                position: 'absolute',
+                left: tr.x + tr.w / 2 - wide / 2,
+                top: tr.y,
+                width: wide,
+                height: tr.h,
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Text
+                style={{
+                  color: '#FFFFFF',
+                  fontWeight: '700',
+                  fontSize: h * 0.45,
+                  lineHeight: h * 0.55,
+                }}
+                numberOfLines={1}
+              >
+                {d.text}
+              </Text>
+            </View>
+          );
+        })()}
     </View>
   );
 }

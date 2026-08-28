@@ -527,7 +527,9 @@ function buildDecorSp(d, cNvPrId) {
        （sz は 1/100 pt 単位。プレビュー SlideSurface と同じ比率） */
     var sz = Math.max(600, Math.round((d.h / 12700) * 0.45 * 100));
     txBody = '<p:txBody>' +
-      '<a:bodyPr anchor="ctr" lIns="0" tIns="0" rIns="0" bIns="0"/><a:lstStyle/>' +
+      /* wrap="none": 折り返しを止め、プレビュー（1行表示）と一致させる。
+         anchorCtr="1": 行の箱ごとテキスト矩形の水平中央へ */
+      '<a:bodyPr wrap="none" anchor="ctr" anchorCtr="1" lIns="0" tIns="0" rIns="0" bIns="0"/><a:lstStyle/>' +
       '<a:p><a:pPr algn="ctr"/>' +
       '<a:r><a:rPr lang="ja-JP" sz="' + sz + '" b="1">' +
       '<a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill>' +

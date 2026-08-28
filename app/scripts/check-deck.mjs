@@ -231,7 +231,7 @@ t('装飾: 番号バッジは ellipse + 中央揃えの白文字で、テキス�
   const m = slide2.match(/<a:rPr lang="ja-JP" sz="(\d+)" b="1">/);
   assert.ok(m, 'バッジの rPr が無い');
   assert.equal(m[1], String(Math.round((617220 / 12700) * 0.45 * 100)));
-  assert.ok(slide2.includes('<a:bodyPr anchor="ctr"'));
+  assert.ok(slide2.includes('<a:bodyPr wrap="none" anchor="ctr" anchorCtr="1"'));
   assert.ok(slide2.includes('<a:t>3 &lt;&amp;&gt;</a:t>'), 'XML エスケープされていない');
   assert.ok(
     slide2.match(/b="1">\s*<a:solidFill><a:srgbClr val="FFFFFF"\/>/),

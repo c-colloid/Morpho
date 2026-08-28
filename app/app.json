@@ -2,7 +2,7 @@
   "expo": {
     "name": "Morpho",
     "slug": "morpho",
-    "version": "0.6.6",
+    "version": "0.6.7",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",

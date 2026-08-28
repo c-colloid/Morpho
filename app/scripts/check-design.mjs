@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 const {
   PRESETS, SHAPE_PRESETS, makePreset, nudge, decorationColorHex, moveDecoration, moveTo, resizeTo,
 } = await import('../src/design/presets.ts');
-const { shapePoints } = await import('../src/design/shapeGeometry.ts');
+const { shapePoints, textRect } = await import('../src/design/shapeGeometry.ts');
 const {
   makeGroup, dissolveGroup, pruneGroups, dragMembersOf, moveMembersBy, copyDesignToAllSlides,
 } = await import('../src/design/groups.ts');
@@ -59,6 +59,31 @@ t('図形の外形: 頂点数が正しく、すべて図形の枠内に収まる
     assert.equal(d.w, d.h, kind);
     assert.equal(d.shape, kind);
   }
+});
+
+t('テキスト矩形: presetShapeDefinitions の既定 adj 評価値と一致する', () => {
+  /* 期待値は OOXML の presetShapeDefinitions.xml を 400×300 で評価した値 */
+  const near = (a, b, label) => assert.ok(Math.abs(a - b) < 0.5, `${label}: ${a} != ${b}`);
+  const cases = {
+    rect: [0, 0, 400, 300],
+    roundRect: [14.64, 14.64, 400 - 29.29, 300 - 29.29],
+    ellipse: [58.58, 43.93, 400 - 117.16, 300 - 87.87],
+    triangle: [100, 150, 200, 150],
+    diamond: [100, 75, 200, 150],
+    hexagon: [58.33, 43.75, 400 - 116.67, 300 - 87.5],
+    star5: [123.61, 114.59, 152.79, 114.6],
+    rightArrow: [0, 75, 325, 150],
+  };
+  for (const [shape, [x, y, w, h]] of Object.entries(cases)) {
+    const tr = textRect(shape, 400, 300);
+    near(tr.x, x, `${shape}.x`);
+    near(tr.y, y, `${shape}.y`);
+    near(tr.w, w, `${shape}.w`);
+    near(tr.h, h, `${shape}.h`);
+  }
+  /* 三角形は下半分・星はやや下・矢印は左寄り = 外接中心と一致しない図形がある */
+  const tri = textRect('triangle', 400, 300);
+  assert.ok(tri.y + tri.h / 2 > 150, '三角形の文字中心が下がっていない');
 });
 
 t('.morphodesign: 枠線・塗りなしの検証（不正は捨て、不可視は塗りに戻す）', () => {
