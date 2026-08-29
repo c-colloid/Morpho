@@ -82,6 +82,7 @@ import { DecorSheet } from './DecorSheet';
 import { DecorEditLayer } from './DecorEditLayer';
 import { sanitizeFileName, shareExport } from '../store/exportShare';
 import { DocumentsModal } from './DocumentsModal';
+import { ConflictSheet } from './ConflictSheet';
 import { ExportMenu, type ExportChoice } from './ExportMenu';
 import { BreakEditSheet } from './BreakEditSheet';
 import { NotesEditSheet } from './NotesEditSheet';
@@ -356,8 +357,19 @@ export default function EditorScreen() {
           if (ext === null) {
             warnExternalRef.current(id);
           } else if (ext !== text) {
-            text = ext;
-            setDocs(await saveDoc(id, ext));
+            if (deferredConflictRef.current.has(id)) {
+              /* 「あとで決める」した競合はミラーのまま開き、選び直しを出す */
+              setConflict({
+                id,
+                ref: meta.external,
+                appText: text,
+                fileText: ext,
+                openAfter: false,
+              });
+            } else {
+              text = ext;
+              setDocs(await saveDoc(id, ext));
+            }
           }
         }
         setActiveId(id);
@@ -411,6 +423,51 @@ export default function EditorScreen() {
 
   /* ---------- 外部ファイル（open in place・実験的） ---------- */
 
+  /* 外部ファイルとアプリ内コピーの競合（Diff を見て選ぶ）。
+     openAfter = 解決後にその文書を開く（「その場で開く」経由） */
+  const [conflict, setConflict] = useState<{
+    id: string;
+    ref: ExternalRef;
+    appText: string;
+    fileText: string;
+    openAfter: boolean;
+  } | null>(null);
+  /* 「あとで決める」した文書。解決するまで、切替・復帰時に黙って同期せず
+     この画面を出し直す（赤で見せた行を無言で失わない） */
+  const deferredConflictRef = useRef<Set<string>>(new Set());
+  const resolvingRef = useRef(false);
+
+  const resolveConflict = useCallback(
+    async (useFile: boolean) => {
+      const c = conflict;
+      if (!c || resolvingRef.current) return;
+      resolvingRef.current = true;
+      setTimeout(() => { resolvingRef.current = false; }, 500);
+      deferredConflictRef.current.delete(c.id);
+      setConflict(null);
+      const chosen = useFile ? c.fileText : c.appText;
+      if (useFile) {
+        setDocs(await saveDoc(c.id, c.fileText));
+      } else {
+        try {
+          await writeExternal(c.ref, c.appText);
+        } catch (e) {
+          Alert.alert(
+            'ファイルへ書き込めませんでした',
+            String(e instanceof Error ? e.message : e),
+          );
+        }
+      }
+      if (c.openAfter || c.id === activeIdRef.current) {
+        setActiveId(c.id);
+        setSourceProgrammatic(chosen);
+        setSaveState({ kind: 'saved', at: Date.now() });
+        resetPreviewFor(chosen);
+      }
+    },
+    [conflict, resetPreviewFor],
+  );
+
   const EXTERNAL_TYPES = ['public.plain-text', 'public.text', 'net.daringfireball.markdown'];
 
   const pickExternal = useCallback(async (): Promise<ExternalRef | null> => {
@@ -457,32 +514,14 @@ export default function EditorScreen() {
          食い違っていたら黙って上書きせず選ばせる */
       const mirror = (await loadDoc(existing.id)) ?? '';
       if (mirror !== text) {
-        Alert.alert(
-          '内容が食い違っています',
-          'ファイルとアプリ内のコピーの内容が異なります。どちらを使いますか？',
-          [
-            {
-              text: 'ファイル側を読み込む',
-              onPress: () => {
-                void saveDoc(existing.id, text).then(setDocs);
-                openWith(existing.id, text);
-              },
-            },
-            {
-              text: 'アプリ側で上書き',
-              style: 'destructive',
-              onPress: () => {
-                void writeExternal(ref, mirror).catch((e) =>
-                  Alert.alert(
-                    'ファイルへ書き込めませんでした',
-                    String(e instanceof Error ? e.message : e),
-                  ),
-                );
-                openWith(existing.id, mirror);
-              },
-            },
-          ],
-        );
+        setDocsOpen(false);
+        setConflict({
+          id: existing.id,
+          ref,
+          appText: mirror,
+          fileText: text,
+          openAfter: true,
+        });
         return;
       }
       setDocs(await saveDoc(existing.id, text));
@@ -517,23 +556,8 @@ export default function EditorScreen() {
           if (ext === null) writeMine();
           return;
         }
-        Alert.alert(
-          '内容が食い違っています',
-          '選び直したファイルとアプリ内の内容が異なります。どちらを使いますか？',
-          [
-            {
-              text: 'ファイル側を読み込む',
-              onPress: () => {
-                if (isActive) {
-                  setSourceProgrammatic(ext);
-                  resetPreviewFor(ext);
-                }
-                void saveDoc(id, ext).then(setDocs);
-              },
-            },
-            { text: 'アプリ側で上書き', style: 'destructive', onPress: writeMine },
-          ],
-        );
+        setDocsOpen(false);
+        setConflict({ id, ref, appText: mine, fileText: ext, openAfter: false });
       } catch (e) {
         if (isErrorWithCode(e) && e.code === errorCodes.OPERATION_CANCELED) return;
         Alert.alert('再接続できませんでした', String(e instanceof Error ? e.message : e));
@@ -566,6 +590,16 @@ export default function EditorScreen() {
     if (!meta?.external) return;
     const ext = await readExternal(meta.external);
     if (ext === null || ext === sourceRef.current) return;
+    if (deferredConflictRef.current.has(id)) {
+      setConflict({
+        id,
+        ref: meta.external,
+        appText: sourceRef.current,
+        fileText: ext,
+        openAfter: false,
+      });
+      return;
+    }
     setSourceProgrammatic(ext);
     setDocs(await saveDoc(id, ext));
     setSaveState({ kind: 'saved', at: Date.now() });
@@ -1437,6 +1471,18 @@ export default function EditorScreen() {
         onRelink={(id) => void handleRelinkExternal(id)}
         onDelete={(id) => void handleDelete(id)}
         onClose={() => setDocsOpen(false)}
+      />
+      <ConflictSheet
+        visible={conflict !== null}
+        fileName={conflict?.ref.fileName ?? ''}
+        appText={conflict?.appText ?? ''}
+        fileText={conflict?.fileText ?? ''}
+        onUseFile={() => void resolveConflict(true)}
+        onUseApp={() => void resolveConflict(false)}
+        onClose={() => {
+          if (conflict) deferredConflictRef.current.add(conflict.id);
+          setConflict(null);
+        }}
       />
     </View>
   );
