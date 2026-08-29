@@ -688,6 +688,66 @@ function applyDecorations(bytes, decorations, titleOffset, groups) {
 }
 window.__morphoApplyDecorations = applyDecorations;
 
+/* 文字サイズの上書き（文書の設定）。
+   titleSz / bodySz はマスターの titleStyle / bodyStyle の defRPr sz を書き換える
+   （スライド側は sz を持たず継承する。実測）。coverTitleSz は表紙スライドの
+   ctrTitle 図形の空 lstStyle にサイズ入り lvl1pPr を注入する（ctrTitle は
+   titleStyle を継承するため、見出しと独立に変えるにはここしかない。実測） */
+function applyTextSizes(bytes, sizes) {
+  if (!sizes || (sizes.titleSz == null && sizes.coverTitleSz == null && !sizes.bodySz)) {
+    return bytes;
+  }
+  var zip = unzipSync(bytes);
+  var dec2 = new TextDecoder();
+  var masterName = Object.keys(zip).filter(function (n) {
+    return /^ppt\\/slideMasters\\/slideMaster\\d+\\.xml$/.test(n);
+  })[0];
+  if (masterName && (sizes.titleSz != null || sizes.bodySz)) {
+    var xml = dec2.decode(zip[masterName]);
+    if (sizes.titleSz != null) {
+      /* 置換は必ずブロック内に限定する（sz を持たないテンプレートで
+         隣のスタイルへ食い込まないように）。sz が無ければ何もしない */
+      var tsB = /<p:titleStyle>[\\s\\S]*?<\\/p:titleStyle>/.exec(xml);
+      if (tsB) {
+        var tBlock = tsB[0].replace(/(<a:defRPr[^>]*\\bsz=")\\d+/, '$1' + Math.round(sizes.titleSz));
+        xml = xml.slice(0, tsB.index) + tBlock + xml.slice(tsB.index + tsB[0].length);
+      }
+    }
+    if (sizes.bodySz) {
+      var bs = /<p:bodyStyle>[\\s\\S]*?<\\/p:bodyStyle>/.exec(xml);
+      if (bs) {
+        /* 各 lvlNpPr ブロックの中でだけ sz を書き換える */
+        var block = bs[0].replace(
+          /<a:lvl(\\d)pPr[\\s\\S]*?<\\/a:lvl\\1pPr>/g,
+          function (lvlBlock, num) {
+            var v = sizes.bodySz[Number(num) - 1];
+            if (v == null) return lvlBlock;
+            return lvlBlock.replace(/(<a:defRPr[^>]*\\bsz=")\\d+/, '$1' + Math.round(v));
+          },
+        );
+        xml = xml.slice(0, bs.index) + block + xml.slice(bs.index + bs[0].length);
+      }
+    }
+    zip[masterName] = strToU8(xml);
+  }
+  if (sizes.coverTitleSz != null) {
+    var lst = '<a:lstStyle><a:lvl1pPr><a:defRPr sz="' +
+      Math.round(sizes.coverTitleSz) + '"/></a:lvl1pPr></a:lstStyle>';
+    Object.keys(zip).forEach(function (n) {
+      if (!/^ppt\\/slides\\/slide\\d+\\.xml$/.test(n)) return;
+      var sx = dec2.decode(zip[n]);
+      if (sx.indexOf('type="ctrTitle"') < 0) return;
+      var out = sx.replace(/<p:sp>[\\s\\S]*?<\\/p:sp>/g, function (sp) {
+        if (sp.indexOf('type="ctrTitle"') < 0) return sp;
+        return sp.replace(/<a:lstStyle\\s*\\/>/, lst);
+      });
+      zip[n] = strToU8(out);
+    });
+  }
+  return zipSync(zip);
+}
+window.__morphoApplyTextSizes = applyTextSizes;
+
 async function convert(id, md, opts, format) {
   return serialized(async function () { await doConvert(id, md, opts, format); });
 }
@@ -821,6 +881,13 @@ async function doExport(id, md, opts, format) {
 
     var out = res.files && res.files[name];
     if (!out) throw new Error('pandoc produced no ' + name);
+
+    /* 文字サイズの上書きは pptx にだけ効く */
+    if (format === 'pptx' && opts.textSizes) {
+      out = new Blob([
+        applyTextSizes(new Uint8Array(await out.arrayBuffer()), opts.textSizes),
+      ]);
+    }
 
     /* 装飾は pptx にだけ OOXML 後処理で焼き込む */
     if (format === 'pptx' && opts.decorations && opts.decorations.length) {

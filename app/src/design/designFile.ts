@@ -9,6 +9,9 @@
  */
 import type { DecorationShape, SlideDecoration } from '../converter/types';
 import type { DecorGroup, DesignData } from '../store/designs';
+/* 拡張子つきで import する（node --experimental-strip-types の検査が
+   拡張子なしの値 import を解決できないため。Metro はどちらも解決できる） */
+import { clampPt, type TextSizes } from './textSizes.ts';
 
 export const DESIGN_FILE_KIND = 'morphodesign';
 
@@ -24,6 +27,7 @@ export function serializeDesign(design: DesignData): string {
       version: 1,
       decorations: design.decorations,
       groups: design.groups,
+      ...(design.text ? { text: design.text } : {}),
     },
     null,
     2,
@@ -147,5 +151,20 @@ export function parseDesignFile(text: string): DesignData | null {
       }
     }
   }
-  return { version: 1, decorations, groups };
+  const out: DesignData = { version: 1, decorations, groups };
+  const sizes = sanitizeTextSizes(o.text);
+  if (sizes) out.text = sizes;
+  return out;
+}
+
+/** 文字サイズ設定の検証。designs.ts の loadDesign（ローカル保存の読み込み）とも共用 */
+export function sanitizeTextSizes(v: unknown): TextSizes | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const o = v as Record<string, unknown>;
+  const out: TextSizes = {};
+  for (const key of ['coverTitlePt', 'titlePt', 'bodyPt'] as const) {
+    const n = o[key];
+    if (typeof n === 'number' && Number.isFinite(n)) out[key] = clampPt(n);
+  }
+  return Object.keys(out).length ? out : null;
 }

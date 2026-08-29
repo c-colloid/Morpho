@@ -103,6 +103,11 @@ export interface DeckInfo {
   /** theme1.xml の配色（#RRGGBB）。dk1 / lt1 / accent1..6 など */
   colors: Record<string, string>;
   titleSz: number;
+  /**
+   * 表紙タイトル（ctrTitle）のサイズ上書き（1/100pt）。
+   * 文書の文字サイズ設定（adjustDeck）だけが入れる。未指定は titleSz
+   */
+  ctrTitleSz?: number;
   /** 箇条書き階層 lvl1..lvl5 の字サイズ */
   bodySz: number[];
   /** 箇条書き階層ごとの左余白（EMU）。テキストの左端 */
@@ -215,6 +220,12 @@ export interface ConvertOptions {
    * PowerPoint 上でもまとめて選択・移動できる
    */
   groups?: Array<{ id: string; contentIndex: number; memberIds: string[] }>;
+  /**
+   * 文字サイズの上書き（1/100pt）。pptx のみ。
+   * titleSz / bodySz はマスターの titleStyle / bodyStyle を書き換え、
+   * coverTitleSz は表紙スライドの ctrTitle に lstStyle を注入する
+   */
+  textSizes?: { titleSz?: number; coverTitleSz?: number; bodySz?: number[] };
 }
 
 /** 変換器が生成できる出力形式。md はエディタの内容そのものなので含めない */

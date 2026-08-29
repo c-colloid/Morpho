@@ -71,6 +71,7 @@ import {
   pruneGroups,
 } from '../design/groups';
 import { parseDesignFile, serializeDesign } from '../design/designFile';
+import { adjustDeck, toExportSizes, type TextSizes } from '../design/textSizes';
 import { DecorSheet } from './DecorSheet';
 import { DecorEditLayer } from './DecorEditLayer';
 import { sanitizeFileName, shareExport } from '../store/exportShare';
@@ -873,6 +874,28 @@ export default function EditorScreen() {
     }
   }, [mutateDesign]);
 
+  /* 文字サイズ設定を反映したプレビュー用デッキ（書き出しは OOXML 側で適用） */
+  const previewDeck = useMemo(
+    () => (result ? adjustDeck(result.deck, design.text) : null),
+    [result, design.text],
+  );
+  const previewResult = useMemo(
+    () => (result && previewDeck ? { ...result, deck: previewDeck } : result),
+    [result, previewDeck],
+  );
+
+  const handleUpdateTextSizes = useCallback(
+    (t: TextSizes | undefined) => {
+      mutateDesign((prev) => {
+        const next = { ...prev };
+        if (t && Object.keys(t).length) next.text = t;
+        else delete next.text;
+        return next;
+      });
+    },
+    [mutateDesign],
+  );
+
   const titleOffset = useMemo(
     () => (splitFrontMatter(source).metadata.title !== undefined ? 1 : 0),
     [source],
@@ -935,9 +958,13 @@ export default function EditorScreen() {
           const out = await converter.exportFile(body, choice, {
             metadata,
             stripHtmlComments: true,
-            /* 装飾は pptx にだけ焼き込まれる（ブリッジ側で無関係な形式は無視） */
+            /* 装飾・文字サイズは pptx にだけ焼き込まれる（ブリッジ側で無関係な形式は無視） */
             decorations: design.decorations,
             groups: design.groups,
+            textSizes: toExportSizes(
+              design.text,
+              resultRef.current?.deck?.bodySz ?? [2400, 2100, 1800, 1500, 1500],
+            ),
           });
           await shareExport(fileName, choice, { base64: out.base64 });
         }
@@ -1118,7 +1145,7 @@ export default function EditorScreen() {
                 >
                   <SlideCard
                     slide={s}
-                    deck={result.deck}
+                    deck={previewDeck ?? result.deck}
                     active={s.index === highlighted}
                     width={Math.max(0, previewW - 40 - 26)}
                     decorations={decorBySlide.get(s.index)}
@@ -1157,7 +1184,7 @@ export default function EditorScreen() {
         visible={decorSheetCi !== null}
         contentIndex={decorSheetCi ?? 1}
         decorations={design.decorations.filter((d) => d.contentIndex === decorSheetCi)}
-        deck={result?.deck ?? null}
+        deck={previewDeck ?? result?.deck ?? null}
         selectedId={selectedDecorId}
         onSelectItem={setSelectedDecorId}
         markedIds={markedIds}
@@ -1171,6 +1198,8 @@ export default function EditorScreen() {
         onDuplicate={handleDuplicateDecor}
         onReorder={handleReorderDecor}
         onCopyToAll={handleCopyDecorToAll}
+        textSizes={design.text}
+        onUpdateTextSizes={handleUpdateTextSizes}
         onExportDesign={handleExportDesign}
         onImportDesign={handleImportDesign}
         onClose={() => {
@@ -1182,7 +1211,7 @@ export default function EditorScreen() {
       />
       <SlideShow
         visible={showOpen}
-        result={result}
+        result={previewResult}
         initialIndex={highlighted}
         decorations={decorBySlide}
         onClose={() => setShowOpen(false)}

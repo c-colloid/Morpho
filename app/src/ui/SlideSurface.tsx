@@ -221,6 +221,7 @@ function ShapeBox({
   if (!shape.frame) return null;
   const f = shape.frame;
   const isTitle = !!shape.placeholder && TITLE_KINDS.includes(shape.placeholder);
+  const isCover = shape.placeholder === 'ctrTitle';
   const color = deck.colors.dk1 ?? '#000000';
 
   let counter = 0;
@@ -258,6 +259,7 @@ function ShapeBox({
             <SurfaceParagraph
               paragraph={p}
               isTitle={isTitle}
+              isCover={isCover}
               ordinal={numbers[pi]}
               deck={deck}
               scale={scale}
@@ -269,6 +271,7 @@ function ShapeBox({
             key={pi}
             paragraph={p}
             isTitle={isTitle}
+            isCover={isCover}
             ordinal={numbers[pi]}
             deck={deck}
             scale={scale}
@@ -283,6 +286,7 @@ function ShapeBox({
 function SurfaceParagraph({
   paragraph,
   isTitle,
+  isCover,
   ordinal,
   deck,
   scale,
@@ -290,6 +294,8 @@ function SurfaceParagraph({
 }: {
   paragraph: Paragraph;
   isTitle: boolean;
+  /** 表紙タイトル（ctrTitle）。文字サイズ設定で見出しと独立に変えられる */
+  isCover: boolean;
   ordinal: number;
   deck: DeckInfo;
   scale: number;
@@ -297,7 +303,7 @@ function SurfaceParagraph({
 }) {
   /* sz は 1/100pt。lvl の範囲外は最後の値に丸める */
   const szHundredths = isTitle
-    ? deck.titleSz
+    ? (isCover && deck.ctrTitleSz != null ? deck.ctrTitleSz : deck.titleSz)
     : deck.bodySz[Math.min(paragraph.level, deck.bodySz.length - 1)] ?? 1800;
   const fontSize = (szHundredths / 100) * scale;
   /* 字下げは実出力の marL / indent から。段落の上書きが無ければマスターの

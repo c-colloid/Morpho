@@ -18,6 +18,7 @@ import {
   PRESETS, SHAPE_PRESETS, decorationColorHex, nudge, type PresetKind,
 } from '../design/presets';
 import { sanitizeDecorText } from '../design/designFile';
+import { clampPt, type TextSizes } from '../design/textSizes';
 
 const SCHEMES = ['accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6'] as const;
 
@@ -72,6 +73,8 @@ export function DecorSheet({
   onDuplicate,
   onReorder,
   onCopyToAll,
+  textSizes,
+  onUpdateTextSizes,
   onExportDesign,
   onImportDesign,
   onClose,
@@ -98,6 +101,9 @@ export function DecorSheet({
   onDuplicate: (id: string) => void;
   onReorder: (id: string, dir: 'back' | 'front') => void;
   onCopyToAll: () => void;
+  /** 文書全体の文字サイズ設定（pt）。undefined = テンプレート既定 */
+  textSizes: TextSizes | undefined;
+  onUpdateTextSizes: (t: TextSizes | undefined) => void;
   /** 文書全体のデザインを .morphodesign として共有シートへ */
   onExportDesign: () => void;
   /** .morphodesign を読み込んで文書全体のデザインを置き換える */
@@ -417,6 +423,47 @@ export function DecorSheet({
               <Text style={styles.copyAllText}>このスライドの装飾を全スライドへコピー</Text>
             </Pressable>
           )}
+
+          <Text style={styles.section}>文字サイズ（文書全体・pt）</Text>
+          {(() => {
+            const defTitle = Math.round((deck?.titleSz ?? 3300) / 100);
+            const defBody = Math.round((deck?.bodySz?.[0] ?? 2400) / 100);
+            const title = textSizes?.titlePt ?? defTitle;
+            /* 表紙は未設定なら見出しに追従（OOXML の継承と同じ） */
+            const cover = textSizes?.coverTitlePt ?? title;
+            const body = textSizes?.bodyPt ?? defBody;
+            const upd = (patch: Partial<TextSizes>) => {
+              const next: TextSizes = { ...textSizes, ...patch };
+              onUpdateTextSizes(Object.keys(next).length ? next : undefined);
+            };
+            return (
+              <>
+                <Stepper
+                  label={`表紙タイトル ${cover}pt`}
+                  onDec={() => upd({ coverTitlePt: clampPt(cover - 1) })}
+                  onInc={() => upd({ coverTitlePt: clampPt(cover + 1) })}
+                />
+                <Stepper
+                  label={`見出し ${title}pt`}
+                  onDec={() => upd({ titlePt: clampPt(title - 1) })}
+                  onInc={() => upd({ titlePt: clampPt(title + 1) })}
+                />
+                <Stepper
+                  label={`本文 ${body}pt`}
+                  onDec={() => upd({ bodyPt: clampPt(body - 1) })}
+                  onInc={() => upd({ bodyPt: clampPt(body + 1) })}
+                />
+                {textSizes && (
+                  <Pressable
+                    style={styles.removeBtn}
+                    onPress={() => onUpdateTextSizes(undefined)}
+                  >
+                    <Text style={styles.ungroupText}>文字サイズを既定に戻す</Text>
+                  </Pressable>
+                )}
+              </>
+            );
+          })()}
 
           <View style={styles.fileRow}>
             <Pressable style={styles.fileBtn} onPress={onExportDesign}>

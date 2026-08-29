@@ -8,6 +8,7 @@ const {
   makeGroup, dissolveGroup, pruneGroups, dragMembersOf, moveMembersBy, copyDesignToAllSlides,
 } = await import('../src/design/groups.ts');
 const { serializeDesign, parseDesignFile } = await import('../src/design/designFile.ts');
+const { adjustDeck, toExportSizes, clampPt } = await import('../src/design/textSizes.ts');
 
 let n = 0;
 const t = (name, fn) => { fn(); n++; console.log('  ok   ' + name); };
@@ -164,6 +165,42 @@ t('.morphodesign: XML を壊せる id・制御文字入りテキストを通さ�
   assert.deepEqual(out.decorations.map((d) => d.id), ['b1', 'b2']);
   assert.equal(out.decorations[0].text, '1', '制御文字が残っている');
   assert.equal(out.decorations[1].text, undefined);
+});
+
+t('文字サイズ: 本文は比率で全階層が追従し、pt はクランプされる', () => {
+  const deck = { titleSz: 3300, bodySz: [2400, 2100, 1800, 1500, 1500], w: 1, h: 1, colors: {}, bodyMarL: [], bodyIndent: [] };
+  assert.equal(adjustDeck(deck), deck, '未設定なら同じオブジェクトを返す');
+  assert.equal(adjustDeck(deck, {}), deck);
+  const a = adjustDeck(deck, { titlePt: 20, coverTitlePt: 16, bodyPt: 12 });
+  assert.equal(a.titleSz, 2000);
+  assert.equal(a.ctrTitleSz, 1600);
+  assert.equal(a.bodySz[0], 1200);
+  assert.equal(a.bodySz[1], 1050, '下位階層が比率で追従していない');
+  assert.equal(deck.titleSz, 3300, '元のデッキが書き換わった');
+  assert.equal(clampPt(999), 80);
+  assert.equal(clampPt(1), 8);
+  const ex = toExportSizes({ bodyPt: 12 }, [2400, 2100, 1800, 1500, 1500]);
+  assert.equal(ex.titleSz, undefined);
+  assert.deepEqual(ex.bodySz, [1200, 1050, 900, 800, 800]);
+  assert.equal(toExportSizes(undefined, [2400]), undefined);
+});
+
+t('.morphodesign: 文字サイズ設定も往復し、不正値はクランプ・除外される', () => {
+  const a = makePreset('bandTop', 1, 'a', W, H);
+  const design = {
+    version: 1, decorations: [a], groups: [],
+    text: { coverTitlePt: 18, bodyPt: 20 },
+  };
+  assert.deepEqual(parseDesignFile(serializeDesign(design)), design);
+  const out = parseDesignFile(JSON.stringify({
+    kind: 'morphodesign', version: 1, decorations: [a],
+    text: { titlePt: 999, bodyPt: 'huge', coverTitlePt: NaN },
+  }));
+  assert.deepEqual(out.text, { titlePt: 80 }, '不正値の除外とクランプ');
+  const none = parseDesignFile(JSON.stringify({
+    kind: 'morphodesign', version: 1, decorations: [a], text: { bodyPt: 'x' },
+  }));
+  assert.equal(none.text, undefined, '有効値ゼロなら text 自体を持たない');
 });
 
 t('nudge: 1ステップ = 寸法の1%、サイズは1%未満にならない', () => {

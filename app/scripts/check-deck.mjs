@@ -180,6 +180,30 @@ t('テキスト位置の系統値: タイトルは中央（アンカー・揃え
   assert.equal(ctr.anchor, 'ctr');
 });
 
+t('文字サイズの後処理: マスターの titleStyle/bodyStyle と表紙の ctrTitle に効く', () => {
+  const sized = win.__morphoApplyTextSizes(bytes, {
+    titleSz: 2000,
+    coverTitleSz: 1600,
+    bodySz: [1200, 1050, 900, 800, 800],
+  });
+  const reparsed = win.__morphoParsePptx(new Uint8Array(sized));
+  assert.equal(reparsed.deck.titleSz, 2000);
+  /* vm 越しの配列はプロトタイプが別物なので Array.from で包む */
+  assert.deepEqual(Array.from(reparsed.deck.bodySz), [1200, 1050, 900, 800, 800]);
+  /* 表紙（slide1・ctrTitle）に lstStyle が注入される */
+  const szip = unzipSync(new Uint8Array(sized));
+  const s1 = strFromU8(szip['ppt/slides/slide1.xml']);
+  assert.ok(
+    s1.includes('<a:lstStyle><a:lvl1pPr><a:defRPr sz="1600"/></a:lvl1pPr></a:lstStyle>'),
+    '表紙の ctrTitle にサイズが注入されていない',
+  );
+  /* 本文スライド（slide2）は触られない */
+  const s2b = strFromU8(szip['ppt/slides/slide2.xml']);
+  assert.ok(!s2b.includes('sz="1600"'), '表紙以外に注入された');
+  /* 未設定なら何もしない（同じバイト列） */
+  assert.equal(win.__morphoApplyTextSizes(bytes, undefined), bytes);
+});
+
 /* ---------- 装飾の OOXML 後処理（飾る力）の統合検査 ---------- */
 
 const DECORS = [

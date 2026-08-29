@@ -9,6 +9,8 @@
 import * as FileSystem from 'expo-file-system/legacy';
 
 import type { SlideDecoration } from '../converter/types';
+import type { TextSizes } from '../design/textSizes';
+import { sanitizeTextSizes } from '../design/designFile';
 
 /** 装飾のグループ（roadmap: データはメンバー ID の配列）。同一スライド内のみ */
 export interface DecorGroup {
@@ -21,6 +23,8 @@ export interface DesignData {
   version: 1;
   decorations: SlideDecoration[];
   groups: DecorGroup[];
+  /** 文字サイズの上書き（pt）。未指定はテンプレート既定 */
+  text?: TextSizes;
 }
 
 export const EMPTY_DESIGN: DesignData = { version: 1, decorations: [], groups: [] };
@@ -37,12 +41,16 @@ export async function loadDesign(docId: string): Promise<DesignData> {
     const raw = await FileSystem.readAsStringAsync(pathOf(docId));
     const parsed = JSON.parse(raw) as Partial<DesignData>;
     if (parsed.version === 1 && Array.isArray(parsed.decorations)) {
-      return {
+      const out: DesignData = {
         version: 1,
         decorations: parsed.decorations,
         /* 0.6.2 以前のファイルには groups が無い */
         groups: Array.isArray(parsed.groups) ? parsed.groups : [],
       };
+      /* 壊れた・手で編集されたファイルでも NaN 等をプレビューへ流さない */
+      const text = sanitizeTextSizes(parsed.text);
+      if (text) out.text = text;
+      return out;
     }
   } catch {
     // 無い・壊れている → 空
