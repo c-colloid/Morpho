@@ -108,6 +108,11 @@ export interface DeckInfo {
    * 文書の文字サイズ設定（adjustDeck）だけが入れる。未指定は titleSz
    */
   ctrTitleSz?: number;
+  /**
+   * 表紙サブタイトル（subTitle）のサイズ上書き（1/100pt）。
+   * 未指定は本文と同じ（bodyStyle lvl1 を継承する。実測）
+   */
+  subTitleSz?: number;
   /** 箇条書き階層 lvl1..lvl5 の字サイズ */
   bodySz: number[];
   /** 箇条書き階層ごとの左余白（EMU）。テキストの左端 */
@@ -183,7 +188,7 @@ export interface DecorationColor {
 export interface SlideDecoration {
   /** 文書内で一意。グループ化（将来）のメンバー参照にも使う */
   id: string;
-  /** コンテンツスライド番号（1 始まり・タイトルスライドを含まない） */
+  /** コンテンツスライド番号（1 始まり）。0 はタイトルスライド（表紙） */
   contentIndex: number;
   shape: DecorationShape;
   /** スライド座標系の EMU（914400 = 1 inch） */
@@ -225,7 +230,7 @@ export interface ConvertOptions {
    * titleSz / bodySz はマスターの titleStyle / bodyStyle を書き換え、
    * coverTitleSz は表紙スライドの ctrTitle に lstStyle を注入する
    */
-  textSizes?: { titleSz?: number; coverTitleSz?: number; bodySz?: number[] };
+  textSizes?: { titleSz?: number; coverTitleSz?: number; coverSubSz?: number; bodySz?: number[] };
 }
 
 /** 変換器が生成できる出力形式。md はエディタの内容そのものなので含めない */

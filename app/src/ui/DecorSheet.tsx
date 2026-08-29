@@ -181,7 +181,9 @@ export function DecorSheet({
       <View style={styles.panelBody}>
         <View style={styles.titleBar} {...responder.panHandlers}>
           <Text style={styles.grip}>⠿</Text>
-          <Text style={styles.title}>スライド {contentIndex} の装飾</Text>
+          <Text style={styles.title}>
+            {contentIndex === 0 ? '表紙' : `スライド ${contentIndex}`} の装飾
+          </Text>
           <Pressable hitSlop={10} onPress={onClose}>
             <Text style={styles.close}>✕</Text>
           </Pressable>
@@ -429,9 +431,10 @@ export function DecorSheet({
             const defTitle = Math.round((deck?.titleSz ?? 3300) / 100);
             const defBody = Math.round((deck?.bodySz?.[0] ?? 2400) / 100);
             const title = textSizes?.titlePt ?? defTitle;
-            /* 表紙は未設定なら見出しに追従（OOXML の継承と同じ） */
+            /* 表紙は未設定なら見出しに、サブタイトルは本文に追従（OOXML の継承と同じ） */
             const cover = textSizes?.coverTitlePt ?? title;
             const body = textSizes?.bodyPt ?? defBody;
+            const coverSub = textSizes?.coverSubPt ?? body;
             const upd = (patch: Partial<TextSizes>) => {
               const next: TextSizes = { ...textSizes, ...patch };
               onUpdateTextSizes(Object.keys(next).length ? next : undefined);
@@ -442,6 +445,11 @@ export function DecorSheet({
                   label={`表紙タイトル ${cover}pt`}
                   onDec={() => upd({ coverTitlePt: clampPt(cover - 1) })}
                   onInc={() => upd({ coverTitlePt: clampPt(cover + 1) })}
+                />
+                <Stepper
+                  label={`表紙サブタイトル ${coverSub}pt`}
+                  onDec={() => upd({ coverSubPt: clampPt(coverSub - 1) })}
+                  onInc={() => upd({ coverSubPt: clampPt(coverSub + 1) })}
                 />
                 <Stepper
                   label={`見出し ${title}pt`}

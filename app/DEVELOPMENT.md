@@ -133,23 +133,28 @@ Expo Go 版との違い:
 
 ## 外部アプリ連携の実装状況
 
-**結論: 読み込みと書き出しは今できる。その場での上書き編集（open in place）は
-Expo Go では原理的に不可能で、development build が必要。**
+**結論: 読み込み・書き出しに加えて、その場での上書き編集（open in place）も
+0.8.0 で実装した**（ネイティブビルド配布 = AltStore 再署名で動くことは
+react-native-svg 入り ipa の配布実績で確認済み。当時の未検証項目は解消）。
 
-| やりたいこと | 今（Expo Go） | 手段 |
+| やりたいこと | 状況 | 手段 |
 |---|---|---|
-| Files / Obsidian 保管庫の .md を取り込む | ○ | 書類 →「読み込み」（expo-document-picker。キャッシュへのコピー） |
-| .md / .pptx / .docx を Files（iCloud 含む）へ保存 | ○ | 書き出し → 共有シート →「"ファイル"に保存」。同名なら置き換え |
-| Obsidian にノートとして送る | ○（実験的） | 書き出し →「Obsidian へ送る」。公式 URI（obsidian://new）で最後に開いた保管庫へ。本文約2万字まで |
-| 元ファイルへのその場の上書き保存 | **✗** | picker はコピーしか返さない。security-scoped bookmark が要る |
+| Files / Obsidian 保管庫の .md を取り込む | ○ | 書類 →「読み込み」（コピー） |
+| **元ファイルへのその場の上書き保存** | ○（0.8.0・実験的） | 書類 →「その場で開く」。@react-native-documents/picker の open モード + requestLongTermAccess |
+| Obsidian 側の編集を取り込む | ○ | フォアグラウンド復帰・文書切替時に元ファイルを再読込（未保存の編集がある間は触らない） |
+| .md / .pptx / .docx を Files へ保存 | ○ | 書き出し → 共有シート |
+| Obsidian にノートとして送る | ○（実験的） | 書き出し →「Obsidian へ送る」（obsidian://new・約2万字まで） |
 
-**open in place を実現する条件**（次の段階）:
-development build + ネイティブ側の UIDocumentPicker（asCopy: false）と
-security-scoped bookmark。@react-native-documents/picker の open モードが
-この用途に合う。development build は EAS のクラウドビルドで作れるが、
-実機に入れる署名で結局 Apple Developer Program（$99/年）が要る
-（AltStore の再署名で dev build が動くかは未検証）。
-iCloud 連携を本気で満たすのはこのタイミングになる。
+**制約（実装済み範囲の設計）**:
+- security-scoped URL のアクセス権は**アプリの完全終了で切れる**。bookmark は
+  保存しているが、JS から解決する API がライブラリに無いため、再起動後は
+  「外部」バッジ →「ファイルを選び直す」で再接続する（このとき内容が
+  食い違っていればどちらを使うかユーザーに選ばせる）
+- 常にサンドボックスへミラーを書くので、接続が切れても内容は失われない
+- 次の段階: 小さなネイティブモジュールで bookmark を解決すれば再起動後も
+  自動接続できる（expo-modules で書けるが実機デバッグ経路が無いため保留）
+- 実機での読み書き・復帰動作は**未検証**（この項は 0.8.0 実装時点の設計）。
+  実機確認後にこの表を更新すること
 
 ## 構成
 

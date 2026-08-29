@@ -46,13 +46,19 @@ import {
 } from '../preview/lineBreakEdit.ts';
 import {
   createDoc,
+  createExternalDoc,
   deleteDoc,
   listDocs,
   loadDoc,
+  readExternal,
   saveDoc,
+  setDocExternal,
   titleOf,
+  writeExternal,
   type DocMeta,
+  type ExternalRef,
 } from '../store/documents';
+import { errorCodes, isErrorWithCode, pick } from '@react-native-documents/picker';
 import { checkForUpdate, type UpdateInfo } from '../store/updateCheck';
 import {
   EMPTY_DESIGN,
@@ -173,6 +179,13 @@ export default function EditorScreen() {
   resultRef.current = result;
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
+  const docsRef = useRef(docs);
+  docsRef.current = docs;
+  /* 外部ファイルのアクセス切れ警告は文書ごとに一度だけ */
+  const extWarnedRef = useRef<Set<string>>(new Set());
+  const warnExternalRef = useRef<(id: string) => void>(() => {});
+  /* 進行中の保存。外部リフレッシュはこれを待ってから比較する（巻き戻り防止） */
+  const savingRef = useRef<Promise<void> | null>(null);
   const dirtyRef = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -198,12 +211,29 @@ export default function EditorScreen() {
     if (!dirtyRef.current || !id) return;
     dirtyRef.current = false;
     setSaveState({ kind: 'saving' });
-    try {
-      setDocs(await saveDoc(id, sourceRef.current));
+    const work = (async () => {
+      const next = await saveDoc(id, sourceRef.current);
+      setDocs(next);
       setSaveState({ kind: 'saved', at: Date.now() });
+      /* 外部ファイルと結ばれた文書は元ファイルへも上書きする（open in place）。
+         失敗（再起動でアクセス切れ等）してもアプリ内には保存済み */
+      const meta = next.find((d) => d.id === id);
+      if (meta?.external) {
+        try {
+          await writeExternal(meta.external, sourceRef.current);
+        } catch {
+          warnExternalRef.current(id);
+        }
+      }
+    })();
+    savingRef.current = work;
+    try {
+      await work;
     } catch (e) {
       dirtyRef.current = true;
       setSaveState({ kind: 'editing' });
+    } finally {
+      if (savingRef.current === work) savingRef.current = null;
     }
   }, []);
 
@@ -288,6 +318,8 @@ export default function EditorScreen() {
       if (state === 'active' && status.phase === 'ready') {
         void converter.convert('# warm', {}).catch(() => {});
       }
+      /* 外部ファイルは復帰時に最新を取り込む（Obsidian 側の編集を反映） */
+      if (state === 'active') void refreshExternalRef.current();
     });
     return () => sub.remove();
   }, [flushSave, converter, status.phase]);
@@ -314,8 +346,20 @@ export default function EditorScreen() {
     async (id: string) => {
       try {
         await flushSave();
-        const text = await loadDoc(id);
+        let text = await loadDoc(id);
         if (text === null) return;
+        /* 外部ファイルと結ばれた文書は元ファイルの最新を読む（Obsidian 等での
+           編集を取り込む）。読めなければミラーで開き、再接続を促す */
+        const meta = docsRef.current.find((d) => d.id === id);
+        if (meta?.external) {
+          const ext = await readExternal(meta.external);
+          if (ext === null) {
+            warnExternalRef.current(id);
+          } else if (ext !== text) {
+            text = ext;
+            setDocs(await saveDoc(id, ext));
+          }
+        }
         setActiveId(id);
         setSourceProgrammatic(text);
         setSaveState({ kind: 'saved', at: Date.now() });
@@ -364,6 +408,169 @@ export default function EditorScreen() {
       Alert.alert('読み込めませんでした', String(e instanceof Error ? e.message : e));
     }
   }, [flushSave, resetPreviewFor]);
+
+  /* ---------- 外部ファイル（open in place・実験的） ---------- */
+
+  const EXTERNAL_TYPES = ['public.plain-text', 'public.text', 'net.daringfireball.markdown'];
+
+  const pickExternal = useCallback(async (): Promise<ExternalRef | null> => {
+    const [file] = await pick({
+      mode: 'open',
+      requestLongTermAccess: true,
+      type: EXTERNAL_TYPES,
+    });
+    if (!file?.uri) return null;
+    return {
+      uri: file.uri,
+      fileName: file.name ?? 'external.md',
+      ...(file.bookmarkStatus === 'success' ? { bookmark: file.bookmark } : {}),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleOpenExternal = useCallback(async () => {
+    try {
+      const ref = await pickExternal();
+      if (!ref) return;
+      /* 現在の編集を書き切ってから読む（同じファイルを選び直したときに
+         古い内容へ巻き戻さない） */
+      await flushSave();
+      const text = await FileSystem.readAsStringAsync(ref.uri);
+      const openWith = (docId: string, content: string) => {
+        setActiveId(docId);
+        setSourceProgrammatic(content);
+        setSaveState({ kind: 'saved', at: Date.now() });
+        resetPreviewFor(content);
+        setDocsOpen(false);
+      };
+      /* 同じファイルを既に結んでいたら、新規に作らず再接続して開く */
+      const existing = docsRef.current.find((d) => d.external?.uri === ref.uri);
+      if (!existing) {
+        const { id, docs: next } = await createExternalDoc(text, ref);
+        setDocs(next);
+        openWith(id, text);
+        return;
+      }
+      await setDocExternal(existing.id, ref);
+      extWarnedRef.current.delete(existing.id);
+      /* 接続が切れていた間のアプリ側の編集がファイルへ書けていない可能性。
+         食い違っていたら黙って上書きせず選ばせる */
+      const mirror = (await loadDoc(existing.id)) ?? '';
+      if (mirror !== text) {
+        Alert.alert(
+          '内容が食い違っています',
+          'ファイルとアプリ内のコピーの内容が異なります。どちらを使いますか？',
+          [
+            {
+              text: 'ファイル側を読み込む',
+              onPress: () => {
+                void saveDoc(existing.id, text).then(setDocs);
+                openWith(existing.id, text);
+              },
+            },
+            {
+              text: 'アプリ側で上書き',
+              style: 'destructive',
+              onPress: () => {
+                void writeExternal(ref, mirror).catch((e) =>
+                  Alert.alert(
+                    'ファイルへ書き込めませんでした',
+                    String(e instanceof Error ? e.message : e),
+                  ),
+                );
+                openWith(existing.id, mirror);
+              },
+            },
+          ],
+        );
+        return;
+      }
+      setDocs(await saveDoc(existing.id, text));
+      openWith(existing.id, text);
+    } catch (e) {
+      if (isErrorWithCode(e) && e.code === errorCodes.OPERATION_CANCELED) return;
+      Alert.alert('開けませんでした', String(e instanceof Error ? e.message : e));
+    }
+  }, [pickExternal, flushSave, resetPreviewFor]);
+
+  /* 再接続。アプリ内とファイルの内容が食い違っていたらユーザーに選ばせる
+     （どちらかを黙って上書きしない）。アクティブでない文書にも同じ扱い */
+  const handleRelinkExternal = useCallback(
+    async (id: string) => {
+      try {
+        const ref = await pickExternal();
+        if (!ref) return;
+        await flushSave();
+        setDocs(await setDocExternal(id, ref));
+        extWarnedRef.current.delete(id);
+        const isActive = id === activeIdRef.current;
+        const mine = isActive ? sourceRef.current : ((await loadDoc(id)) ?? '');
+        const ext = await readExternal(ref);
+        const writeMine = () =>
+          void writeExternal(ref, mine).catch((e) =>
+            Alert.alert(
+              'ファイルへ書き込めませんでした',
+              String(e instanceof Error ? e.message : e),
+            ),
+          );
+        if (ext === null || ext === mine) {
+          if (ext === null) writeMine();
+          return;
+        }
+        Alert.alert(
+          '内容が食い違っています',
+          '選び直したファイルとアプリ内の内容が異なります。どちらを使いますか？',
+          [
+            {
+              text: 'ファイル側を読み込む',
+              onPress: () => {
+                if (isActive) {
+                  setSourceProgrammatic(ext);
+                  resetPreviewFor(ext);
+                }
+                void saveDoc(id, ext).then(setDocs);
+              },
+            },
+            { text: 'アプリ側で上書き', style: 'destructive', onPress: writeMine },
+          ],
+        );
+      } catch (e) {
+        if (isErrorWithCode(e) && e.code === errorCodes.OPERATION_CANCELED) return;
+        Alert.alert('再接続できませんでした', String(e instanceof Error ? e.message : e));
+      }
+    },
+    [pickExternal, flushSave, resetPreviewFor],
+  );
+
+  warnExternalRef.current = (id: string) => {
+    if (extWarnedRef.current.has(id)) return;
+    extWarnedRef.current.add(id);
+    Alert.alert(
+      '外部ファイルに接続できません',
+      'アプリの再起動でアクセス権が切れています（iOS の仕様）。ファイルを選び直すと再接続できます。それまではアプリ内のコピーで編集でき、内容は失われません。',
+      [
+        { text: 'このまま編集', style: 'cancel' },
+        { text: 'ファイルを選び直す', onPress: () => void handleRelinkExternal(id) },
+      ],
+    );
+  };
+
+  /* フォアグラウンド復帰時、外部ファイルの変更を取り込む（未保存の編集があれば触らない） */
+  const refreshExternalRef = useRef<() => Promise<void>>(async () => {});
+  refreshExternalRef.current = async () => {
+    /* 進行中の保存を待ってから比べる（保存前の内容へ巻き戻さない） */
+    if (savingRef.current) await savingRef.current.catch(() => {});
+    const id = activeIdRef.current;
+    if (!id || dirtyRef.current) return;
+    const meta = docsRef.current.find((d) => d.id === id);
+    if (!meta?.external) return;
+    const ext = await readExternal(meta.external);
+    if (ext === null || ext === sourceRef.current) return;
+    setSourceProgrammatic(ext);
+    setDocs(await saveDoc(id, ext));
+    setSaveState({ kind: 'saved', at: Date.now() });
+    resetPreviewFor(ext);
+  };
 
   const handleDelete = useCallback(
     async (id: string) => {
@@ -653,10 +860,7 @@ export default function EditorScreen() {
     (slideIndex: number) => {
       const ci = contentIndexOf(slideIndex);
       if (ci === null) return;
-      if (ci < 1) {
-        Alert.alert('タイトルスライドの装飾は未対応です', 'front matter から生成されるためです');
-        return;
-      }
+      /* ci=0 = タイトルスライド（表紙）。装飾は原稿に書かないので表紙にも置ける */
       setDecorSheetCi((prev) => {
         if (prev !== ci) {
           setSelectedDecorId(null);
@@ -805,7 +1009,7 @@ export default function EditorScreen() {
     const total = slideSegments(body).length;
     Alert.alert(
       '全スライドへコピー',
-      `スライド ${ci} の装飾を全 ${total} 枚へコピーします。` +
+      `${ci === 0 ? '表紙' : `スライド ${ci}`}の装飾を全 ${total} 枚のコンテンツスライドへコピーします。` +
         '他のスライドの既存の装飾は置き換えられます。',
       [
         { text: 'キャンセル', style: 'cancel' },
@@ -1229,6 +1433,8 @@ export default function EditorScreen() {
         onSelect={(id) => void switchDoc(id)}
         onCreate={() => void handleCreate()}
         onImport={() => void handleImport()}
+        onOpenExternal={() => void handleOpenExternal()}
+        onRelink={(id) => void handleRelinkExternal(id)}
         onDelete={(id) => void handleDelete(id)}
         onClose={() => setDocsOpen(false)}
       />

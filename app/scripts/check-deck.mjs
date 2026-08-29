@@ -184,6 +184,7 @@ t('文字サイズの後処理: マスターの titleStyle/bodyStyle と表紙�
   const sized = win.__morphoApplyTextSizes(bytes, {
     titleSz: 2000,
     coverTitleSz: 1600,
+    coverSubSz: 1400,
     bodySz: [1200, 1050, 900, 800, 800],
   });
   const reparsed = win.__morphoParsePptx(new Uint8Array(sized));
@@ -197,6 +198,10 @@ t('文字サイズの後処理: マスターの titleStyle/bodyStyle と表紙�
     s1.includes('<a:lstStyle><a:lvl1pPr><a:defRPr sz="1600"/></a:lvl1pPr></a:lstStyle>'),
     '表紙の ctrTitle にサイズが注入されていない',
   );
+  /* サブタイトル（著者等）は独立のサイズになる */
+  const subSp = s1.match(/<p:sp>[\s\S]*?type="subTitle"[\s\S]*?<\/p:sp>/);
+  assert.ok(subSp && subSp[0].includes('<a:defRPr sz="1400"/>'),
+    '表紙の subTitle にサイズが注入されていない');
   /* 本文スライド（slide2）は触られない */
   const s2b = strFromU8(szip['ppt/slides/slide2.xml']);
   assert.ok(!s2b.includes('sz="1600"'), '表紙以外に注入された');

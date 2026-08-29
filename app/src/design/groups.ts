@@ -84,8 +84,9 @@ export function moveMembersBy(
 }
 
 /**
- * あるスライドの装飾**とグループ**を全スライドへ複製する（置き換え方式）。
- * 元スライドはそのまま。他スライドの既存装飾・グループは捨てる。
+ * あるスライドの装飾**とグループ**をコンテンツスライド（1..total）へ
+ * 複製する（置き換え方式）。元スライドはそのまま。表紙（ci=0）の装飾は
+ * 元でない限り保持し、それ以外のスライドの既存装飾・グループは捨てる。
  */
 export function copyDesignToAllSlides(
   design: DesignData,
@@ -95,8 +96,13 @@ export function copyDesignToAllSlides(
 ): DesignData {
   const srcDecors = design.decorations.filter((d) => d.contentIndex === fromCi);
   const srcGroups = design.groups.filter((g) => g.contentIndex === fromCi);
-  const decorations: SlideDecoration[] = [...srcDecors];
-  const groups: DecorGroup[] = [...srcGroups];
+  /* 置き換えの対象はコンテンツスライド（1..total）。表紙（ci=0）の装飾は
+     元スライドでない限り保持する */
+  const keepCover = (ci: number) => ci === fromCi || (ci === 0 && fromCi !== 0);
+  const decorations: SlideDecoration[] = design.decorations.filter((d) =>
+    keepCover(d.contentIndex),
+  );
+  const groups: DecorGroup[] = design.groups.filter((g) => keepCover(g.contentIndex));
   for (let ci = 1; ci <= totalSlides; ci++) {
     if (ci === fromCi) continue;
     const idMap = new Map<string, string>();

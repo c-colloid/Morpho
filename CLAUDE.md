@@ -423,11 +423,11 @@ WebView は「Markdown を渡すと描画用 JSON を返す計算機」に徹す
 | テンプレート適用 | — | 配線盤 UI。他にない機能 |
 | ハードウェアキーボード | — | Magic Keyboard 前提のショートカット |
 
-**注意（検証済み・決着）:** 「iCloud の .md を開いて上書き保存」は検証した。
-読み込みと書き出しは Expo Go の今の構成で可能。その場の上書き（open in place）は
-Expo Go では原理的に不可（picker はコピーしか返さない）で、
-development build + ネイティブ picker（asCopy: false）+ security-scoped bookmark が要る。
-つまり Mac 調達の問題ではなく **Developer Program（$99/年）の課金判断**に縮小された。
+**注意（更新・0.8.0）:** その場の上書き（open in place）は
+@react-native-documents/picker の open モードで**実装済み**（CI のネイティブビルド +
+AltStore 再署名で動くことは配布実績で確認済み。Developer Program は不要だった）。
+残る制約はアクセス権がアプリの完全終了で切れること（再接続 UI で対応。
+bookmark のネイティブ解決は次段・未検証）。
 詳細は `app/DEVELOPMENT.md` の「外部アプリ連携の実装状況」。
 
 ## リポジトリ構成

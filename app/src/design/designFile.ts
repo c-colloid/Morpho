@@ -65,7 +65,7 @@ function sanitizeDecoration(v: unknown): SlideDecoration | null {
   if (typeof v !== 'object' || v === null) return null;
   const o = v as Record<string, unknown>;
   if (typeof o.id !== 'string' || !ID_RE.test(o.id)) return null;
-  if (!isFiniteNum(o.contentIndex) || o.contentIndex < 1) return null;
+  if (!isFiniteNum(o.contentIndex) || o.contentIndex < 0) return null;
   if (!SHAPES.includes(o.shape as DecorationShape)) return null;
   if (!isFiniteNum(o.x) || !isFiniteNum(o.y) || !isFiniteNum(o.w) || !isFiniteNum(o.h)) return null;
   if (o.w <= 0 || o.h <= 0) return null;
@@ -162,7 +162,7 @@ export function sanitizeTextSizes(v: unknown): TextSizes | null {
   if (typeof v !== 'object' || v === null) return null;
   const o = v as Record<string, unknown>;
   const out: TextSizes = {};
-  for (const key of ['coverTitlePt', 'titlePt', 'bodyPt'] as const) {
+  for (const key of ['coverTitlePt', 'coverSubPt', 'titlePt', 'bodyPt'] as const) {
     const n = o[key];
     if (typeof n === 'number' && Number.isFinite(n)) out[key] = clampPt(n);
   }

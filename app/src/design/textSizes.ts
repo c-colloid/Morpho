@@ -11,6 +11,8 @@ import type { DeckInfo } from '../converter/types';
 export interface TextSizes {
   /** 表紙タイトル（ctrTitle）。未指定なら見出しと同じ */
   coverTitlePt?: number;
+  /** 表紙サブタイトル（subTitle。サブタイトル・著者・日付）。未指定なら本文と同じ */
+  coverSubPt?: number;
   /** 見出し（各スライドのタイトル） */
   titlePt?: number;
   /** 本文（箇条書き lvl1）。下位階層は既定との比率で追従する */
@@ -35,11 +37,17 @@ const finite = (v: number | undefined): v is number =>
 export function toExportSizes(
   t: TextSizes | undefined,
   bodyDefaults: number[],
-): { titleSz?: number; coverTitleSz?: number; bodySz?: number[] } | undefined {
+): { titleSz?: number; coverTitleSz?: number; coverSubSz?: number; bodySz?: number[] } | undefined {
   if (!t) return undefined;
-  const out: { titleSz?: number; coverTitleSz?: number; bodySz?: number[] } = {};
+  const out: {
+    titleSz?: number;
+    coverTitleSz?: number;
+    coverSubSz?: number;
+    bodySz?: number[];
+  } = {};
   if (finite(t.titlePt)) out.titleSz = clampPt(t.titlePt) * 100;
   if (finite(t.coverTitlePt)) out.coverTitleSz = clampPt(t.coverTitlePt) * 100;
+  if (finite(t.coverSubPt)) out.coverSubSz = clampPt(t.coverSubPt) * 100;
   if (finite(t.bodyPt) && bodyDefaults.length) {
     const ratio = (clampPt(t.bodyPt) * 100) / bodyDefaults[0];
     out.bodySz = bodyDefaults.map((s) => Math.max(MIN_PT * 100, Math.round(s * ratio)));
@@ -54,6 +62,7 @@ export function adjustDeck(deck: DeckInfo, t?: TextSizes): DeckInfo {
   const out: DeckInfo = { ...deck };
   if (sizes.titleSz != null) out.titleSz = sizes.titleSz;
   if (sizes.coverTitleSz != null) out.ctrTitleSz = sizes.coverTitleSz;
+  if (sizes.coverSubSz != null) out.subTitleSz = sizes.coverSubSz;
   if (sizes.bodySz) out.bodySz = sizes.bodySz;
   return out;
 }

@@ -171,9 +171,10 @@ t('文字サイズ: 本文は比率で全階層が追従し、pt はクランプ
   const deck = { titleSz: 3300, bodySz: [2400, 2100, 1800, 1500, 1500], w: 1, h: 1, colors: {}, bodyMarL: [], bodyIndent: [] };
   assert.equal(adjustDeck(deck), deck, '未設定なら同じオブジェクトを返す');
   assert.equal(adjustDeck(deck, {}), deck);
-  const a = adjustDeck(deck, { titlePt: 20, coverTitlePt: 16, bodyPt: 12 });
+  const a = adjustDeck(deck, { titlePt: 20, coverTitlePt: 16, coverSubPt: 14, bodyPt: 12 });
   assert.equal(a.titleSz, 2000);
   assert.equal(a.ctrTitleSz, 1600);
+  assert.equal(a.subTitleSz, 1400);
   assert.equal(a.bodySz[0], 1200);
   assert.equal(a.bodySz[1], 1050, '下位階層が比率で追従していない');
   assert.equal(deck.titleSz, 3300, '元のデッキが書き換わった');
@@ -243,6 +244,24 @@ t('全スライドへコピー（design 版）: 元は保持・他は置き換�
   assert.ok(out.groups.some((g) => g.id === 'grp'), '元のグループが消えた');
   const ids = out.decorations.map((d) => d.id);
   assert.equal(new Set(ids).size, ids.length, 'id が重複');
+  /* 表紙（ci=0）の装飾はコンテンツスライドからのコピーで消えない */
+  const cover = makePreset('bandTop', 0, 'cov', W, H);
+  const out2 = copyDesignToAllSlides(
+    { version: 1, decorations: [cover, a], groups: [] }, 2, 3, gen,
+  );
+  assert.ok(out2.decorations.some((d) => d.id === 'cov'), '表紙の装飾が消えた');
+  /* 表紙からのコピーは表紙を保ち、コンテンツへ複製する */
+  const out3 = copyDesignToAllSlides(
+    { version: 1, decorations: [cover], groups: [] }, 0, 2, gen,
+  );
+  assert.ok(out3.decorations.some((d) => d.id === 'cov'));
+  assert.equal(out3.decorations.filter((d) => d.contentIndex >= 1).length, 2);
+});
+
+t('.morphodesign: 表紙（contentIndex 0）の装飾を受け入れる', () => {
+  const cover = makePreset('bandTop', 0, 'cov', W, H);
+  const back = parseDesignFile(serializeDesign({ version: 1, decorations: [cover], groups: [] }));
+  assert.equal(back.decorations[0].contentIndex, 0);
 });
 
 t('グループ: 作成の妥当性検査と解散・整理', () => {

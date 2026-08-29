@@ -694,7 +694,7 @@ window.__morphoApplyDecorations = applyDecorations;
    ctrTitle 図形の空 lstStyle にサイズ入り lvl1pPr を注入する（ctrTitle は
    titleStyle を継承するため、見出しと独立に変えるにはここしかない。実測） */
 function applyTextSizes(bytes, sizes) {
-  if (!sizes || (sizes.titleSz == null && sizes.coverTitleSz == null && !sizes.bodySz)) {
+  if (!sizes || (sizes.titleSz == null && sizes.coverTitleSz == null && sizes.coverSubSz == null && !sizes.bodySz)) {
     return bytes;
   }
   var zip = unzipSync(bytes);
@@ -730,16 +730,24 @@ function applyTextSizes(bytes, sizes) {
     }
     zip[masterName] = strToU8(xml);
   }
-  if (sizes.coverTitleSz != null) {
-    var lst = '<a:lstStyle><a:lvl1pPr><a:defRPr sz="' +
-      Math.round(sizes.coverTitleSz) + '"/></a:lvl1pPr></a:lstStyle>';
+  if (sizes.coverTitleSz != null || sizes.coverSubSz != null) {
+    var lstOf = function (sz) {
+      return '<a:lstStyle><a:lvl1pPr><a:defRPr sz="' + Math.round(sz) + '"/></a:lvl1pPr></a:lstStyle>';
+    };
     Object.keys(zip).forEach(function (n) {
       if (!/^ppt\\/slides\\/slide\\d+\\.xml$/.test(n)) return;
       var sx = dec2.decode(zip[n]);
       if (sx.indexOf('type="ctrTitle"') < 0) return;
       var out = sx.replace(/<p:sp>[\\s\\S]*?<\\/p:sp>/g, function (sp) {
-        if (sp.indexOf('type="ctrTitle"') < 0) return sp;
-        return sp.replace(/<a:lstStyle\\s*\\/>/, lst);
+        if (sizes.coverTitleSz != null && sp.indexOf('type="ctrTitle"') >= 0) {
+          return sp.replace(/<a:lstStyle\\s*\\/>/, lstOf(sizes.coverTitleSz));
+        }
+        /* サブタイトル（著者・日付も subTitle の段落）。サイズはマスターの
+           bodyStyle を継承しているため、独立に変えるにはここへ注入する（実測） */
+        if (sizes.coverSubSz != null && sp.indexOf('type="subTitle"') >= 0) {
+          return sp.replace(/<a:lstStyle\\s*\\/>/, lstOf(sizes.coverSubSz));
+        }
+        return sp;
       });
       zip[n] = strToU8(out);
     });

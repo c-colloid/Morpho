@@ -16,6 +16,8 @@ export function DocumentsModal({
   onSelect,
   onCreate,
   onImport,
+  onOpenExternal,
+  onRelink,
   onDelete,
   onClose,
 }: {
@@ -25,14 +27,30 @@ export function DocumentsModal({
   onSelect: (id: string) => void;
   onCreate: () => void;
   onImport: () => void;
+  /** 外部ファイル（Obsidian 保管庫等）をその場で開く（open in place） */
+  onOpenExternal: () => void;
+  /** 外部ファイルへの再接続（アクセス切れ時にファイルを選び直す） */
+  onRelink: (id: string) => void;
   onDelete: (id: string) => void;
   onClose: () => void;
 }) {
   const confirmDelete = (doc: DocMeta) => {
-    Alert.alert('削除しますか？', `「${doc.title}」を削除します。取り消せません。`, [
+    const extra = doc.external ? '外部ファイル自体は削除されません。' : '';
+    Alert.alert('削除しますか？', `「${doc.title}」を削除します。取り消せません。${extra}`, [
       { text: 'キャンセル', style: 'cancel' },
       { text: '削除', style: 'destructive', onPress: () => onDelete(doc.id) },
     ]);
+  };
+
+  const askRelink = (doc: DocMeta) => {
+    Alert.alert(
+      '外部ファイルと連携中',
+      `「${doc.external?.fileName ?? ''}」へその場で上書き保存します。アプリを再起動した後は、ここからファイルを選び直すと再接続できます。`,
+      [
+        { text: '閉じる', style: 'cancel' },
+        { text: 'ファイルを選び直す', onPress: () => onRelink(doc.id) },
+      ],
+    );
   };
 
   return (
@@ -43,6 +61,9 @@ export function DocumentsModal({
             <Text style={styles.title}>書類</Text>
             <Pressable style={styles.headBtn} onPress={onImport}>
               <Text style={styles.headBtnText}>読み込み</Text>
+            </Pressable>
+            <Pressable style={styles.headBtn} onPress={onOpenExternal}>
+              <Text style={styles.headBtnText}>その場で開く</Text>
             </Pressable>
             <Pressable style={[styles.headBtn, styles.headBtnPrimary]} onPress={onCreate}>
               <Text style={[styles.headBtnText, styles.headBtnPrimaryText]}>新規</Text>
@@ -63,9 +84,16 @@ export function DocumentsModal({
                 onPress={() => onSelect(item.id)}
               >
                 <View style={styles.rowBody}>
-                  <Text style={styles.rowTitle} numberOfLines={1}>
-                    {item.title}
-                  </Text>
+                  <View style={styles.rowTitleLine}>
+                    {item.external && (
+                      <Pressable hitSlop={6} onPress={() => askRelink(item)}>
+                        <Text style={styles.extBadge}>外部</Text>
+                      </Pressable>
+                    )}
+                    <Text style={styles.rowTitle} numberOfLines={1}>
+                      {item.title}
+                    </Text>
+                  </View>
                   <Text style={styles.rowDate}>{stamp(item.updatedAt)}</Text>
                 </View>
                 <Pressable hitSlop={8} onPress={() => confirmDelete(item)}>
@@ -77,8 +105,9 @@ export function DocumentsModal({
           />
 
           <Text style={styles.note}>
-            書類はこの端末のアプリ内に保存されます。バックアップは「書き出し」から
-            .md を Files / iCloud へ保存してください。
+            書類はこの端末のアプリ内に保存されます。「その場で開く」は Files /
+            Obsidian 保管庫の .md に直接上書き保存します（アプリの再起動後は
+            「外部」バッジから再接続）。バックアップは「書き出し」から。
           </Text>
           <Pressable style={styles.cancel} onPress={onClose}>
             <Text style={styles.cancelText}>閉じる</Text>
@@ -139,7 +168,18 @@ const styles = StyleSheet.create({
   rowActive: { backgroundColor: '#E9EDFB' },
   rowPressed: { backgroundColor: '#E6E8EC' },
   rowBody: { flex: 1 },
-  rowTitle: { fontSize: 16, color: '#14161B', fontWeight: '600' },
+  rowTitleLine: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  extBadge: {
+    fontSize: 11,
+    color: '#1B3FE0',
+    borderWidth: 1,
+    borderColor: '#1B3FE0',
+    borderRadius: 4,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    overflow: 'hidden',
+  },
+  rowTitle: { flexShrink: 1, fontSize: 16, color: '#14161B', fontWeight: '600' },
   rowDate: { fontSize: 12, color: '#666C78', marginTop: 2, fontVariant: ['tabular-nums'] },
   rowDelete: { fontSize: 13, color: '#B01030' },
   empty: { padding: 20, fontSize: 14, color: '#666C78', textAlign: 'center' },
