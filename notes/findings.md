@@ -171,3 +171,32 @@ pPr / スタイルの algn、bodyStyle の spcBef を読み、プレビューが
 「出力には見えるのにプレビューに無い行」をなくし、収まっていないことが
 プレビューで分かるようにする。
 残る差はフォントメトリクス由来の行折り返し位置のみ（既知の近似）。
+
+
+## 10. PowerPoint が「ファイルを開けません」— 原因は原稿コピペ由来の U+000B
+
+実機報告「0.6 のどこかから pptx 出力が PowerPoint で開けなくなった」の調査。
+結論から言うと**アプリのバージョンは無関係**で、原稿の内容が引き金だった。
+
+切り分けの経緯:
+
+1. 0.6.8（出力が開けていた最後の確認点）以降で書き出しバイト列に触れる変更は
+   0.7.0 の applyTextSizes だけと git で確定
+2. アプリと同一経路（pandoc-wasm 1.1.0 + 後処理）で合成データを大量生成し、
+   XML 整形式・python-pptx・LibreOffice（PDF 変換まで）・ECMA-376 XSD 厳密検証・
+   Open XML SDK バリデータの全部に通した → **全部妥当。再現せず**
+3. ユーザー提供の実原稿で再生成 → Open XML SDK バリデータだけが検出:
+   `hexadecimal value 0x0B, is an invalid character`（slide1.xml）
+
+原稿の front matter の author 行（NEJM サイトからのコピペ）に
+U+000B（垂直タブ）が入っていた。ページ上は改行に見える文字。
+pandoc はこれをエスケープも除去もせず slide XML へ素通しし、
+XML 1.0 の禁止文字なので PowerPoint がファイルごと拒否する。
+**LibreOffice / python-pptx / lxml は黙って通す**（だから 2. で捕まらなかった）。
+
+対処（0.8.2）: 変換境界（pandoc へ渡す直前の sanitizeForXml）で metadata と
+本文の両方から XML 非対応文字を空白へ 1:1 置換（本文オフセット保持）。
+splitFrontMatter 自体は原稿に忠実なまま — ノート編集・改行編集の書き戻しが
+原稿（外部ファイル含む）を書き換えないようにするため。
+教訓: pptx の検証は Open XML SDK 系（npm: @ooxml-tools/validate）でないと
+PowerPoint の判定を代弁できない。

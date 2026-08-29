@@ -16,6 +16,26 @@ export interface SplitDocument {
   body: string;
 }
 
+/* XML 1.0 で使えない制御文字。web からのコピペで混入する（実例: NEJM の
+   著者行の U+000B）。pandoc は素通しするため slide XML に入り、PowerPoint が
+   ファイルごと開けなくなる（LibreOffice 等は黙って通すので気づきにくい） */
+const XML_INVALID_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g;
+
+const stripXmlInvalid = (s: string): string => s.replace(XML_INVALID_RE, ' ');
+
+/**
+ * 変換（pandoc へ渡す）直前にだけ適用する。splitFrontMatter 自体は原稿に
+ * 忠実なまま返す — 本文の書き戻し（ノート編集・改行編集）が原稿を
+ * 書き換えないようにするため。
+ * 置換は 1文字 → 1文字なので、本文オフセット（カーソル→スライド対応）は
+ * 未適用の body とも互換のまま。
+ */
+export function sanitizeForXml(doc: SplitDocument): SplitDocument {
+  const metadata: Record<string, string> = {};
+  for (const k of Object.keys(doc.metadata)) metadata[k] = stripXmlInvalid(doc.metadata[k]);
+  return { metadata, body: stripXmlInvalid(doc.body) };
+}
+
 const unquote = (v: string): string => {
   const t = v.trim();
   if (t.length >= 2 && (t[0] === '"' || t[0] === "'") && t[t.length - 1] === t[0]) {

@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 
 /* Node 22 の型ストリップで .ts をそのまま読む（ビルド不要） */
-const { splitFrontMatter } = await import('../src/converter/frontMatter.ts');
+const { sanitizeForXml, splitFrontMatter } = await import('../src/converter/frontMatter.ts');
 
 let n = 0;
 const t = (name, fn) => { fn(); n++; console.log('  ok   ' + name); };
@@ -47,6 +47,30 @@ t('CRLF でも切り出せる', () => {
   const r = splitFrontMatter('---\r\ntitle: T\r\n---\r\n本文');
   assert.deepEqual(r.metadata, { title: 'T' });
   assert.equal(r.body, '本文');
+});
+
+t('sanitizeForXml: XML 非対応の制御文字を空白へ置換（PowerPoint がファイルを開けなくなる実例あり）', () => {
+  // 実例: NEJM の著者行コピペに U+000B（垂直タブ）が混入し、pandoc が
+  // slide XML へ素通しして PowerPoint がファイルごと拒否した
+  const vt = String.fromCharCode(0x0b);
+  const r = sanitizeForXml(splitFrontMatter('---\ntitle: T\nauthor: A' + vt + 'B\n---\n本文' + vt + '末尾\n'));
+  assert.equal(r.metadata.author, 'A B');
+  assert.equal(r.body, '本文 末尾\n');
+});
+
+t('sanitizeForXml: 置換は 1 文字 → 1 文字（本文オフセットが崩れない）', () => {
+  const vt = String.fromCharCode(0x0b);
+  const src = '# 見出し\n\n段落' + vt + '続き\n';
+  const r = sanitizeForXml(splitFrontMatter(src));
+  assert.equal(r.body.length, src.length);
+  assert.equal(r.body.indexOf('続き'), src.indexOf('続き'));
+});
+
+t('sanitizeForXml: タブと改行は残す。splitFrontMatter 単体は原稿に忠実', () => {
+  const vt = String.fromCharCode(0x0b);
+  assert.equal(sanitizeForXml(splitFrontMatter('a\tb\nc\n')).body, 'a\tb\nc\n');
+  // 書き戻し経路（ノート編集等）が原稿を書き換えないよう、split 自体は触らない
+  assert.equal(splitFrontMatter('x' + vt + 'y\n').body, 'x' + vt + 'y\n');
 });
 
 console.log(`\n${n} 件すべて通過`);

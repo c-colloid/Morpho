@@ -21,7 +21,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { LatestOnly } from '../converter/latestOnly';
-import { splitFrontMatter } from '../converter/frontMatter';
+import { sanitizeForXml, splitFrontMatter } from '../converter/frontMatter';
 import { usePandocConverter } from '../converter/usePandocConverter';
 import { WebView } from 'react-native-webview';
 
@@ -651,7 +651,8 @@ export default function EditorScreen() {
       new LatestOnly<{ md: string; format: PreviewFormat }, ConvertResult>(
         (job) => {
           // CLAUDE.md 落とし穴 1: front matter は自前で剥がして metadata で渡す
-          const { metadata, body } = splitFrontMatter(job.md);
+          // 落とし穴 9: XML 非対応の制御文字は pandoc へ渡す直前に空白へ置換する
+          const { metadata, body } = sanitizeForXml(splitFrontMatter(job.md));
           return converter.convert(body, {
             metadata,
             stripHtmlComments: true,
@@ -1192,7 +1193,8 @@ export default function EditorScreen() {
         } else if (choice === 'md') {
           await shareExport(fileName, 'md', { text: src });
         } else {
-          const { metadata, body } = splitFrontMatter(src);
+          /* 落とし穴 9: XML 非対応の制御文字は pandoc へ渡す直前に空白へ置換する */
+          const { metadata, body } = sanitizeForXml(splitFrontMatter(src));
           const out = await converter.exportFile(body, choice, {
             metadata,
             stripHtmlComments: true,
