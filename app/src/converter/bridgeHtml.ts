@@ -197,6 +197,9 @@ function parseRuns(paragraphXml) {
     if (/\\bi="(1|true)"/.test(attrs)) run.italic = true;
     if (/\\bu="(sng|dbl)"/.test(attrs)) run.underline = true;
     if (latin && MONO_FACE.test(latin[1])) run.mono = true;
+    /* ラン単位の文字色（pandoc はコードの構文色を srgbClr で出す。実測） */
+    var clr = /<a:solidFill>\\s*<a:srgbClr\\s+val="([0-9A-Fa-f]{6})"/.exec(r);
+    if (clr) run.color = '#' + clr[1].toUpperCase();
     runs.push(run);
   }
   return runs;

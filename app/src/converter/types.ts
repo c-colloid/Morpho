@@ -30,6 +30,8 @@ export interface TextRun {
   underline?: boolean;
   /** 等幅書体。コードスパン / コードブロックの判定に使う */
   mono?: boolean;
+  /** ラン単位の文字色（#RRGGBB）。pandoc の構文ハイライトが使う */
+  color?: string;
 }
 
 /**

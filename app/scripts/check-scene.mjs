@@ -168,6 +168,20 @@ t('コードブロックは Courier かつ buNone', () => {
   assert.equal(p0.runs[1].mono, true);
 });
 
+t('ラン単位の文字色（構文ハイライト）を拾う', () => {
+  /* pandoc の実出力: <a:rPr b="1"><a:solidFill><a:srgbClr val="007020"/></a:solidFill>
+     <a:latin typeface="Courier"/></a:rPr> */
+  const xml = sp('<p:ph idx="1"/>',
+    '<a:p><a:pPr lvl="0" indent="0"><a:buNone/></a:pPr>' +
+    '<a:r><a:rPr b="1"><a:solidFill><a:srgbClr val="007020"/></a:solidFill>' +
+    '<a:latin typeface="Courier"/></a:rPr><a:t>const</a:t></a:r>' +
+    '<a:r><a:rPr><a:latin typeface="Courier"/></a:rPr><a:t> x</a:t></a:r></a:p>');
+  const runs = parse(xml)[0].paragraphs[0].runs;
+  assert.equal(runs[0].color, '#007020');
+  assert.equal(runs[0].mono, true);
+  assert.equal(runs[1].color, undefined, '色の無いランに色が付いた');
+});
+
 t('斜体は i="1" で来る（pandoc の実出力）', () => {
   const xml = sp('<p:ph idx="1"/>',
     '<a:p><a:pPr lvl="0" indent="0" marL="0"><a:buNone/></a:pPr>' +

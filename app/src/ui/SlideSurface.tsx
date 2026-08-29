@@ -365,6 +365,8 @@ function surfaceRunStyle(run: TextRun, fontSize: number) {
     run.italic && styles.italic,
     run.underline && styles.underline,
     run.mono && { fontFamily: 'Menlo' as const, fontSize: fontSize * 0.92 },
+    /* 構文ハイライト等のラン単位の色（実出力の srgbClr をそのまま使う） */
+    run.color != null && { color: run.color },
   ];
 }
 
