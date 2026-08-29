@@ -333,4 +333,150 @@ t('装飾: 注入後も zip は壊れず、既存の解析結果が変わらな�
   );
 });
 
+/* ---------- 文書（docx）プレビューのパーサ ---------- */
+
+const DOC_MD = `# 見出しA
+
+最初の段落と**太字**と~~打ち消し~~。
+
+改行を\\
+固定した行。
+
+> 引用の段落。
+
+- 箇条書き
+  - 二階層
+1. 番号一
+
+   続きの段落
+1. 番号二
+
+4) 四から
+
+脚注あり[^1]。
+
+[^1]: 脚注の**中身**。
+
+\`\`\`js
+const x = 1;
+\`\`\`
+
+| 列A | 列B |
+|---|---|
+| 1 | 2 |
+
+::: notes
+ノートは文書に出さない。
+:::
+
+***
+
+## 見出しB
+`;
+
+const DROP_NOTES = [
+  'function Div(el)',
+  "  if el.classes:includes('notes') then return {} end",
+  'end',
+  '',
+].join('\n');
+
+const docRes = await convert(
+  {
+    from: 'markdown-yaml_metadata_block+east_asian_line_breaks',
+    to: 'docx',
+    'output-file': 'o.docx',
+    metadata: { title: '文書検査', author: '検査' },
+    filters: ['drop.lua'],
+  },
+  DOC_MD,
+  { 'drop.lua': DROP_NOTES },
+);
+const docBytes = new Uint8Array(await docRes.files['o.docx'].arrayBuffer());
+/* vm レルムの配列は deepEqual でプロトタイプ不一致になるので JSON で正規化 */
+const doc = JSON.parse(JSON.stringify(win.__morphoParseDocx(docBytes)));
+const textOf = (runs) => runs.map((r) => r.text).join('');
+
+t('docx: 実測の字サイズ（本文12pt・Heading1=20pt・Title=28pt）', () => {
+  assert.equal(doc.styles.basePt, 12);
+  assert.equal(doc.styles.headingPt[0], 20);
+  assert.equal(doc.styles.titlePt, 28);
+});
+
+t('docx: metadata の Title / Author が段落として出る', () => {
+  const title = doc.blocks.find((b) => b.kind === 'para' && b.style === 'title');
+  const author = doc.blocks.find((b) => b.kind === 'para' && b.style === 'author');
+  assert.equal(textOf(title.runs), '文書検査');
+  assert.equal(textOf(author.runs), '検査');
+});
+
+t('docx: 見出しレベルは pStyle から取れる', () => {
+  const heads = doc.blocks.filter((b) => b.kind === 'heading');
+  assert.deepEqual(heads.map((h) => [h.level, textOf(h.runs)]), [[1, '見出しA'], [2, '見出しB']]);
+});
+
+t('docx: 段落のラン書式（太字・打ち消し）と行内改行の \\n', () => {
+  const paras = doc.blocks.filter((b) => b.kind === 'para' && b.style === 'body');
+  const first = paras[0];
+  assert.ok(first.runs.some((r) => r.bold && r.text === '太字'));
+  assert.ok(first.runs.some((r) => r.strike && r.text === '打ち消し'));
+  const br = paras.find((b) => textOf(b.runs).includes('\n'));
+  assert.equal(textOf(br.runs), '改行を\n固定した行。');
+});
+
+t('docx: 引用は quote スタイル', () => {
+  const q = doc.blocks.find((b) => b.kind === 'para' && b.style === 'quote');
+  assert.equal(textOf(q.runs), '引用の段落。');
+});
+
+t('docx: リストは ilvl の入れ子と numbering.xml の種別・続き段落・開始番号が写る', () => {
+  const items = doc.blocks.filter((b) => b.kind === 'listItem');
+  assert.deepEqual(
+    items.map((b) => [b.level, b.ordered, b.plain === true, b.start ?? 1, textOf(b.runs)]),
+    [
+      [0, false, false, 1, '箇条書き'],
+      [1, false, false, 1, '二階層'],
+      [0, true, false, 1, '番号一'],
+      [0, false, true, 1, '続きの段落'],
+      [0, true, false, 1, '番号二'],
+      [0, true, false, 4, '四から'],
+    ],
+  );
+});
+
+t('docx: 脚注が [n] の参照と文末の本文として写る（無警告ロスの回避）', () => {
+  const withRef = doc.blocks.find(
+    (b) => b.runs && textOf(b.runs).startsWith('脚注あり'),
+  );
+  assert.equal(textOf(withRef.runs), '脚注あり[1]。');
+  const fn = doc.blocks.filter((b) => b.kind === 'para' && b.style === 'footnote');
+  assert.equal(fn.length, 1);
+  assert.equal(textOf(fn[0].runs), '[1] 脚注の中身。');
+  assert.ok(fn[0].runs.some((r) => r.bold && r.text === '中身'));
+});
+
+t('docx: コードは1段落=1行で束ね、構文色が付く', () => {
+  const code = doc.blocks.find((b) => b.kind === 'code');
+  assert.equal(code.lines.length, 1);
+  assert.equal(textOf(code.lines[0]), 'const x = 1;');
+  assert.ok(code.lines[0].some((r) => r.color));
+  assert.ok(code.lines[0].every((r) => r.mono === true));
+});
+
+t('docx: 表はヘッダ行が区別される', () => {
+  const table = doc.blocks.find((b) => b.kind === 'table');
+  assert.equal(table.rows.length, 2);
+  assert.equal(table.rows[0].header, true);
+  assert.equal(table.rows[1].header, false);
+  assert.deepEqual(table.rows[0].cells.map(textOf), ['列A', '列B']);
+});
+
+t('docx: *** は hr、notes は Lua フィルタで消える', () => {
+  assert.ok(doc.blocks.some((b) => b.kind === 'hr'));
+  const all = doc.blocks
+    .flatMap((b) => (b.runs ? [textOf(b.runs)] : []))
+    .join('');
+  assert.ok(!all.includes('ノートは文書に出さない'));
+});
+
 console.log(`\n${n} 件すべて通過`);

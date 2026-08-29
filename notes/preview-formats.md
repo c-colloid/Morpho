@@ -98,10 +98,11 @@ export type ConvertResult = SlideResult | WebResult;
 roadmap-pptx.md のとおり。装飾記法・テーマ分離・グループ・インスペクタ。
 装飾モデルを pptx で確立してから他形式へ展開する。
 
-### v0.7 以降 — 文書（docx）プレビュー
+### v0.10.0 で実装済み — 文書（docx）プレビュー
 
 - `dump-docx.mjs` の実測パターンで document.xml / styles.xml / numbering.xml の
   三層パーサを bridge に実装（DocBlock シーン: heading / paragraph / list / code / table）
 - フロー表示の DocumentSurface（ネイティブ描画）
 - カーソル同期は「見出し区間」への一般化（slideSegments の headingSegments 版）で
-  スライド・文書・Web に共通化する
+  スライド・文書・Web に共通化する — **未実装**（0.10.0 の文書プレビューは
+  同期なしのフロー表示。実機の使用感を見てから足す）

@@ -808,11 +808,301 @@ async function doConvertWeb(id, md, opts) {
   });
 }
 
+/* ---------- 文書（docx）プレビュー ---------- */
+
+/* styles.xml: styleId ごとの文字書式を basedOn 連鎖ごと解決する。
+   見出しレベルは pStyle の styleId でのみ確実に取れる（実測。字サイズからの
+   逆算は Heading4 以降で破綻する）。ランの書式はここで解決して TextRun へ
+   焼き込む — 描画側にスタイル表を持ち込まない */
+function parseDocxStyles(xml) {
+  var raw = {};
+  var re = /<w:style [^>]*w:styleId="([^"]+)"[^>]*>([\\s\\S]*?)<\\/w:style>/g;
+  var m;
+  while ((m = re.exec(xml)) !== null) {
+    var body = m[2];
+    /* 段落スタイルの pPr 内の rPr に反応しないよう、pPr を除いてから拾う */
+    var cleaned = body.replace(/<w:pPr>[\\s\\S]*?<\\/w:pPr>/g, '');
+    var rpr = /<w:rPr>([\\s\\S]*?)<\\/w:rPr>/.exec(cleaned);
+    var rb = rpr ? rpr[1] : '';
+    var e = { basedOn: null, b: false, i: false, color: null, mono: false, szHalf: null };
+    var bo = /<w:basedOn w:val="([^"]+)"/.exec(body);
+    if (bo) e.basedOn = bo[1];
+    if (/<w:b\\s*\\/>/.test(rb)) e.b = true;
+    if (/<w:i\\s*\\/>/.test(rb)) e.i = true;
+    var c = /<w:color w:val="([0-9A-Fa-f]{6})"/.exec(rb);
+    if (c) e.color = '#' + c[1].toUpperCase();
+    var f = /<w:rFonts[^>]*w:ascii="([^"]+)"/.exec(rb);
+    if (f && /Consolas|Courier|Mono/i.test(f[1])) e.mono = true;
+    var sz = /<w:sz w:val="(\\d+)"/.exec(rb);
+    if (sz) e.szHalf = Number(sz[1]);
+    raw[m[1]] = e;
+  }
+  /* 既定サイズは docDefaults ブロックの中だけから読む（無ければ 24 半 pt = 12pt） */
+  var ddB = /<w:docDefaults>[\\s\\S]*?<\\/w:docDefaults>/.exec(xml);
+  var dd = ddB ? /<w:sz w:val="(\\d+)"/.exec(ddB[0]) : null;
+  var baseHalf = dd ? Number(dd[1]) : 24;
+  var cache = {};
+  function resolve(id) {
+    if (!id || !raw[id]) return null;
+    if (cache[id]) return cache[id];
+    var chain = [];
+    var cur = id;
+    var guard = 0;
+    while (cur && raw[cur] && guard++ < 16) {
+      chain.push(raw[cur]);
+      cur = raw[cur].basedOn;
+    }
+    var out = { b: false, i: false, color: null, mono: false, szHalf: null };
+    for (var k = chain.length - 1; k >= 0; k--) {
+      var st = chain[k];
+      if (st.b) out.b = true;
+      if (st.i) out.i = true;
+      if (st.color) out.color = st.color;
+      if (st.mono) out.mono = true;
+      if (st.szHalf != null) out.szHalf = st.szHalf;
+    }
+    cache[id] = out;
+    return out;
+  }
+  return { resolve: resolve, baseHalf: baseHalf };
+}
+
+/* numbering.xml: numId + ilvl → 行頭記号の種別。
+   リスト構造は numId の変化では判定できない（入れ子のたびに新 numId。実測）。
+   ツリーは ilvl から復元し、numbering.xml は種別判定にだけ使う。
+   - lvlText が空白の bullet はリスト項目の続き段落（記号を出さない。実測）
+   - w:num 内の startOverride は「4) 」等の開始番号（実測） */
+function parseDocxNumbering(xml) {
+  var fmts = {};
+  var re = /<w:abstractNum w:abstractNumId="(\\d+)">([\\s\\S]*?)<\\/w:abstractNum>/g;
+  var m;
+  while ((m = re.exec(xml)) !== null) {
+    var byLvl = {};
+    var lr = /<w:lvl w:ilvl="(\\d+)">([\\s\\S]*?)<\\/w:lvl>/g;
+    var lm;
+    while ((lm = lr.exec(m[2])) !== null) {
+      var fm = /<w:numFmt w:val="([^"]+)"/.exec(lm[2]);
+      var lt = /<w:lvlText w:val="([^"]*)"/.exec(lm[2]);
+      byLvl[lm[1]] = {
+        fmt: fm ? fm[1] : null,
+        blank: lt != null && lt[1].replace(/\\s/g, '') === ''
+      };
+    }
+    fmts[m[1]] = byLvl;
+  }
+  var map = {};
+  var starts = {};
+  var nr = /<w:num w:numId="(\\d+)">([\\s\\S]*?)<\\/w:num>/g;
+  while ((m = nr.exec(xml)) !== null) {
+    var ab = /<w:abstractNumId w:val="(\\d+)"/.exec(m[2]);
+    if (ab) map[m[1]] = ab[1];
+    var so = /<w:startOverride w:val="(\\d+)"/.exec(m[2]);
+    if (so) starts[m[1]] = Number(so[1]);
+  }
+  return function (numId, ilvl) {
+    var byLvl = fmts[map[numId]] || {};
+    var lv = byLvl[String(ilvl)] || byLvl['0'] || {};
+    var ordered = lv.fmt != null && lv.fmt !== 'bullet';
+    return {
+      ordered: ordered,
+      plain: !ordered && lv.blank === true,
+      start: starts[numId] || 1
+    };
+  };
+}
+
+/* w:p の中身 → TextRun[]。行内改行（w:br。同一 w:p 内。実測）は
+   \\n として同じランの流れに埋め込む。脚注参照（footnoteReference。
+   w:t を持たない）は fnMap に出現順で番号を採り、[n] のテキストにする */
+function parseDocxRuns(pXml, styles, fnMap) {
+  var runs = [];
+  var re = /<w:r>([\\s\\S]*?)<\\/w:r>/g;
+  var m;
+  while ((m = re.exec(pXml)) !== null) {
+    var body = m[1];
+    if (fnMap) {
+      var fr = /<w:footnoteReference w:id="(\\d+)"/.exec(body);
+      if (fr) {
+        if (!(fr[1] in fnMap.ord)) {
+          fnMap.ids.push(fr[1]);
+          fnMap.ord[fr[1]] = fnMap.ids.length;
+        }
+        runs.push({ text: '[' + fnMap.ord[fr[1]] + ']' });
+        continue;
+      }
+    }
+    var rpr = /<w:rPr>([\\s\\S]*?)<\\/w:rPr>/.exec(body);
+    var rb = rpr ? rpr[1] : '';
+    var st = /<w:rStyle w:val="([^"]+)"/.exec(rb);
+    var base = st ? styles.resolve(st[1]) : null;
+    var text = '';
+    var tr = /<w:t[^>]*>([\\s\\S]*?)<\\/w:t>|<w:br\\s*\\/>/g;
+    var tm;
+    while ((tm = tr.exec(body)) !== null) {
+      text += tm[1] != null ? decodeXml(tm[1]) : '\\n';
+    }
+    if (!text) continue;
+    var run = { text: text };
+    if ((base && base.b) || /<w:b\\s*\\/>/.test(rb)) run.bold = true;
+    if ((base && base.i) || /<w:i\\s*\\/>/.test(rb)) run.italic = true;
+    if (/<w:u /.test(rb)) run.underline = true;
+    if (/<w:strike\\s*\\/>/.test(rb)) run.strike = true;
+    if (base && base.mono) run.mono = true;
+    if (base && base.color) run.color = base.color;
+    runs.push(run);
+  }
+  return runs;
+}
+
+/* document.xml → DocBlock[]。本文の w:p / w:tbl を出現順に読む。
+   表は丸ごと1ブロックで先に食う（中の w:p を二重に拾わない）。
+   連続する SourceCode 段落は 1 つのコードブロック（1段落 = 1行。実測） */
+function parseDocxBlocks(xml, styles, markerOf, fnMap) {
+  var bodyM = /<w:body>([\\s\\S]*?)<\\/w:body>/.exec(xml);
+  var body = bodyM ? bodyM[1] : xml;
+  var blocks = [];
+  var re = /<w:tbl>[\\s\\S]*?<\\/w:tbl>|<w:p>[\\s\\S]*?<\\/w:p>/g;
+  var m;
+  while ((m = re.exec(body)) !== null) {
+    var chunk = m[0];
+    if (chunk.charAt(3) === 't') {
+      var rows = [];
+      var trR = /<w:tr>([\\s\\S]*?)<\\/w:tr>/g;
+      var trM;
+      while ((trM = trR.exec(chunk)) !== null) {
+        var cells = [];
+        var tcR = /<w:tc>([\\s\\S]*?)<\\/w:tc>/g;
+        var tcM;
+        while ((tcM = tcR.exec(trM[1])) !== null) {
+          cells.push(parseDocxRuns(tcM[1], styles, fnMap));
+        }
+        rows.push({ header: /<w:tblHeader/.test(trM[1]), cells: cells });
+      }
+      blocks.push({ kind: 'table', rows: rows });
+      continue;
+    }
+    if (/o:hr="t"/.test(chunk)) {
+      blocks.push({ kind: 'hr' });
+      continue;
+    }
+    var ps = /<w:pStyle w:val="([^"]+)"/.exec(chunk);
+    var sid = ps ? ps[1] : '';
+    var np = /<w:numPr>[\\s\\S]*?<w:ilvl w:val="(\\d+)"[\\s\\S]*?<w:numId w:val="(\\d+)"/.exec(chunk);
+    var runs = parseDocxRuns(chunk, styles, fnMap);
+    var hm = /^Heading(\\d)$/.exec(sid);
+    if (np) {
+      var mk = markerOf(np[2], Number(np[1]));
+      var item = { kind: 'listItem', level: Number(np[1]), ordered: mk.ordered, runs: runs };
+      if (mk.plain) item.plain = true;
+      if (mk.ordered && mk.start !== 1) item.start = mk.start;
+      blocks.push(item);
+    } else if (hm) {
+      blocks.push({ kind: 'heading', level: Number(hm[1]), runs: runs });
+    } else if (sid === 'SourceCode') {
+      var last = blocks[blocks.length - 1];
+      if (last && last.kind === 'code') last.lines.push(runs);
+      else blocks.push({ kind: 'code', lines: [runs] });
+    } else if (sid === 'Title' || sid === 'Author' || sid === 'Date') {
+      blocks.push({ kind: 'para', style: sid.toLowerCase(), runs: runs });
+    } else if (sid === 'BlockText') {
+      blocks.push({ kind: 'para', style: 'quote', runs: runs });
+    } else if (runs.length) {
+      blocks.push({ kind: 'para', style: 'body', runs: runs });
+    }
+  }
+  return blocks;
+}
+
+function docStyleInfo(styles) {
+  var heads = [];
+  for (var i = 1; i <= 9; i++) {
+    var st = styles.resolve('Heading' + i);
+    heads.push(st && st.szHalf != null ? st.szHalf / 2 : styles.baseHalf / 2);
+  }
+  var t = styles.resolve('Title');
+  var a = styles.resolve('Author');
+  return {
+    basePt: styles.baseHalf / 2,
+    headingPt: heads,
+    titlePt: t && t.szHalf != null ? t.szHalf / 2 : styles.baseHalf / 2,
+    authorPt: a && a.szHalf != null ? a.szHalf / 2 : styles.baseHalf / 2
+  };
+}
+
+function parseDocx(u8) {
+  var zip = unzipSync(u8);
+  var dec = new TextDecoder();
+  var empty = new Uint8Array();
+  var styles = parseDocxStyles(dec.decode(zip['word/styles.xml'] || empty));
+  var markerOf = parseDocxNumbering(dec.decode(zip['word/numbering.xml'] || empty));
+  /* 脚注参照の出現順 → 表示番号（Word の見た目と同じ採番。実測） */
+  var fnMap = { ids: [], ord: {} };
+  var blocks = parseDocxBlocks(
+    dec.decode(zip['word/document.xml'] || empty), styles, markerOf, fnMap);
+  /* 脚注本文は footnotes.xml に隔離される（実測）。フロー表示では
+     文末に [n] 付きで並べる（消えると無警告のデータロスになる） */
+  if (fnMap.ids.length && zip['word/footnotes.xml']) {
+    var fx = dec.decode(zip['word/footnotes.xml']);
+    blocks.push({ kind: 'hr' });
+    for (var fi = 0; fi < fnMap.ids.length; fi++) {
+      var fb = new RegExp('<w:footnote w:id="' + fnMap.ids[fi] + '">([\\\\s\\\\S]*?)</w:footnote>').exec(fx);
+      if (!fb) continue;
+      var fruns = parseDocxRuns(fb[1], styles, null);
+      /* footnotes.xml は footnoteRef の直後に区切りの空白ランを持つ（実測）。
+         番号だけ足せば「[n] 本文」になる */
+      fruns.unshift({ text: '[' + (fi + 1) + ']' });
+      blocks.push({ kind: 'para', style: 'footnote', runs: fruns });
+    }
+  }
+  return { blocks: blocks, styles: docStyleInfo(styles) };
+}
+window.__morphoParseDocx = parseDocx;
+
+/* 文書プレビュー: 実際の docx を作って解析する（「実際の出力そのもの」原則）。
+   CLAUDE.md 落とし穴 8: notes は docx へ無警告で溶けるため、書き出しと同じ
+   Lua フィルタで除去してから解析する — プレビューと書き出しを一致させる */
+async function doConvertDoc(id, md, opts) {
+  var options = { from: READER, to: 'docx', 'output-file': 'out.docx' };
+  if (opts.metadata && Object.keys(opts.metadata).length) options.metadata = opts.metadata;
+  var files = {};
+  var filters = [];
+  if (opts.stripHtmlComments) {
+    files['strip.lua'] = STRIP_LUA;
+    filters.push('strip.lua');
+  }
+  files['drop-notes.lua'] = DROP_NOTES_LUA;
+  filters.push('drop-notes.lua');
+  options.filters = filters;
+
+  var t0 = performance.now();
+  var res = await pandoc.convert(options, md, files);
+  var ms = Math.round(performance.now() - t0);
+
+  var out = res.files && res.files['out.docx'];
+  if (!out) throw new Error('pandoc produced no out.docx');
+  var buf = new Uint8Array(await out.arrayBuffer());
+  var parsed = parseDocx(buf);
+
+  RN({
+    id: id,
+    type: 'ok',
+    result: {
+      kind: 'doc',
+      blocks: parsed.blocks,
+      styles: parsed.styles,
+      diagnostics: classify(res.warnings, res.stderr),
+      ms: ms,
+      bytes: buf.length
+    }
+  });
+}
+
 async function doConvert(id, md, opts, format) {
   try {
     if (!pandoc) throw new Error('converter is not ready yet');
     opts = opts || {};
     if (format === 'web') { await doConvertWeb(id, md, opts); return; }
+    if (format === 'doc') { await doConvertDoc(id, md, opts); return; }
     var options = {
       from: READER,
       to: 'pptx',

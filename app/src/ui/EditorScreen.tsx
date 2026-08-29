@@ -29,6 +29,7 @@ import type {
   BootStatus,
   ConvertResult,
   Diagnostic,
+  DocResult,
   Paragraph,
   PreviewFormat,
   SlideDecoration,
@@ -83,6 +84,7 @@ import { adjustDeck, toExportSizes, type TextSizes } from '../design/textSizes';
 import { DecorSheet } from './DecorSheet';
 import { DecorEditLayer } from './DecorEditLayer';
 import { sanitizeFileName, shareExport } from '../store/exportShare';
+import { DocumentSurface } from './DocumentSurface';
 import { DocumentsModal } from './DocumentsModal';
 import { ConflictSheet } from './ConflictSheet';
 import { ExportMenu, type ExportChoice } from './ExportMenu';
@@ -159,6 +161,7 @@ export default function EditorScreen() {
   const [source, setSource] = useState('');
   const [result, setResult] = useState<SlideResult | null>(null);
   const [webResult, setWebResult] = useState<WebResult | null>(null);
+  const [docResult, setDocResult] = useState<DocResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -332,6 +335,7 @@ export default function EditorScreen() {
     (text: string) => {
       setResult(null);
       setWebResult(null);
+      setDocResult(null);
       setError(null);
       setCurrentSlide(1);
       cardYs.current.clear();
@@ -678,6 +682,8 @@ export default function EditorScreen() {
               /* HTML が同一なら state を差し替えない。WebView の再ロード
                  （＝スクロール先頭戻り）を無駄に起こさないため */
               setWebResult((prev) => (prev && prev.html === r.html ? prev : r));
+            } else if (r.kind === 'doc') {
+              setDocResult(r);
             } else {
               setResult(r);
             }
@@ -1254,7 +1260,7 @@ export default function EditorScreen() {
       <HeaderBar
         status={status}
         busy={busy}
-        result={previewFormat === 'web' ? webResult : result}
+        result={previewFormat === 'web' ? webResult : previewFormat === 'doc' ? docResult : result}
         canPlay={previewFormat === 'slides' && result !== null}
         onOpenDocs={() => setDocsOpen(true)}
         onOpenExport={() => setExportOpen(true)}
@@ -1311,6 +1317,7 @@ export default function EditorScreen() {
               {(
                 [
                   ['slides', 'スライド'],
+                  ['doc', '文書'],
                   ['web', 'Web'],
                 ] as Array<[PreviewFormat, string]>
               ).map(([f, label]) => (
@@ -1328,7 +1335,26 @@ export default function EditorScreen() {
               ))}
             </View>
           </View>
-          {previewFormat === 'web' ? (
+          {previewFormat === 'doc' ? (
+            <View style={styles.webPane}>
+              {error && (
+                <View style={[styles.diag, styles.critical]}>
+                  <Text style={styles.diagLabel}>変換に失敗しました</Text>
+                  <Text style={styles.diagText}>{error}</Text>
+                </View>
+              )}
+              {docResult?.diagnostics.map((d, i) => (
+                <DiagnosticRow key={i} diagnostic={d} />
+              ))}
+              {docResult ? (
+                <DocumentSurface result={docResult} />
+              ) : (
+                <View style={styles.webEmpty}>
+                  <ActivityIndicator />
+                </View>
+              )}
+            </View>
+          ) : previewFormat === 'web' ? (
             <View style={styles.webPane}>
               {error && (
                 <View style={[styles.diag, styles.critical]}>

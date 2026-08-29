@@ -30,6 +30,8 @@ export interface TextRun {
   underline?: boolean;
   /** 等幅書体。コードスパン / コードブロックの判定に使う */
   mono?: boolean;
+  /** 打ち消し線（docx の w:strike。文書プレビューが使う） */
+  strike?: boolean;
   /** ラン単位の文字色（#RRGGBB）。pandoc の構文ハイライトが使う */
   color?: string;
 }
@@ -132,11 +134,50 @@ export interface DeckInfo {
 }
 
 /**
- * プレビューの形式。スライド（pptx を解析したシーン）と Web（完成 HTML）。
- * 文書（docx を解析したブロック列）はプレビュー実装時に足す。
+ * プレビューの形式。スライド（pptx を解析したシーン）・Web（完成 HTML）・
+ * 文書（docx を解析したブロック列。フロー表示 — ページ組はしない。
+ * document.xml にページ境界情報が無いため、ページ組は嘘になる。実測）。
  * ExportFormat（書き出すコンテナ形式）とは別レイヤーの概念。
  */
-export type PreviewFormat = 'slides' | 'web';
+export type PreviewFormat = 'slides' | 'web' | 'doc';
+
+/**
+ * 文書プレビューのブロック。実際の docx 出力（document.xml）を解析した結果。
+ * ランの書式（太字・色・等幅）は styles.xml の文字スタイルを解決して
+ * TextRun へ焼き込み済み — 描画側はスタイル表を持たない。
+ */
+export interface DocBlock {
+  kind: 'heading' | 'para' | 'listItem' | 'code' | 'table' | 'hr';
+  /** heading: 1..9。listItem: 0 始まりの入れ子段 */
+  level?: number;
+  /**
+   * para の段落スタイル。title/author/date は front matter 由来、
+   * quote は引用（BlockText）、footnote は文末に並べる脚注本文
+   */
+  style?: 'title' | 'author' | 'date' | 'body' | 'quote' | 'footnote';
+  /** heading / para / listItem の中身。行内改行は text 中の \n */
+  runs?: TextRun[];
+  /** listItem: 番号付きか（numbering.xml の numFmt で判定） */
+  ordered?: boolean;
+  /** listItem: 項目の続き段落（行頭記号を出さない。lvlText 空白の実測） */
+  plain?: boolean;
+  /** listItem: 開始番号が 1 以外のとき（startOverride の実測） */
+  start?: number;
+  /** code: 1 行 = 1 要素（SourceCode 段落 1 つが 1 行。実測） */
+  lines?: TextRun[][];
+  /** table: 行 → セル → ラン。header は tblHeader の行 */
+  rows?: Array<{ header: boolean; cells: TextRun[][] }>;
+}
+
+/** 文書プレビューが使う実測の字サイズ（pt）。styles.xml から解決する */
+export interface DocStyleInfo {
+  /** 本文の既定（docDefaults）。pandoc 既定テンプレートは 12pt */
+  basePt: number;
+  /** Heading1..9 の順。スタイルに sz が無い段は basePt */
+  headingPt: number[];
+  titlePt: number;
+  authorPt: number;
+}
 
 interface ConvertResultBase {
   diagnostics: Diagnostic[];
@@ -160,7 +201,14 @@ export interface WebResult extends ConvertResultBase {
   html: string;
 }
 
-export type ConvertResult = SlideResult | WebResult;
+/** 文書プレビュー: 実際の docx を解析したブロック列（フロー表示用） */
+export interface DocResult extends ConvertResultBase {
+  kind: 'doc';
+  blocks: DocBlock[];
+  styles: DocStyleInfo;
+}
+
+export type ConvertResult = SlideResult | WebResult | DocResult;
 
 /**
  * スライド上の装飾ひとつ（notes/roadmap-pptx.md「飾る力」）。
@@ -255,6 +303,10 @@ export interface Converter {
     markdown: string,
     options: ConvertOptions & { format: 'web' },
   ): Promise<WebResult>;
+  convert(
+    markdown: string,
+    options: ConvertOptions & { format: 'doc' },
+  ): Promise<DocResult>;
   convert(
     markdown: string,
     options: ConvertOptions & { format: PreviewFormat },

@@ -166,7 +166,8 @@ react-native-svg 入り ipa の配布実績で確認済み。当時の未検証�
 src/converter/  ── 変換。ここより上は pandoc を知らない
   types.ts               差し替え可能な境界。pandoc 固有の語彙を漏らさない
   bridgeHtml.ts          不可視 WebView の中身。pandoc.wasm の起動・変換・書き出し・
-                         pptx の OOXML 解析（図形 / 段落 / ラン・座標継承・ノート）
+                         pptx の OOXML 解析（図形 / 段落 / ラン・座標継承・ノート）・
+                         docx の三層解析（document / styles / numbering → DocBlock）
   usePandocConverter.tsx 不可視 WebView をマウントして Converter 実装を提供する hook
   frontMatter.ts         front matter を自前で剥がす（CLAUDE.md 落とし穴 1 の回避）
   latestOnly.ts          待機枠を1件だけ持つ変換キュー
