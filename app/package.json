@@ -1,6 +1,6 @@
 {
   "name": "morpho",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "license": "MIT",
   "main": "index.ts",
   "dependencies": {
@@ -11,6 +11,7 @@
     "expo-file-system": "~57.0.6",
     "expo-sharing": "~57.0.16",
     "expo-status-bar": "~57.0.1",
+    "fflate": "^0.8.2",
     "react": "19.2.3",
     "react-native": "0.86.3",
     "react-native-safe-area-context": "~5.7.0",
@@ -20,7 +21,6 @@
   "devDependencies": {
     "@bjorn3/browser_wasi_shim": "^0.4.2",
     "@types/react": "~19.2.2",
-    "fflate": "^0.8.2",
     "pandoc-wasm": "^1.1.0",
     "typescript": "~6.0.3"
   },
@@ -29,7 +29,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "check": "tsc --noEmit && node scripts/check-bridge.mjs && node --experimental-strip-types scripts/check-frontmatter.mjs && node scripts/check-scene.mjs && node --experimental-strip-types scripts/check-cursor.mjs && node --experimental-strip-types scripts/check-notes-edit.mjs && node --experimental-strip-types scripts/check-linebreak.mjs && node --experimental-strip-types scripts/check-update.mjs && node --experimental-strip-types scripts/check-design.mjs && node --experimental-strip-types scripts/check-diff.mjs && node scripts/check-deck.mjs",
+    "check": "tsc --noEmit && node scripts/check-bridge.mjs && node --experimental-strip-types scripts/check-frontmatter.mjs && node scripts/check-scene.mjs && node --experimental-strip-types scripts/check-cursor.mjs && node --experimental-strip-types scripts/check-notes-edit.mjs && node --experimental-strip-types scripts/check-linebreak.mjs && node --experimental-strip-types scripts/check-update.mjs && node --experimental-strip-types scripts/check-design.mjs && node --experimental-strip-types scripts/check-diff.mjs && node --experimental-strip-types scripts/check-template.mjs && node scripts/check-deck.mjs",
     "start:tunnel": "expo start --tunnel"
   },
   "private": true

@@ -1097,6 +1097,37 @@ async function doConvertDoc(id, md, opts) {
   });
 }
 
+/* ---------- テンプレート（reference-doc） ---------- */
+
+/* テンプレート本体はここに 1 度だけ預かる（変換のたびに base64 を
+   postMessage / injectJavaScript で運ぶと重いため）。
+   reference-doc が pandoc.wasm でも効くことは実測済み（check-template.mjs） */
+var TEMPLATE_BLOB = null;
+
+function b64ToBlob(b64) {
+  var bin = atob(b64);
+  var u = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return new Blob([u]);
+}
+
+window.__morphoSetTemplate = function (b64) {
+  try {
+    TEMPLATE_BLOB = b64 ? b64ToBlob(b64) : null;
+  } catch (e) {
+    TEMPLATE_BLOB = null;
+    RN({ type: 'boot-error', message: 'template decode failed: ' + String((e && e.message) || e) });
+  }
+};
+
+/* pptx 系の変換オプションへ reference-doc を配線する */
+function wireTemplate(opts, options, files) {
+  if (opts.useTemplate && TEMPLATE_BLOB) {
+    options['reference-doc'] = 'ref.pptx';
+    files['ref.pptx'] = TEMPLATE_BLOB;
+  }
+}
+
 async function doConvert(id, md, opts, format) {
   try {
     if (!pandoc) throw new Error('converter is not ready yet');
@@ -1114,6 +1145,7 @@ async function doConvert(id, md, opts, format) {
       files['strip.lua'] = STRIP_LUA;
       options.filters = ['strip.lua'];
     }
+    wireTemplate(opts, options, files);
 
     var t0 = performance.now();
     var res = await pandoc.convert(options, md, files);
@@ -1172,6 +1204,7 @@ async function doExport(id, md, opts, format) {
       files['drop-notes.lua'] = DROP_NOTES_LUA;
       options.filters = (options.filters || []).concat(['drop-notes.lua']);
     }
+    if (format === 'pptx') wireTemplate(opts, options, files);
 
     var t0 = performance.now();
     var res = await pandoc.convert(options, md, files);

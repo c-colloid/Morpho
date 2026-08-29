@@ -279,6 +279,12 @@ export interface ConvertOptions {
    * coverTitleSz は表紙スライドの ctrTitle に lstStyle を注入する
    */
   textSizes?: { titleSz?: number; coverTitleSz?: number; coverSubSz?: number; bodySz?: number[] };
+  /**
+   * setReferenceDoc で預けたテンプレートを reference-doc として使う。
+   * pptx（スライドプレビューと書き出し）のみ。バイナリを毎回運ばないための
+   * 2 段構え — テンプレートは文書切替時に 1 度だけ預ける
+   */
+  useTemplate?: boolean;
 }
 
 /** 変換器が生成できる出力形式。md はエディタの内容そのものなので含めない */
@@ -316,6 +322,11 @@ export interface Converter {
     format: ExportFormat,
     options?: ConvertOptions,
   ): Promise<ExportResult>;
+  /**
+   * テンプレート（reference-doc・pptx バイナリの base64）を変換器へ預ける。
+   * null で解除。以後 useTemplate: true の変換が使う
+   */
+  setReferenceDoc(base64: string | null): void;
 }
 
 export type BootStatus =

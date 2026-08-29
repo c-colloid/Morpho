@@ -42,6 +42,14 @@ export function usePandocConverter(): {
   const nextId = useRef(1);
   const readyWaiters = useRef<Array<() => void>>([]);
   const isReady = useRef(false);
+  /* WebView が再ロードされてもテンプレートが失われないよう控えを持つ */
+  const templateB64 = useRef<string | null>(null);
+
+  const injectTemplate = (b64: string | null) => {
+    webRef.current?.injectJavaScript(
+      'window.__morphoSetTemplate(' + (b64 ? toJsLiteral(b64) : 'null') + '); true;',
+    );
+  };
 
   const onMessage = useCallback((event: WebViewMessageEvent) => {
     let msg: any;
@@ -60,6 +68,8 @@ export function usePandocConverter(): {
         return;
       case 'ready':
         isReady.current = true;
+        /* 再ロード後の ready でも預けたテンプレートを復元する */
+        if (templateB64.current) injectTemplate(templateB64.current);
         setStatus({ phase: 'ready', bootMs: msg.bootMs, heapMB: msg.heapMB });
         readyWaiters.current.splice(0).forEach((fn) => fn());
         return;
@@ -126,6 +136,11 @@ export function usePandocConverter(): {
           'window.__morphoExport(' + id + ',' + toJsLiteral(markdown) + ',' + toJsLiteral(options) + ',' + toJsLiteral(format) + '); true;',
         );
         return promise;
+      },
+      setReferenceDoc(base64: string | null): void {
+        templateB64.current = base64;
+        if (isReady.current) injectTemplate(base64);
+        /* 未起動なら ready 時に復元される */
       },
     }),
     [waitForReady],

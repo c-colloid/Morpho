@@ -146,7 +146,9 @@ Comparison / Content with Caption / Blank
 
 **対処:** テンプレート取り込み時に `ppt/slideLayouts/slideLayoutN.xml` の
 `<p:cSld name="...">` を英語名に書き換える。これは製品の核となる機能で、
-マッチしないレイアウトはユーザーに手動割り当てさせる UI にする（`docs/index.html` に実装済み）。
+マッチしないレイアウトはユーザーに手動割り当てさせる UI にする
+（`docs/index.html` に加えて、アプリ本体にも 0.11.0 で実装済み —
+`app/src/design/template.ts` の配線盤。原本は書き換えず、変換直前に適用）。
 
 ### 5. 表の後ろにコンテンツがあるとスライドが分割される（pandoc 3.1.3）
 
@@ -310,7 +312,11 @@ App Extension のメモリ上限は約 120 MB（後述）。
 - pandoc 3.9 で「表の後ろのスライド分割」が解消されているか
 - pandoc 3.9 で脚注がどこへ行くか（本文 / ノート / 消滅）
 - Typst 経由の日本語 PDF（CJK フォントを WASM FS に配置する必要がある）— 優先度低
-- 自作テンプレートで reference-doc が実際に効くか
+
+（「自作テンプレートで reference-doc が実際に効くか」は**検証済み・効く**。
+pandoc.wasm でもテーマ色が出力へ引き継がれ、和名レイアウトは警告つきで
+既定に差し替わり、cSld name の英語化で警告が消える —
+`app/scripts/check-template.mjs` が常時検証している）
 
 ---
 

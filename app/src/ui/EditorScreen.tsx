@@ -67,6 +67,9 @@ import {
   EMPTY_DESIGN,
   deleteDesign,
   loadDesign,
+  loadTemplateFile,
+  saveTemplateFile,
+  deleteTemplateFile,
   newDecorationId,
   saveDesign,
   type DesignData,
@@ -81,6 +84,15 @@ import {
 } from '../design/groups';
 import { parseDesignFile, serializeDesign } from '../design/designFile';
 import { adjustDeck, toExportSizes, type TextSizes } from '../design/textSizes';
+import {
+  applyAssignments,
+  autoAssign,
+  b64ToBytes,
+  bytesToB64,
+  listLayoutNames,
+  PANDOC_LAYOUTS,
+  type PandocLayout,
+} from '../design/template';
 import { DecorSheet } from './DecorSheet';
 import { DecorEditLayer } from './DecorEditLayer';
 import { sanitizeFileName, shareExport } from '../store/exportShare';
@@ -285,6 +297,137 @@ export default function EditorScreen() {
       );
     }
   }, []);
+
+  /* ---------- テンプレート（reference-doc）を変換器へ預ける ---------- */
+  /* 文書切替・テンプレートの取り込み / 割り当て変更 / 取り外しで更新する。
+     バイナリは毎回運ばず、変換器側に 1 度だけ預けて useTemplate で参照する */
+  const templateKeyRef = useRef('');
+  useEffect(() => {
+    const id = activeId;
+    const meta = design.template;
+    const key = id && meta ? id + '|' + JSON.stringify(meta.assignments) : '';
+    if (key === templateKeyRef.current) return;
+    templateKeyRef.current = key;
+    let alive = true;
+    /* 配線盤の連打で毎回 zip を組み直さないよう、少し待ってから預け直す。
+       文書切替（テンプレートなし → なし）はキー不変で早期 return 済み */
+    const timer = setTimeout(() => void (async () => {
+      let wired = false;
+      if (id && meta) {
+        const b64 = await loadTemplateFile(id);
+        if (!alive) return;
+        if (b64) {
+          try {
+            /* 原本は保存したまま、割り当て（英語名への書き換え）を渡す直前に適用 */
+            converter.setReferenceDoc(bytesToB64(applyAssignments(b64ToBytes(b64), meta.assignments)));
+            wired = true;
+          } catch {
+            /* 壊れたテンプレートは黙って外す（変換自体は既定で動く） */
+          }
+        }
+      }
+      if (!wired) converter.setReferenceDoc(null);
+      /* テンプレートの有無・割り当てが変わったのでプレビューを取り直す */
+      if (statusRef.current === 'ready') {
+        setBusy(true);
+        runnerRef.current?.submit({ md: sourceRef.current, format: previewFormatRef.current });
+      }
+    })(), 400);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [activeId, design.template, converter]);
+
+  const handlePickTemplate = useCallback(async () => {
+    const id = activeIdRef.current;
+    if (!id) return;
+    try {
+      const picked = await DocumentPicker.getDocumentAsync({
+        type: [
+          'org.openxmlformats.presentationml.presentation',
+          'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        ],
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (picked.canceled || !picked.assets?.length) return;
+      const asset = picked.assets[0];
+      const b64 = await FileSystem.readAsStringAsync(asset.uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      const names = listLayoutNames(b64ToBytes(b64));
+      if (!names.length) {
+        Alert.alert(
+          'レイアウトが見つかりません',
+          'この .pptx にはスライドレイアウトが入っていないため、テンプレートとして使えません。',
+        );
+        return;
+      }
+      await saveTemplateFile(id, b64);
+      const assignments = autoAssign(names);
+      mutateDesign((prev) => ({
+        ...prev,
+        template: { name: asset.name ?? 'テンプレート.pptx', layoutNames: names, assignments },
+      }));
+      const missing = PANDOC_LAYOUTS.filter((en) => assignments[en] === undefined);
+      if (missing.length) {
+        Alert.alert(
+          'レイアウトの割り当てを確認してください',
+          '自動で結べなかった枠があります。装飾シートの「テンプレート」で、' +
+            '各枠にどのレイアウトを使うかをタップして選べます（未割り当ての枠は pandoc 既定になります）。',
+        );
+      }
+    } catch (e) {
+      Alert.alert(
+        'テンプレートを読み込めませんでした',
+        String(e instanceof Error ? e.message : e),
+      );
+    }
+  }, [mutateDesign]);
+
+  /* 配線盤: タップで候補（未使用のレイアウト名 → 割り当てない）を順に切り替える */
+  const handleCycleLayout = useCallback(
+    (en: PandocLayout) => {
+      mutateDesign((prev) => {
+        const meta = prev.template;
+        if (!meta) return prev;
+        const used = new Set(
+          PANDOC_LAYOUTS.filter((k) => k !== en)
+            .map((k) => meta.assignments[k])
+            .filter((v): v is string => v !== undefined),
+        );
+        const candidates = meta.layoutNames.filter((n) => !used.has(n));
+        const cur = meta.assignments[en];
+        const idx = cur === undefined ? -1 : candidates.indexOf(cur);
+        const next = idx + 1 < candidates.length ? candidates[idx + 1] : undefined;
+        const assignments = { ...meta.assignments };
+        if (next === undefined) delete assignments[en];
+        else assignments[en] = next;
+        return { ...prev, template: { ...meta, assignments } };
+      });
+    },
+    [mutateDesign],
+  );
+
+  const handleRemoveTemplate = useCallback(() => {
+    const id = activeIdRef.current;
+    Alert.alert('テンプレートを外す', '既定のデザインに戻します。', [
+      { text: 'キャンセル', style: 'cancel' },
+      {
+        text: '外す',
+        style: 'destructive',
+        onPress: () => {
+          if (id) void deleteTemplateFile(id);
+          mutateDesign((prev) => {
+            const next = { ...prev };
+            delete next.template;
+            return next;
+          });
+        },
+      },
+    ]);
+  }, [mutateDesign]);
 
   /* ---------- 更新チェック（起動時に1回・失敗は黙って無視） ---------- */
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
@@ -670,6 +813,7 @@ export default function EditorScreen() {
             metadata,
             stripHtmlComments: true,
             format: job.format,
+            useTemplate: designRef.current.template !== undefined,
           });
         },
         (r, e) => {
@@ -1116,7 +1260,11 @@ export default function EditorScreen() {
             text: '置き換える',
             style: 'destructive',
             onPress: () => {
-              mutateDesign(() => parsed);
+              /* .morphodesign はテンプレートを持たない（本体が別ファイル）。
+                 取り込みでこの文書のテンプレート設定を消さない */
+              mutateDesign((prev) =>
+                prev.template ? { ...parsed, template: prev.template } : parsed,
+              );
               setSelectedDecorId(null);
               setMarkedIds(new Set());
             },
@@ -1220,6 +1368,7 @@ export default function EditorScreen() {
               design.text,
               resultRef.current?.deck?.bodySz ?? [2400, 2100, 1800, 1500, 1500],
             ),
+            useTemplate: design.template !== undefined,
           });
           await shareExport(fileName, choice, { base64: out.base64 });
         }
@@ -1477,6 +1626,10 @@ export default function EditorScreen() {
         onUpdateTextSizes={handleUpdateTextSizes}
         onExportDesign={handleExportDesign}
         onImportDesign={handleImportDesign}
+        template={design.template}
+        onPickTemplate={() => void handlePickTemplate()}
+        onCycleLayout={handleCycleLayout}
+        onRemoveTemplate={handleRemoveTemplate}
         onClose={() => {
           setDecorSheetCi(null);
           setSelectedDecorId(null);

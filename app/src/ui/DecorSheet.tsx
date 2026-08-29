@@ -13,7 +13,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { DecorationShape, DeckInfo, SlideDecoration } from '../converter/types';
-import type { DecorGroup } from '../store/designs';
+import type { DecorGroup, TemplateMeta } from '../store/designs';
+import { LAYOUT_LABELS, PANDOC_LAYOUTS, type PandocLayout } from '../design/template';
 import {
   PRESETS, SHAPE_PRESETS, decorationColorHex, nudge, type PresetKind,
 } from '../design/presets';
@@ -77,6 +78,10 @@ export function DecorSheet({
   onUpdateTextSizes,
   onExportDesign,
   onImportDesign,
+  template,
+  onPickTemplate,
+  onCycleLayout,
+  onRemoveTemplate,
   onClose,
 }: {
   visible: boolean;
@@ -106,6 +111,12 @@ export function DecorSheet({
   onUpdateTextSizes: (t: TextSizes | undefined) => void;
   /** 文書全体のデザインを .morphodesign として共有シートへ */
   onExportDesign: () => void;
+  /** テンプレート（reference-doc）。undefined = 既定デザイン */
+  template: TemplateMeta | undefined;
+  onPickTemplate: () => void;
+  /** 配線盤: 枠をタップして候補レイアウトを順に切り替える */
+  onCycleLayout: (en: PandocLayout) => void;
+  onRemoveTemplate: () => void;
   /** .morphodesign を読み込んで文書全体のデザインを置き換える */
   onImportDesign: () => void;
   onClose: () => void;
@@ -473,6 +484,40 @@ export function DecorSheet({
             );
           })()}
 
+          <Text style={styles.section}>テンプレート（自作 .pptx のデザイン）</Text>
+          {template ? (
+            <>
+              <Text style={styles.tplName} numberOfLines={1}>
+                {template.name}
+              </Text>
+              <Text style={styles.tplHint}>
+                枠をタップして、テンプレートのどのレイアウトを使うか切り替えられます。
+                「割り当てない」の枠は pandoc 既定のレイアウトになります。
+              </Text>
+              {PANDOC_LAYOUTS.map((en) => (
+                <Pressable key={en} style={styles.tplRow} onPress={() => onCycleLayout(en)}>
+                  <Text style={styles.tplTarget}>{LAYOUT_LABELS[en]}</Text>
+                  <Text
+                    style={[
+                      styles.tplAssigned,
+                      template.assignments[en] === undefined && styles.tplUnassigned,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {template.assignments[en] ?? '割り当てない（既定）'}
+                  </Text>
+                </Pressable>
+              ))}
+              <Pressable style={styles.removeBtn} onPress={onRemoveTemplate}>
+                <Text style={styles.ungroupText}>テンプレートを外す</Text>
+              </Pressable>
+            </>
+          ) : (
+            <Pressable style={styles.fileBtn} onPress={onPickTemplate}>
+              <Text style={styles.fileText}>テンプレート（.pptx）を読み込む</Text>
+            </Pressable>
+          )}
+
           <View style={styles.fileRow}>
             <Pressable style={styles.fileBtn} onPress={onExportDesign}>
               <Text style={styles.fileText}>デザインを書き出す</Text>
@@ -685,6 +730,24 @@ const styles = StyleSheet.create({
   copyAllText: { fontSize: 13, color: '#1B3FE0', fontWeight: '600' },
 
   fileRow: { flexDirection: 'row', gap: 6, marginTop: 10 },
+  tplName: { fontSize: 13, fontWeight: '600', color: '#14161B', marginTop: 2 },
+  tplHint: { fontSize: 11, color: '#666C78', lineHeight: 15, marginTop: 2, marginBottom: 4 },
+  tplRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 7,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#DCE0E6',
+    marginTop: 4,
+    gap: 8,
+  },
+  tplTarget: { fontSize: 12, color: '#3D434E' },
+  tplAssigned: { fontSize: 12, color: '#14161B', flexShrink: 1 },
+  tplUnassigned: { color: '#9AA0AC' },
   fileBtn: {
     flex: 1,
     paddingVertical: 8,

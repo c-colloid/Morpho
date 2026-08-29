@@ -11,6 +11,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import type { SlideDecoration } from '../converter/types';
 import type { TextSizes } from '../design/textSizes';
 import { sanitizeTextSizes } from '../design/designFile';
+import { PANDOC_LAYOUTS, type LayoutAssignments } from '../design/template';
 
 /** 装飾のグループ（roadmap: データはメンバー ID の配列）。同一スライド内のみ */
 export interface DecorGroup {
@@ -19,12 +20,24 @@ export interface DecorGroup {
   memberIds: string[];
 }
 
+/** 取り込んだテンプレートのメタデータ。本体（.pptx）は template-<id>.pptx */
+export interface TemplateMeta {
+  /** 取り込み時のファイル名（表示用） */
+  name: string;
+  /** テンプレート内の全レイアウト名（配線盤の選択肢） */
+  layoutNames: string[];
+  /** 英語レイアウト名 → テンプレート内の元の名前 */
+  assignments: LayoutAssignments;
+}
+
 export interface DesignData {
   version: 1;
   decorations: SlideDecoration[];
   groups: DecorGroup[];
   /** 文字サイズの上書き（pt）。未指定はテンプレート既定 */
   text?: TextSizes;
+  /** テンプレート（reference-doc）。.morphodesign には含めない（本体が別ファイル） */
+  template?: TemplateMeta;
 }
 
 export const EMPTY_DESIGN: DesignData = { version: 1, decorations: [], groups: [] };
@@ -50,12 +63,53 @@ export async function loadDesign(docId: string): Promise<DesignData> {
       /* 壊れた・手で編集されたファイルでも NaN 等をプレビューへ流さない */
       const text = sanitizeTextSizes(parsed.text);
       if (text) out.text = text;
+      const tpl = sanitizeTemplateMeta(parsed.template);
+      if (tpl) out.template = tpl;
       return out;
     }
   } catch {
     // 無い・壊れている → 空
   }
   return EMPTY_DESIGN;
+}
+
+/** 手で編集された design JSON でも壊れた値をアプリへ流さない */
+function sanitizeTemplateMeta(t: unknown): TemplateMeta | null {
+  if (typeof t !== 'object' || t === null) return null;
+  const o = t as Partial<TemplateMeta>;
+  if (typeof o.name !== 'string' || !Array.isArray(o.layoutNames)) return null;
+  const layoutNames = o.layoutNames.filter((x): x is string => typeof x === 'string');
+  const assignments: LayoutAssignments = {};
+  if (typeof o.assignments === 'object' && o.assignments !== null) {
+    for (const en of PANDOC_LAYOUTS) {
+      const v = (o.assignments as Record<string, unknown>)[en];
+      if (typeof v === 'string' && layoutNames.includes(v)) assignments[en] = v;
+    }
+  }
+  return { name: o.name.slice(0, 120), layoutNames, assignments };
+}
+
+/* ---------- テンプレート本体（.pptx バイナリ） ---------- */
+
+const templatePathOf = (docId: string) => DIR + 'template-' + docId + '.pptx';
+
+export async function saveTemplateFile(docId: string, base64: string): Promise<void> {
+  if (!FileSystem.documentDirectory) throw new Error('この環境ではファイル保存を使えません');
+  await FileSystem.makeDirectoryAsync(DIR, { intermediates: true }).catch(() => {});
+  await FileSystem.writeAsStringAsync(templatePathOf(docId), base64, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+}
+
+/** 無ければ null（メタデータだけ残って本体が消えた場合も含む） */
+export async function loadTemplateFile(docId: string): Promise<string | null> {
+  return FileSystem.readAsStringAsync(templatePathOf(docId), {
+    encoding: FileSystem.EncodingType.Base64,
+  }).catch(() => null);
+}
+
+export async function deleteTemplateFile(docId: string): Promise<void> {
+  await FileSystem.deleteAsync(templatePathOf(docId), { idempotent: true }).catch(() => {});
 }
 
 export async function saveDesign(docId: string, data: DesignData): Promise<void> {
@@ -66,4 +120,5 @@ export async function saveDesign(docId: string, data: DesignData): Promise<void>
 
 export async function deleteDesign(docId: string): Promise<void> {
   await FileSystem.deleteAsync(pathOf(docId), { idempotent: true }).catch(() => {});
+  await deleteTemplateFile(docId);
 }
