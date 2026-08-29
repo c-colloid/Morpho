@@ -1,5 +1,5 @@
 import React from 'react';
-import { ScrollView, StyleSheet, Text, View, type TextStyle } from 'react-native';
+import { Image, ScrollView, StyleSheet, Text, View, type TextStyle } from 'react-native';
 
 import type { DocResult, TextRun } from '../converter/types';
 
@@ -42,7 +42,14 @@ function Runs({ runs, base }: { runs: TextRun[]; base: TextStyle }) {
 /** 箇条書きの行頭記号（pandoc 既定 numbering.xml の Symbol / o / Wingdings 相当） */
 const BULLETS = ['•', '◦', '▪'];
 
-export function DocumentSurface({ result }: { result: DocResult }) {
+export function DocumentSurface({
+  result,
+  imageUriOf,
+}: {
+  result: DocResult;
+  /** 画像名 → 描画用 URI（アセット保存庫）。未指定なら画像は枠だけ描く */
+  imageUriOf?: (name: string) => string;
+}) {
   const st = result.styles;
   const bodyPx = st.basePt * PX;
 
@@ -151,6 +158,20 @@ export function DocumentSurface({ result }: { result: DocResult }) {
           ))}
         </View>
       );
+    } else if (b.kind === 'image') {
+      /* 実寸（EMU → pt → px）。枠幅を超えるなら縦横比を保って収める */
+      const wPx = (b.wEmu ?? 0) / 12700 * (4 / 3);
+      const hPx = (b.hEmu ?? 0) / 12700 * (4 / 3);
+      const ratio = wPx > 0 && hPx > 0 ? hPx / wPx : 0.75;
+      node = imageUriOf && b.name ? (
+        <Image
+          source={{ uri: imageUriOf(b.name) }}
+          style={[styles.image, { width: wPx || 240, aspectRatio: 1 / ratio }]}
+          resizeMode="contain"
+        />
+      ) : (
+        <View style={[styles.image, styles.imageFallback, { width: wPx || 240, height: hPx || 180 }]} />
+      );
     } else if (b.kind === 'hr') {
       node = <View style={styles.hr} />;
     }
@@ -209,4 +230,6 @@ const styles = StyleSheet.create({
   td: { flex: 1, paddingHorizontal: 8, paddingVertical: 6 },
   hr: { height: 1, backgroundColor: '#C6CBD4', marginVertical: 14 },
   footnote: { marginVertical: 2, paddingLeft: 4 },
+  image: { marginVertical: 8, maxWidth: '100%' },
+  imageFallback: { backgroundColor: '#E7EAEF', borderWidth: 1, borderColor: '#C6CBD4' },
 });

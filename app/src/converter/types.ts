@@ -87,12 +87,26 @@ export interface SlideShape {
   paragraphs: Paragraph[];
 }
 
+/** スライド上の画像（p:pic）。実配置は出力の xfrm。
+ * name は取り込み時の元ファイル名（cNvPr descr に残る。実測）で、
+ * プレビューはこれでアセット保存庫のファイルを直接描く — 画像バイナリを
+ * シーンに載せない */
+export interface SlideImage {
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface SlideOutline {
   /** 1 始まり */
   index: number;
   /** 出力側で実際に割り当たったレイアウト名。取れなければ null */
   layout: string | null;
   shapes: SlideShape[];
+  /** 画像（p:pic）。無ければ空配列 */
+  images: SlideImage[];
   /** 発表者ノート（::: notes ::: 由来）。無ければ空配列 */
   notes: Paragraph[];
 }
@@ -147,7 +161,7 @@ export type PreviewFormat = 'slides' | 'web' | 'doc';
  * TextRun へ焼き込み済み — 描画側はスタイル表を持たない。
  */
 export interface DocBlock {
-  kind: 'heading' | 'para' | 'listItem' | 'code' | 'table' | 'hr';
+  kind: 'heading' | 'para' | 'listItem' | 'code' | 'table' | 'hr' | 'image';
   /** heading: 1..9。listItem: 0 始まりの入れ子段 */
   level?: number;
   /**
@@ -163,6 +177,10 @@ export interface DocBlock {
   plain?: boolean;
   /** listItem: 開始番号が 1 以外のとき（startOverride の実測） */
   start?: number;
+  /** image: 取り込み時の元ファイル名（cNvPr descr）と実寸（EMU） */
+  name?: string;
+  wEmu?: number;
+  hEmu?: number;
   /** code: 1 行 = 1 要素（SourceCode 段落 1 つが 1 行。実測） */
   lines?: TextRun[][];
   /** table: 行 → セル → ラン。header は tblHeader の行 */
@@ -327,6 +345,12 @@ export interface Converter {
    * null で解除。以後 useTemplate: true の変換が使う
    */
   setReferenceDoc(base64: string | null): void;
+  /**
+   * 原稿が参照する画像（ファイル名 → base64）を変換器へ預ける。
+   * null で解除。以後のすべての変換で pandoc の files に載る。
+   * 預けていない参照はプレースホルダ文字列になる（変換全体は止めない）
+   */
+  setAssets(assets: Record<string, string> | null): void;
 }
 
 export type BootStatus =

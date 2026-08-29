@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type {
   DeckInfo,
@@ -162,6 +162,7 @@ export function SlideSurface({
   deck,
   width,
   decorations,
+  imageUriOf,
   onParagraphPress,
   onParagraphLongPress,
 }: {
@@ -170,6 +171,8 @@ export function SlideSurface({
   width: number;
   /** このスライドの装飾。本文の背面に実寸で描く（書き出しと同じ z 順） */
   decorations?: SlideDecoration[];
+  /** 画像名 → 描画用 URI（アセット保存庫）。未指定なら画像は枠だけ描く */
+  imageUriOf?: (name: string) => string;
   /** 段落のタップ。段落は Pressable がタップを吸うので、親のタップ処理へ流すために使う */
   onParagraphPress?: () => void;
   /** 段落の長押し（改行編集の入口）。未指定なら操作なしの表示専用 */
@@ -191,6 +194,21 @@ export function SlideSurface({
       {decorations?.map((d) => (
         <DecorBox key={d.id} d={d} deck={deck} px={px} scale={scale} />
       ))}
+      {(slide.images ?? []).map((im, i) => {
+        /* 実出力の xfrm どおりの位置と大きさ。stretch = a:stretch/fillRect と同じ */
+        const box = {
+          position: 'absolute' as const,
+          left: px(im.x),
+          top: px(im.y),
+          width: px(im.w),
+          height: px(im.h),
+        };
+        return imageUriOf ? (
+          <Image key={'im' + i} source={{ uri: imageUriOf(im.name) }} style={box} resizeMode="stretch" />
+        ) : (
+          <View key={'im' + i} style={[box, styles.imageFallback]} />
+        );
+      })}
       {slide.shapes.map((shape, i) => (
         <ShapeBox
           key={i}
@@ -385,6 +403,7 @@ function surfaceRunStyle(run: TextRun, fontSize: number) {
 }
 
 const styles = StyleSheet.create({
+  imageFallback: { backgroundColor: '#E7EAEF', borderWidth: 1, borderColor: '#C6CBD4' },
   surface: { borderRadius: 4, overflow: 'hidden' },
   para: { flexDirection: 'row', alignItems: 'flex-start' },
   bold: { fontWeight: '700' },

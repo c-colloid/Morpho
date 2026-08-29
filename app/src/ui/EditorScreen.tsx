@@ -95,6 +95,13 @@ import {
 } from '../design/template';
 import { DecorSheet } from './DecorSheet';
 import { DecorEditLayer } from './DecorEditLayer';
+import {
+  assetUri,
+  deleteAssets,
+  loadAssetB64,
+  referencedImages,
+  saveAsset,
+} from '../store/assets';
 import { sanitizeFileName, shareExport } from '../store/exportShare';
 import { DocumentSurface } from './DocumentSurface';
 import { DocumentsModal } from './DocumentsModal';
@@ -428,6 +435,77 @@ export default function EditorScreen() {
       },
     ]);
   }, [mutateDesign]);
+
+  /* ---------- 画像アセット ---------- */
+
+  const imageUriOf = useCallback(
+    (name: string) => (activeIdRef.current ? assetUri(activeIdRef.current, name) : name),
+    [],
+  );
+
+  /* 原稿が参照する画像を変換器へ預ける。参照の集合が変わったときだけ読み直す。
+     キーの記録は預けが成功してから（読込中の打鍵で預けが失われないように）。
+     古い実行は完了時点のキー比較で自滅する */
+  const assetsKeyRef = useRef('');
+  useEffect(() => {
+    const id = activeId;
+    if (!id) return;
+    const refs = referencedImages(source).sort();
+    const key = id + '|' + refs.join(',');
+    if (key === assetsKeyRef.current) return;
+    void (async () => {
+      const map: Record<string, string> = {};
+      for (const name of refs) {
+        const b64 = await loadAssetB64(id, name);
+        if (b64) map[name] = b64;
+      }
+      const nowKey =
+        activeIdRef.current + '|' + referencedImages(sourceRef.current).sort().join(',');
+      if (nowKey !== key) return; /* 読込中に参照が変わった。最新の実行に任せる */
+      converter.setAssets(Object.keys(map).length ? map : null);
+      assetsKeyRef.current = key;
+      /* 預けの前に走った変換は [画像なし] のまま — 取り直す */
+      if (statusRef.current === 'ready') {
+        setBusy(true);
+        runnerRef.current?.submit({ md: sourceRef.current, format: previewFormatRef.current });
+      }
+    })();
+  }, [activeId, source, converter]);
+
+  const handleInsertImage = useCallback(async () => {
+    const id = activeIdRef.current;
+    if (!id) return;
+    try {
+      const picked = await DocumentPicker.getDocumentAsync({
+        type: ['public.image', 'image/*'],
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (picked.canceled || !picked.assets?.length) return;
+      const asset = picked.assets[0];
+      const b64 = await FileSystem.readAsStringAsync(asset.uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      const name = await saveAsset(id, asset.name ?? 'image.png', b64);
+      /* カーソル位置に参照を差し込む。行の途中なら前後に改行を足す。
+         front matter の中・手前には入れない（メタデータを壊す） */
+      const src = sourceRef.current;
+      const fmLen = src.length - splitFrontMatter(src).body.length;
+      const at = Math.min(Math.max(cursorRef.current, fmLen), src.length);
+      const before = src.slice(0, at);
+      const after = src.slice(at);
+      const insert =
+        (before === '' || before.endsWith('\n') ? '' : '\n') +
+        '![](' + name + ')' +
+        (after.startsWith('\n') || after === '' ? '' : '\n');
+      const next = before + insert + after;
+      onChangeSource(next);
+      setEditorEpoch((e) => e + 1);
+      await flushSave();
+    } catch (e) {
+      Alert.alert('画像を挿入できませんでした', String(e instanceof Error ? e.message : e));
+    }
+  }, [flushSave]);
 
   /* ---------- 更新チェック（起動時に1回・失敗は黙って無視） ---------- */
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
@@ -777,6 +855,7 @@ export default function EditorScreen() {
           await flushSave();
         }
         const next = await deleteDoc(id);
+        await deleteAssets(id);
         await deleteDesign(id);
         setDocs(next);
         if (id === activeIdRef.current) {
@@ -881,10 +960,14 @@ export default function EditorScreen() {
   const webViewRef = useRef<WebView>(null);
   const webScrollY = useRef(0);
 
+  /* 画像挿入の差し込み位置に使う（最後に見たカーソル位置） */
+  const cursorRef = useRef(0);
+
   const onSelectionChange = useCallback(
     (e: { nativeEvent: { selection: { start: number } } }) => {
       // 読むだけ。selection を書き戻すと日本語 IME が壊れる
       const cursor = e.nativeEvent.selection.start;
+      cursorRef.current = cursor;
       const src = sourceRef.current;
       const { metadata, body } = splitFrontMatter(src);
       const bodyCursor = cursor - (src.length - body.length);
@@ -1434,6 +1517,9 @@ export default function EditorScreen() {
         <View style={[styles.pane, styles.editorPane]}>
           <View style={styles.paneLabelRow}>
             <Text style={styles.paneLabel}>原稿</Text>
+            <Pressable hitSlop={8} onPress={() => void handleInsertImage()}>
+              <Text style={styles.imageInsert}>画像</Text>
+            </Pressable>
             <Text style={styles.paneMeta}>
               {source.length}字 · {saveLabel}
             </Text>
@@ -1496,7 +1582,7 @@ export default function EditorScreen() {
                 <DiagnosticRow key={i} diagnostic={d} />
               ))}
               {docResult ? (
-                <DocumentSurface result={docResult} />
+                <DocumentSurface result={docResult} imageUriOf={imageUriOf} />
               ) : (
                 <View style={styles.webEmpty}>
                   <ActivityIndicator />
@@ -1568,6 +1654,7 @@ export default function EditorScreen() {
                   onLayout={(e) => cardYs.current.set(s.index, e.nativeEvent.layout.y)}
                 >
                   <SlideCard
+                    imageUriOf={imageUriOf}
                     slide={s}
                     deck={previewDeck ?? result.deck}
                     active={s.index === highlighted}
@@ -1642,6 +1729,7 @@ export default function EditorScreen() {
         result={previewResult}
         initialIndex={highlighted}
         decorations={decorBySlide}
+        imageUriOf={imageUriOf}
         onClose={() => setShowOpen(false)}
       />
       <ExportMenu
@@ -1767,6 +1855,7 @@ function SlideCard({
   active,
   width,
   decorations,
+  imageUriOf,
   editingDecor,
   selectedDecorId,
   dragMembers,
@@ -1783,6 +1872,7 @@ function SlideCard({
   active: boolean;
   width: number;
   decorations?: SlideDecoration[];
+  imageUriOf?: (name: string) => string;
   /** 装飾パネルを開いているスライド。直接操作レイヤーを重ねる */
   editingDecor: boolean;
   selectedDecorId: string | null;
@@ -1853,6 +1943,7 @@ function SlideCard({
               deck={deck}
               width={width}
               decorations={shownDecorations}
+              imageUriOf={imageUriOf}
               onParagraphPress={() => onSelect(slide.index)}
               onParagraphLongPress={(p) => onParagraphLongPress(slide.index, p)}
             />
@@ -1943,6 +2034,7 @@ const styles = StyleSheet.create({
   },
   paneLabel: { fontSize: 11, letterSpacing: 0.6, color: '#666C78' },
   paneMeta: { fontSize: 11, color: '#666C78', fontVariant: ['tabular-nums'] },
+  imageInsert: { fontSize: 11, color: '#1B3FE0' },
 
   formatSeg: {
     flexDirection: 'row',

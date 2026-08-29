@@ -24,6 +24,7 @@ export function SlideShow({
   result,
   initialIndex,
   decorations,
+  imageUriOf,
   onClose,
 }: {
   visible: boolean;
@@ -31,6 +32,8 @@ export function SlideShow({
   initialIndex: number;
   /** スライド番号（タイトル込み）→ 装飾。編集画面と同じ対応表を受け取る */
   decorations?: Map<number, SlideDecoration[]>;
+  /** 画像名 → 描画用 URI（編集画面と同じアセット保存庫） */
+  imageUriOf?: (name: string) => string;
   onClose: () => void;
 }) {
   const { width, height } = useWindowDimensions();
@@ -85,6 +88,7 @@ export function SlideShow({
             {slides.map((s) => (
               <View key={s.index} style={[styles.pageBox, { width, height: stageH }]}>
                 <SlideSurface
+                  imageUriOf={imageUriOf}
                   slide={s}
                   deck={result.deck}
                   width={surfaceW}
@@ -135,6 +139,7 @@ export function SlideShow({
               <Text style={styles.presenterLabel}>次のスライド</Text>
               {next ? (
                 <SlideSurface
+                  imageUriOf={imageUriOf}
                   slide={next}
                   deck={result.deck}
                   width={200}

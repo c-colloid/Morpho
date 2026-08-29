@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 
 /* Node 22 の型ストリップで .ts をそのまま読む（ビルド不要） */
 const { sanitizeForXml, splitFrontMatter } = await import('../src/converter/frontMatter.ts');
+const { referencedImages, sanitizeAssetName } = await import('../src/text/assetNames.ts');
 
 let n = 0;
 const t = (name, fn) => { fn(); n++; console.log('  ok   ' + name); };
@@ -71,6 +72,17 @@ t('sanitizeForXml: タブと改行は残す。splitFrontMatter 単体は原稿�
   assert.equal(sanitizeForXml(splitFrontMatter('a\tb\nc\n')).body, 'a\tb\nc\n');
   // 書き戻し経路（ノート編集等）が原稿を書き換えないよう、split 自体は触らない
   assert.equal(splitFrontMatter('x' + vt + 'y\n').body, 'x' + vt + 'y\n');
+});
+
+t('sanitizeAssetName: パスと危険な文字を落としてフラット名にする', () => {
+  assert.equal(sanitizeAssetName('sub/dir/写真 1 (2).png'), '写真_1__2_.png');
+  assert.equal(sanitizeAssetName("C:\\a'b`c.png"), "a_b_c.png");
+  assert.equal(sanitizeAssetName('///'), 'image');
+});
+
+t('referencedImages: フラット名だけ拾い、URL とパス付きは除外する', () => {
+  const md = '![a](one.png) ![b](sub/two.png) ![c](https://x/y.png) ![d](one.png) ![e](three.jpg "t")';
+  assert.deepEqual(referencedImages(md).sort(), ['one.png', 'three.jpg']);
 });
 
 console.log(`\n${n} 件すべて通過`);

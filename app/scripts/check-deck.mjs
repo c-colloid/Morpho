@@ -518,4 +518,72 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
     assert.ok(joined.includes('{x}と文（ぶん）。'), joined);
   });
 }
+/* ---------- 画像（アセット解決・ガード・シーンへの写り） ---------- */
+
+{
+  /* 1x1 PNG */
+  const PNG = Uint8Array.from(
+    atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='),
+    (c) => c.charCodeAt(0),
+  );
+  const guard = win.__morphoImageGuardLua(['photo.png']);
+  const imd = '# 画像\n\n![図の説明](photo.png)\n\n![](missing.png)\n\n文中の![図](photo.png)も本文が残る。\n';
+  const res = await convert(
+    {
+      from: 'markdown-yaml_metadata_block+east_asian_line_breaks',
+      to: 'pptx',
+      'output-file': 'i.pptx',
+      filters: ['guard.lua'],
+    },
+    imd,
+    { 'guard.lua': guard, 'photo.png': new Blob([PNG]) },
+  );
+  t('画像: 預けた画像で変換が通り、無い参照はプレースホルダになる（落とし穴3の回避）', () => {
+    assert.ok(res.files['i.pptx'], 'stderr: ' + (res.stderr || ''));
+  });
+  const iscene = win.__morphoParsePptx(new Uint8Array(await res.files['i.pptx'].arrayBuffer()));
+  t('画像: シーンに元ファイル名と実配置（xfrm）が写る', () => {
+    const ims = iscene.slides[0].images;
+    assert.equal(ims.length, 1);
+    assert.equal(ims[0].name, 'photo.png');
+    assert.ok(ims[0].w > 0 && ims[0].h > 0);
+    assert.ok(ims[0].x >= 0 && ims[0].y >= 0);
+  });
+  t('画像: 無い参照は本文に [画像なし: ...] の文字列で残る', () => {
+    const texts = iscene.slides[0].shapes
+      .flatMap((sh) => sh.paragraphs.flatMap((pp) => pp.runs.map((r) => r.text)))
+      .join('');
+    assert.ok(texts.includes('[画像なし: missing.png]'), texts);
+  });
+
+  const dres = await convert(
+    {
+      from: 'markdown-yaml_metadata_block+east_asian_line_breaks',
+      to: 'docx',
+      'output-file': 'i.docx',
+      filters: ['guard.lua'],
+    },
+    imd,
+    { 'guard.lua': guard, 'photo.png': new Blob([PNG]) },
+  );
+  const idoc = JSON.parse(
+    JSON.stringify(win.__morphoParseDocx(new Uint8Array(await dres.files['i.docx'].arrayBuffer()))),
+  );
+  t('画像: 文書プレビューにも image ブロックが写る', () => {
+    const im = idoc.blocks.find((b) => b.kind === 'image');
+    assert.equal(im.name, 'photo.png');
+    assert.ok(im.wEmu > 0);
+  });
+  t('画像: 文中の画像でも本文の段落は落ちない', () => {
+    const para = idoc.blocks.find(
+      (b) => b.runs && b.runs.map((r) => r.text).join('').includes('本文が残る'),
+    );
+    assert.ok(para, '文中画像の段落テキストが消えた');
+    /* alt テキストは本文に出ない（descr に入る。Word の見た目と同じ） */
+    assert.equal(para.runs.map((r) => r.text).join(''), '文中のも本文が残る。');
+    const images = idoc.blocks.filter((b) => b.kind === 'image');
+    assert.ok(images.length >= 2);
+  });
+}
+
 console.log(`\n${n} 件すべて通過`);

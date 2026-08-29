@@ -305,6 +305,30 @@ function parseParagraphs(txBodyXml) {
   return out;
 }
 
+/* スライド上の画像（p:pic）。name は取り込み時の元ファイル名
+   （cNvPr descr に残る。実測）。プレビューはこれでアセット保存庫の
+   ファイルを直接描く — シーンに画像バイナリを載せない */
+function parsePics(slideXml) {
+  var out = [];
+  var re = /<p:pic>[\\s\\S]*?<\\/p:pic>/g;
+  var m;
+  while ((m = re.exec(slideXml)) !== null) {
+    var pic = m[0];
+    var d = /<p:cNvPr [^>]*descr="([^"]*)"/.exec(pic);
+    var off = /<a:off x="(-?\\d+)" y="(-?\\d+)"/.exec(pic);
+    var ext = /<a:ext cx="(\\d+)" cy="(\\d+)"/.exec(pic);
+    if (!d || !off || !ext) continue;
+    out.push({
+      name: decodeXml(d[1]),
+      x: Number(off[1]),
+      y: Number(off[2]),
+      w: Number(ext[1]),
+      h: Number(ext[2])
+    });
+  }
+  return out;
+}
+
 function parseShapes(slideXml) {
   var shapes = [];
   var re = /<p:sp>([\\s\\S]*?)<\\/p:sp>/g;
@@ -547,7 +571,8 @@ function parsePptx(u8) {
   };
 
   var slides = names.map(function (n, i) {
-    var shapes = parseShapes(dec.decode(zip[n]));
+    var xml = dec.decode(zip[n]);
+    var shapes = parseShapes(xml);
     var layoutPh = layoutPhOf(n);
     for (var si = 0; si < shapes.length; si++) {
       var sh = shapes[si];
@@ -569,6 +594,7 @@ function parsePptx(u8) {
       index: i + 1,
       layout: layoutName(n),
       shapes: shapes,
+      images: parsePics(xml),
       notes: notesFor(n)
     };
   });
@@ -852,6 +878,7 @@ async function doConvertWeb(id, md, opts) {
     options.filters = ['strip.lua'];
   }
   wireRuby(options, files);
+  wireAssets(options, files, true, md);
 
   var t0 = performance.now();
   var res = await pandoc.convert(options, md, files);
@@ -1070,6 +1097,22 @@ function parseDocxBlocks(xml, styles, markerOf, fnMap) {
       blocks.push({ kind: 'hr' });
       continue;
     }
+    /* 画像。名前は cNvPr descr（取り込み時の元ファイル名。実測）、
+       寸法は wp:extent（EMU）。文中の画像は本文の段落を残したまま
+       直後に画像ブロックを足す（本文を黙って落とさない） */
+    var pendingImage = null;
+    if (chunk.indexOf('<w:drawing>') >= 0) {
+      var pd = /<pic:cNvPr [^>]*descr="([^"]*)"/.exec(chunk);
+      var pe = /<wp:extent cx="(\\d+)" cy="(\\d+)"/.exec(chunk);
+      if (pd) {
+        pendingImage = {
+          kind: 'image',
+          name: decodeXml(pd[1]),
+          wEmu: pe ? Number(pe[1]) : 0,
+          hEmu: pe ? Number(pe[2]) : 0
+        };
+      }
+    }
     var ps = /<w:pStyle w:val="([^"]+)"/.exec(chunk);
     var sid = ps ? ps[1] : '';
     var np = /<w:numPr>[\\s\\S]*?<w:ilvl w:val="(\\d+)"[\\s\\S]*?<w:numId w:val="(\\d+)"/.exec(chunk);
@@ -1094,6 +1137,7 @@ function parseDocxBlocks(xml, styles, markerOf, fnMap) {
     } else if (runs.length) {
       blocks.push({ kind: 'para', style: 'body', runs: runs });
     }
+    if (pendingImage) blocks.push(pendingImage);
   }
   return blocks;
 }
@@ -1159,6 +1203,7 @@ async function doConvertDoc(id, md, opts) {
   filters.push('drop-notes.lua');
   options.filters = filters;
   wireRuby(options, files);
+  wireAssets(options, files, false, md);
 
   var t0 = performance.now();
   var res = await pandoc.convert(options, md, files);
@@ -1212,6 +1257,71 @@ function wireRuby(options, files) {
   options.filters = (options.filters || []).concat(['ruby.lua']);
 }
 
+/* ---------- 画像アセット ---------- */
+
+/* 原稿が参照する画像はここに預かる（テンプレートと同じ 2 段構え）。
+   CLAUDE.md 落とし穴 3: 見つからない画像は警告ではなく致命的エラーで
+   出力が一切生成されない。預かっていない参照は Lua ガードで
+   プレースホルダ文字列に置き換え、変換全体は生かす */
+var ASSETS = {};
+
+/* 差分更新（1枚だけの追加・削除）。全置き換えは __morphoSetAssets */
+window.__morphoSetAsset = function (name, b64) {
+  if (b64 == null) {
+    delete ASSETS[name];
+    return;
+  }
+  try {
+    ASSETS[name] = b64ToBlob(b64);
+  } catch (e) {
+    /* 壊れた1枚のために全体を落とさない */
+  }
+};
+
+window.__morphoSetAssets = function (map) {
+  ASSETS = {};
+  if (!map) return;
+  var names = Object.keys(map);
+  for (var i = 0; i < names.length; i++) {
+    try {
+      ASSETS[names[i]] = b64ToBlob(map[names[i]]);
+    } catch (e) {
+      /* 壊れた1枚のために全体を落とさない */
+    }
+  }
+};
+
+function luaQuote(sName) {
+  return "'" + String(sName).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'") + "'";
+}
+
+/* 見つからない画像参照をプレースホルダへ置き換えるガード（名前一覧から生成） */
+function buildImageGuardLua(names) {
+  var lua = 'local ok = {';
+  for (var k = 0; k < names.length; k++) {
+    lua += '[' + luaQuote(names[k]) + '] = true,';
+  }
+  lua += '}\\n' +
+    'function Image(el)\\n' +
+    '  if not ok[el.src] then\\n' +
+    "    return pandoc.Str('[画像なし: ' .. el.src .. ']')\\n" +
+    '  end\\n' +
+    'end\\n';
+  return lua;
+}
+window.__morphoImageGuardLua = buildImageGuardLua;
+
+/* 預かっている画像を files に載せ、無い参照を置き換えるガードを配線する。
+   画像記法の無い原稿ではフィルタごと省く（ライブプレビューの hot path） */
+function wireAssets(options, files, isHtml, md) {
+  var names = Object.keys(ASSETS);
+  if (!names.length && String(md).indexOf('![') < 0) return;
+  for (var i = 0; i < names.length; i++) files[names[i]] = ASSETS[names[i]];
+  if (isHtml && names.length) options['embed-resources'] = true;
+  files['image-guard.lua'] = buildImageGuardLua(names);
+  options.filters = (options.filters || []).concat(['image-guard.lua']);
+}
+
 /* pptx 系の変換オプションへ reference-doc を配線する */
 function wireTemplate(opts, options, files) {
   if (opts.useTemplate && TEMPLATE_BLOB) {
@@ -1238,6 +1348,7 @@ async function doConvert(id, md, opts, format) {
       options.filters = ['strip.lua'];
     }
     wireRuby(options, files);
+    wireAssets(options, files, false, md);
     wireTemplate(opts, options, files);
 
     var t0 = performance.now();
@@ -1298,6 +1409,7 @@ async function doExport(id, md, opts, format) {
       options.filters = (options.filters || []).concat(['drop-notes.lua']);
     }
     wireRuby(options, files);
+    wireAssets(options, files, format === 'html', md);
     if (format === 'pptx') wireTemplate(opts, options, files);
 
     var t0 = performance.now();
