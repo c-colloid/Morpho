@@ -441,11 +441,12 @@ WebView は「Markdown を渡すと描画用 JSON を返す計算機」に徹す
 | テンプレート適用 | — | 配線盤 UI。他にない機能 |
 | ハードウェアキーボード | — | Magic Keyboard 前提のショートカット |
 
-**注意（更新・0.8.0）:** その場の上書き（open in place）は
-@react-native-documents/picker の open モードで**実装済み**（CI のネイティブビルド +
-AltStore 再署名で動くことは配布実績で確認済み。Developer Program は不要だった）。
-残る制約はアクセス権がアプリの完全終了で切れること（再接続 UI で対応。
-bookmark のネイティブ解決は次段・未検証）。
+**注意（更新・0.9.0）:** その場の上書き（open in place）は
+@react-native-documents/picker の open モードで**実装済み・実機確認済み**
+（CI のネイティブビルド + AltStore 再署名。Developer Program は不要だった）。
+完全終了で切れるアクセス権は、ローカル Expo モジュール
+`app/modules/doc-bookmark` が bookmark を解決して自動再接続する
+（0.9.0・実機未検証）。失敗時のみ再接続 UI へ落ちる。
 詳細は `app/DEVELOPMENT.md` の「外部アプリ連携の実装状況」。
 
 ## リポジトリ構成

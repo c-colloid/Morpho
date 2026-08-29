@@ -6,7 +6,9 @@
  * 外部ファイル（Obsidian 保管庫・Files の .md）は open in place で結べる:
  * @react-native-documents/picker の open モードが返す security-scoped URL へ
  * 直接読み書きする。アクセスは同一起動中のみ有効で、アプリの完全終了後は
- * 選び直し（再接続）が要る — bookmark を JS から解決する API が無いため。
+ * modules/doc-bookmark（ローカル Expo モジュール）が bookmark を解決して
+ * 自動で繋ぎ直す（reconnectExternal）。解決に失敗した場合のみ
+ * 選び直し（再接続 UI）へ落とす。
  * 常にサンドボックスへミラーも書くので、接続が切れても内容は失われない。
  *
  * expo-file-system は legacy API に固定する。SDK 54+ の既定 import は
@@ -16,11 +18,13 @@
  */
 import * as FileSystem from 'expo-file-system/legacy';
 
+import { resolveBookmark } from '../../modules/doc-bookmark';
+
 /** 外部ファイル（open in place）への参照 */
 export interface ExternalRef {
   /** security-scoped URL。アプリの完全終了でアクセス権が切れる */
   uri: string;
-  /** 将来のネイティブ解決用に保持（今の JS からは解決できない） */
+  /** 完全終了後の自動再接続に使う（modules/doc-bookmark が解決する） */
   bookmark?: string;
   fileName: string;
 }
@@ -174,9 +178,81 @@ export async function readExternal(ref: ExternalRef): Promise<string | null> {
   return FileSystem.readAsStringAsync(ref.uri).catch(() => null);
 }
 
+/** 再接続の結果。text は検証読みの内容、docs は参照更新後の一覧 */
+export interface ReconnectedExternal {
+  ref: ExternalRef;
+  text: string;
+  docs: DocMeta[];
+}
+
+/**
+ * アクセス切れの外部参照を bookmark から自動で繋ぎ直す。
+ * 読めることを確かめてから新しい参照を保存し、検証読みの内容と
+ * 更新後の一覧ごと返す（呼び出し側の読み直し・listDocs を省く）。
+ * 失敗（モジュール不在・bookmark 無効・ファイル削除等）なら null —
+ * 呼び出し側が再接続 UI へ落とす。
+ * stale だった場合は返ってきた新しい bookmark で置き換える。
+ */
+export async function reconnectExternal(
+  id: string,
+  ref: ExternalRef,
+): Promise<ReconnectedExternal | null> {
+  if (!ref.bookmark) return null;
+  const r = await resolveBookmark(ref.bookmark);
+  if (!r) return null;
+  const next: ExternalRef = {
+    uri: r.uri,
+    bookmark: r.bookmark ?? ref.bookmark,
+    fileName: ref.fileName,
+  };
+  /* 読めることを確かめてから保存する（開けない URI で参照を潰さない） */
+  const text = await readExternal(next);
+  if (text === null) return null;
+  const docs = await setDocExternal(id, next);
+  return { ref: next, text, docs };
+}
+
+/**
+ * 読み取り + 失敗時は bookmark で自動再接続する。
+ * docs は再接続で参照が変わったときだけ入る（呼び出し側が一覧を更新する）。
+ */
+export async function readExternalReconnecting(
+  id: string,
+  ref: ExternalRef,
+): Promise<{ text: string; ref: ExternalRef; docs?: DocMeta[] } | null> {
+  const direct = await readExternal(ref);
+  if (direct !== null) return { text: direct, ref };
+  return reconnectExternal(id, ref);
+}
+
 /** 外部ファイルへ上書きする。アクセス切れなら例外 */
 export async function writeExternal(ref: ExternalRef, source: string): Promise<void> {
   await FileSystem.writeAsStringAsync(ref.uri, source);
+}
+
+/**
+ * 上書き + 失敗時は bookmark で自動再接続して書き直す。
+ * docs は再接続で参照が変わったときだけ入る。ok=false なら再接続 UI へ。
+ */
+export async function writeExternalReconnecting(
+  id: string,
+  ref: ExternalRef,
+  source: string,
+): Promise<{ ok: boolean; docs?: DocMeta[] }> {
+  try {
+    await writeExternal(ref, source);
+    return { ok: true };
+  } catch {
+    /* 下の再接続へ */
+  }
+  const re = await reconnectExternal(id, ref);
+  if (!re) return { ok: false };
+  try {
+    await writeExternal(re.ref, source);
+    return { ok: true, docs: re.docs };
+  } catch {
+    return { ok: false, docs: re.docs };
+  }
 }
 
 export async function createDoc(initial: string): Promise<{ id: string; docs: DocMeta[] }> {

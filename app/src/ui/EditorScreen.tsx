@@ -51,10 +51,12 @@ import {
   listDocs,
   loadDoc,
   readExternal,
+  readExternalReconnecting,
   saveDoc,
   setDocExternal,
   titleOf,
   writeExternal,
+  writeExternalReconnecting,
   type DocMeta,
   type ExternalRef,
 } from '../store/documents';
@@ -217,14 +219,13 @@ export default function EditorScreen() {
       setDocs(next);
       setSaveState({ kind: 'saved', at: Date.now() });
       /* 外部ファイルと結ばれた文書は元ファイルへも上書きする（open in place）。
-         失敗（再起動でアクセス切れ等）してもアプリ内には保存済み */
+         アクセス切れ（完全終了後）は bookmark で自動再接続して書き直す。
+         それでも失敗したらアプリ内には保存済みのまま、選び直しを促す */
       const meta = next.find((d) => d.id === id);
       if (meta?.external) {
-        try {
-          await writeExternal(meta.external, sourceRef.current);
-        } catch {
-          warnExternalRef.current(id);
-        }
+        const w = await writeExternalReconnecting(id, meta.external, sourceRef.current);
+        if (w.docs) setDocs(w.docs);
+        if (!w.ok) warnExternalRef.current(id);
       }
     })();
     savingRef.current = work;
@@ -350,10 +351,13 @@ export default function EditorScreen() {
         let text = await loadDoc(id);
         if (text === null) return;
         /* 外部ファイルと結ばれた文書は元ファイルの最新を読む（Obsidian 等での
-           編集を取り込む）。読めなければミラーで開き、再接続を促す */
+           編集を取り込む）。アクセス切れなら bookmark で自動再接続を試し、
+           それでも読めなければミラーで開いて選び直しを促す */
         const meta = docsRef.current.find((d) => d.id === id);
         if (meta?.external) {
-          const ext = await readExternal(meta.external);
+          const got = await readExternalReconnecting(id, meta.external);
+          if (got?.docs) setDocs(got.docs);
+          const ext = got?.text ?? null;
           if (ext === null) {
             warnExternalRef.current(id);
           } else if (ext !== text) {
@@ -361,7 +365,7 @@ export default function EditorScreen() {
               /* 「あとで決める」した競合はミラーのまま開き、選び直しを出す */
               setConflict({
                 id,
-                ref: meta.external,
+                ref: got!.ref,
                 appText: text,
                 fileText: ext,
                 openAfter: false,
@@ -571,7 +575,7 @@ export default function EditorScreen() {
     extWarnedRef.current.add(id);
     Alert.alert(
       '外部ファイルに接続できません',
-      'アプリの再起動でアクセス権が切れています（iOS の仕様）。ファイルを選び直すと再接続できます。それまではアプリ内のコピーで編集でき、内容は失われません。',
+      '自動での再接続にも失敗しました（ファイルの削除・移動、または iOS がアクセスを拒否）。ファイルを選び直すと再接続できます。それまではアプリ内のコピーで編集でき、内容は失われません。',
       [
         { text: 'このまま編集', style: 'cancel' },
         { text: 'ファイルを選び直す', onPress: () => void handleRelinkExternal(id) },
@@ -588,12 +592,17 @@ export default function EditorScreen() {
     if (!id || dirtyRef.current) return;
     const meta = docsRef.current.find((d) => d.id === id);
     if (!meta?.external) return;
-    const ext = await readExternal(meta.external);
+    /* アクセス切れ（完全終了後の復帰など）は bookmark で自動再接続する */
+    const got = await readExternalReconnecting(id, meta.external);
+    if (got?.docs) setDocs(got.docs);
+    /* 待っている間に打鍵があれば触らない（取り込みは次の機会に回す） */
+    if (dirtyRef.current) return;
+    const ext = got?.text ?? null;
     if (ext === null || ext === sourceRef.current) return;
     if (deferredConflictRef.current.has(id)) {
       setConflict({
         id,
-        ref: meta.external,
+        ref: got!.ref,
         appText: sourceRef.current,
         fileText: ext,
         openAfter: false,

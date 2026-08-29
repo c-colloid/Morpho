@@ -146,15 +146,19 @@ react-native-svg 入り ipa の配布実績で確認済み。当時の未検証�
 | Obsidian にノートとして送る | ○（実験的） | 書き出し →「Obsidian へ送る」（obsidian://new・約2万字まで） |
 
 **制約（実装済み範囲の設計）**:
-- security-scoped URL のアクセス権は**アプリの完全終了で切れる**。bookmark は
-  保存しているが、JS から解決する API がライブラリに無いため、再起動後は
-  「外部」バッジ →「ファイルを選び直す」で再接続する（このとき内容が
-  食い違っていればどちらを使うかユーザーに選ばせる）
+- security-scoped URL のアクセス権は**アプリの完全終了で切れる**（iOS の仕様）。
+  0.9.0 からは `modules/doc-bookmark`（ローカル Expo モジュール・Swift）が
+  保存済みの bookmark を解決して**自動で再接続する**。解決は同梱 viewer
+  パッケージの実装（URLByResolvingBookmarkData + startAccessing…）を踏襲。
+  自動再接続に失敗した場合のみ「外部」バッジ →「ファイルを選び直す」へ落ちる
+  （このとき内容が食い違っていればどちらを使うかユーザーに選ばせる）
+- 再接続の入口は3つ: 文書を開く（switchDoc）・フォアグラウンド復帰
+  （refreshExternal）・保存時の外部書き込み失敗（flushSave）。いずれも
+  documents.ts の reconnectExternal / readExternalReconnecting /
+  writeExternalReconnecting を通る（再接続の挙動はストアが単一の持ち主）
 - 常にサンドボックスへミラーを書くので、接続が切れても内容は失われない
-- 次の段階: 小さなネイティブモジュールで bookmark を解決すれば再起動後も
-  自動接続できる（expo-modules で書けるが実機デバッグ経路が無いため保留）
-- 実機での読み書き・復帰動作は**未検証**（この項は 0.8.0 実装時点の設計）。
-  実機確認後にこの表を更新すること
+- 読み書き・復帰は 0.8.0 で実機確認済み。**bookmark の自動再接続（0.9.0）は
+  実機未検証**（完全終了 → 再起動 → 編集が降りてくるかを確認すること）
 
 ## 構成
 
