@@ -344,7 +344,7 @@ window.__morphoFindFrame = findFrame;
 
 /* デッキ情報: 寸法・配色・既定の文字サイズ */
 function parseDeck(zip, dec) {
-  var deck = { w: 9144000, h: 5143500, colors: {}, titleSz: 3300, bodySz: [2400, 2100, 1800, 1500, 1500], bodyMarL: [], bodyIndent: [], titleAlgn: null, bodyAlgn: [], bodySpcBef: [], bodySpcBefPts: [] };
+  var deck = { w: 9144000, h: 5143500, colors: {}, titleSz: 3300, bodySz: [2400, 2100, 1800, 1500, 1500], bodyMarL: [], bodyIndent: [], titleAlgn: null, bodyAlgn: [], bodySpcBef: [], bodySpcBefPts: [], bodyBuChar: [] };
   /* 既定はマスターの実測値: marL=342900*(n+1), indent=-342900（27pt 刻みのぶら下げ） */
   for (var di = 0; di < 9; di++) {
     deck.bodyMarL.push(342900 * (di + 1));
@@ -354,6 +354,8 @@ function parseDeck(zip, dec) {
     deck.bodySpcBef.push(0);
     /* 絶対値指定（spcPts、1/100 pt）の場合はこちらに入る */
     deck.bodySpcBefPts.push(0);
+    /* 行頭記号はマスターの buChar（pandoc 既定は • – • – … の交互） */
+    deck.bodyBuChar.push(null);
   }
   try {
     var pres = dec.decode(zip['ppt/presentation.xml']);
@@ -412,6 +414,8 @@ function parseDeck(zip, dec) {
         if (sp2) deck.bodySpcBef[blv] = Number(sp2[1]);
         var sp3 = /<a:spcBef>\\s*<a:spcPts\\s+val="(\\d+)"/.exec(bm[2]);
         if (sp3) deck.bodySpcBefPts[blv] = Number(sp3[1]);
+        var bu = /<a:buChar\\s+char="([^"]*)"/.exec(bm[2]);
+        if (bu) deck.bodyBuChar[blv] = decodeXml(bu[1]);
       }
     }
     deck.masterPh = parsePlaceholderFrames(master);
@@ -505,7 +509,7 @@ function parsePptx(u8) {
   return {
     slideCount: slides.length,
     slides: slides,
-    deck: { w: deck.w, h: deck.h, colors: deck.colors, titleSz: deck.titleSz, bodySz: deck.bodySz, bodyMarL: deck.bodyMarL, bodyIndent: deck.bodyIndent, titleAlgn: deck.titleAlgn, bodyAlgn: deck.bodyAlgn, bodySpcBef: deck.bodySpcBef, bodySpcBefPts: deck.bodySpcBefPts }
+    deck: { w: deck.w, h: deck.h, colors: deck.colors, titleSz: deck.titleSz, bodySz: deck.bodySz, bodyMarL: deck.bodyMarL, bodyIndent: deck.bodyIndent, titleAlgn: deck.titleAlgn, bodyAlgn: deck.bodyAlgn, bodySpcBef: deck.bodySpcBef, bodySpcBefPts: deck.bodySpcBefPts, bodyBuChar: deck.bodyBuChar }
   };
 }
 window.__morphoParsePptx = parsePptx;

@@ -171,6 +171,10 @@ t('テキスト位置の系統値: タイトルは中央（アンカー・揃え
   assert.equal(title.anchor, 'ctr', 'タイトルの垂直アンカーがマスターから継承されていない');
   const body = parsed.slides[1].shapes.find((s) => s.placeholder === 'body');
   assert.equal(body.anchor ?? null, null, '本文は無指定（上揃え）のはず');
+  /* 行頭記号: pandoc 既定マスターは • と –（ダッシュ）の交互 */
+  assert.equal(parsed.deck.bodyBuChar[0], '•');
+  assert.equal(parsed.deck.bodyBuChar[1], '–');
+  assert.equal(parsed.deck.bodyBuChar[2], '•');
   /* タイトルスライドの ctrTitle も title のアンカーに落ちる */
   const ctr = parsed.slides[0].shapes.find((s) => s.placeholder === 'ctrTitle');
   assert.equal(ctr.anchor, 'ctr');

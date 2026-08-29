@@ -226,6 +226,10 @@ function ShapeBox({
   let counter = 0;
   const numbers = shape.paragraphs.map((p) => (p.bullet === 'number' ? ++counter : (counter = 0)));
 
+  /* 垂直アンカーは実出力の bodyPr から継承解決済み
+     （pandoc 既定: タイトル=ctr、本文=無指定=上）。無指定の既定は上揃え */
+  const anchored = shape.anchor === 'ctr' || shape.anchor === 'b';
+  const boxH = (f.h / EMU_PER_PT) * scale;
   return (
     <View
       style={{
@@ -233,12 +237,13 @@ function ShapeBox({
         left: (f.x / EMU_PER_PT) * scale,
         top: (f.y / EMU_PER_PT) * scale,
         width: (f.w / EMU_PER_PT) * scale,
-        height: (f.h / EMU_PER_PT) * scale,
+        /* PowerPoint は枠に収まらないテキストを切らずにあふれさせるので、
+           プレビューも枠では切らない（スライド端では surface が切る）。
+           上揃えの枠は height でなく minHeight で伸ばす — iOS のタッチ判定は
+           親の枠内に限られるため、あふれた段落も長押しできるようにする */
+        ...(anchored ? { height: boxH, overflow: 'visible' as const } : { minHeight: boxH }),
         paddingHorizontal: INSET_X_PT * scale,
         paddingVertical: INSET_Y_PT * scale,
-        overflow: 'hidden',
-        /* 垂直アンカーは実出力の bodyPr から継承解決済み
-           （pandoc 既定: タイトル=ctr、本文=無指定=上）。無指定の既定は上揃え */
         justifyContent:
           shape.anchor === 'ctr'
             ? 'center'
@@ -320,14 +325,13 @@ function SurfaceParagraph({
   const spcBefPct = isTitle ? 0 : (deck.bodySpcBef?.[lvl] ?? 0);
   const spcBefPts = isTitle ? 0 : (deck.bodySpcBefPts?.[lvl] ?? 0);
 
+  /* 行頭記号は実出力（マスターの buChar）から。pandoc 既定は • – • – … の交互 */
   const glyph =
     isTitle || paragraph.bullet === 'none'
       ? null
       : paragraph.bullet === 'number'
         ? ordinal + '.'
-        : paragraph.level > 0
-          ? '◦'
-          : '•';
+        : (deck.bodyBuChar?.[lvl] ?? (paragraph.level > 0 ? '◦' : '•'));
 
   return (
     <View

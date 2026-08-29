@@ -115,6 +115,8 @@ export interface DeckInfo {
   bodySpcBef?: number[];
   /** 段落前間隔の絶対値指定（spcPts、1/100 pt）。reference-doc で使われ得る */
   bodySpcBefPts?: number[];
+  /** 階層ごとの行頭記号（buChar）。pandoc 既定は • – • – … の交互。null は既定 */
+  bodyBuChar?: Array<string | null>;
 }
 
 /**
