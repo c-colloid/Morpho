@@ -365,6 +365,8 @@ const x = 1;
 |---|---|
 | 1 | 2 |
 
+{漢字|かんじ}にルビ、《《ここ》》に傍点。
+
 ::: notes
 ノートは文書に出さない。
 :::
@@ -387,10 +389,10 @@ const docRes = await convert(
     to: 'docx',
     'output-file': 'o.docx',
     metadata: { title: '文書検査', author: '検査' },
-    filters: ['drop.lua'],
+    filters: ['drop.lua', 'ruby.lua'],
   },
   DOC_MD,
-  { 'drop.lua': DROP_NOTES },
+  { 'drop.lua': DROP_NOTES, 'ruby.lua': win.__morphoRubyLua },
 );
 const docBytes = new Uint8Array(await docRes.files['o.docx'].arrayBuffer());
 /* vm レルムの配列は deepEqual でプロトタイプ不一致になるので JSON で正規化 */
@@ -471,6 +473,16 @@ t('docx: 表はヘッダ行が区別される', () => {
   assert.deepEqual(table.rows[0].cells.map(textOf), ['列A', '列B']);
 });
 
+t('docx: ルビは本物の w:ruby が出力に入り、プレビューは 親文字（よみ）で写る', () => {
+  const xml = new TextDecoder().decode(unzipSync(docBytes)['word/document.xml']);
+  assert.ok(xml.includes('<w:ruby>'));
+  assert.ok(xml.includes('<w:em w:val="dot" />'));
+  const para = doc.blocks.find((b) => b.runs && textOf(b.runs).includes('ルビ'));
+  assert.equal(textOf(para.runs), '漢字（かんじ）にルビ、ここに傍点。');
+  assert.ok(para.runs.some((r) => r.bold && r.text === 'ここ'), '傍点は太字で近似');
+});
+
+
 t('docx: *** は hr、notes は Lua フィルタで消える', () => {
   assert.ok(doc.blocks.some((b) => b.kind === 'hr'));
   const all = doc.blocks
@@ -479,4 +491,31 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
   assert.ok(!all.includes('ノートは文書に出さない'));
 });
 
+{
+  const r = await convert(
+    {
+      from: 'markdown-yaml_metadata_block+east_asian_line_breaks',
+      to: 'pptx',
+      'output-file': 'r.pptx',
+      filters: ['ruby.lua'],
+    },
+    '# T\n\n{漢字|かんじ}と《《傍点》》。\n\n単独 {語|ご} も変換。\n\n{x}と{文|ぶん}。\n',
+    { 'ruby.lua': win.__morphoRubyLua },
+  );
+  const sc = win.__morphoParsePptx(new Uint8Array(await r.files['r.pptx'].arrayBuffer()));
+  const texts = sc.slides[0].shapes.flatMap((sh) =>
+    sh.paragraphs.flatMap((pp) => pp.runs.map((x) => [x.text, !!x.bold])),
+  );
+  const joined = texts.map(([tx]) => tx).join('');
+  t('pptx 実出力: 漢字（かんじ）と太字の傍点', () => {
+    assert.ok(joined.includes('漢字（かんじ）'), joined);
+    assert.ok(texts.some(([tx, b]) => tx === '傍点' && b));
+  });
+  t('pptx 実出力: 単独トークンも変換され、literal な { に食い込まない', () => {
+    assert.ok(joined.includes('語（ご）'), joined);
+    assert.ok(!joined.includes('{語|ご}'), joined);
+    /* {x} は照合外のまま残り、後続の {文|ぶん} だけがルビになる */
+    assert.ok(joined.includes('{x}と文（ぶん）。'), joined);
+  });
+}
 console.log(`\n${n} 件すべて通過`);

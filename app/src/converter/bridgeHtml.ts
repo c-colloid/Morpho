@@ -82,6 +82,70 @@ var DROP_NOTES_LUA = [
   ''
 ].join('\\n');
 
+/* 日本語組版: {親文字|よみ} → ルビ、《《文字》》 → 傍点（でんでんマークダウン互換）。
+   docx は w:ruby / w:em（本物の組版・XSD 準拠は実測済み）、HTML は <ruby> と
+   text-emphasis、pptx にはルビ・傍点の概念が無いため 親文字（よみ）と太字で近似する。
+   findings 6: Lua の否定文字クラスはバイト単位で壊れるので遅延量指定子を使う */
+var RUBY_LUA = [
+  'local function esc(s)',
+  "  return s:gsub('&', '&amp;'):gsub('<', '&lt;'):gsub('>', '&gt;')",
+  'end',
+  'local function rubyInline(base, rt)',
+  "  if FORMAT == 'docx' then",
+  "    return pandoc.RawInline('openxml',",
+  '      \\'<w:r><w:ruby><w:rubyPr><w:rubyAlign w:val="distributeSpace" />\\' ..',
+  '      \\'<w:hps w:val="12" /><w:hpsRaise w:val="22" /><w:hpsBaseText w:val="24" />\\' ..',
+  '      \\'<w:lid w:val="ja-JP" /></w:rubyPr>\\' ..',
+  '      \\'<w:rt><w:r><w:rPr><w:sz w:val="12" /></w:rPr><w:t>\\' .. esc(rt) .. \\'</w:t></w:r></w:rt>\\' ..',
+  '      \\'<w:rubyBase><w:r><w:t>\\' .. esc(base) .. \\'</w:t></w:r></w:rubyBase>\\' ..',
+  "      '</w:ruby></w:r>')",
+  "  elseif FORMAT == 'html' or FORMAT == 'html5' or FORMAT:find('^epub') then",
+  "    return pandoc.RawInline('html', '<ruby>' .. esc(base) .. '<rt>' .. esc(rt) .. '</rt></ruby>')",
+  '  end',
+  "  return pandoc.Str(base .. '（' .. rt .. '）')",
+  'end',
+  'local function botenInline(text)',
+  "  if FORMAT == 'docx' then",
+  "    return pandoc.RawInline('openxml',",
+  '      \\'<w:r><w:rPr><w:em w:val="dot" /></w:rPr><w:t xml:space="preserve">\\' .. esc(text) .. \\'</w:t></w:r>\\')',
+  "  elseif FORMAT == 'html' or FORMAT == 'html5' or FORMAT:find('^epub') then",
+  "    return pandoc.RawInline('html',",
+  '      \\'<span style="text-emphasis:filled dot;-webkit-text-emphasis:filled dot;">\\' .. esc(text) .. \\'</span>\\')',
+  '  end',
+  '  return pandoc.Strong({ pandoc.Str(text) })',
+  'end',
+  'function Str(el)',
+  '  local s = el.text',
+  "  if not (s:find('{', 1, true) or s:find('《《', 1, true)) then return nil end",
+  '  local out = {}',
+  '  local pos = 1',
+  '  local changed = false',
+  '  while pos <= #s do',
+  "    -- 波かっこ1組の中だけで照合する（手前の literal な { に食い込まない）",
+  "    local rs, re, base, rt = s:find('{([^{}|]-)|([^{}|]-)}', pos)",
+  "    local bs, be, btext = s:find('《《(.-)》》', pos)",
+  "    if rs and (not bs or rs <= bs) and base ~= '' and rt ~= '' then",
+  '      if rs > pos then table.insert(out, pandoc.Str(s:sub(pos, rs - 1))) end',
+  '      table.insert(out, rubyInline(base, rt))',
+  '      pos = re + 1',
+  '      changed = true',
+  "    elseif bs and btext ~= '' then",
+  '      if bs > pos then table.insert(out, pandoc.Str(s:sub(pos, bs - 1))) end',
+  '      table.insert(out, botenInline(btext))',
+  '      pos = be + 1',
+  '      changed = true',
+  '    else',
+  '      table.insert(out, pandoc.Str(s:sub(pos)))',
+  '      break',
+  '    end',
+  '  end',
+  '  if not changed then return nil end',
+  '  return out',
+  'end',
+  ''
+].join('\\n');
+window.__morphoRubyLua = RUBY_LUA;
+
 /* CLAUDE.md 落とし穴 1・2: リーダーは固定し、Auto 検出には頼らない。
    east_asian_line_breaks: 和文の行内折り返しが半角スペースにならない（実測済み） */
 var READER = 'markdown-yaml_metadata_block+east_asian_line_breaks';
@@ -787,6 +851,7 @@ async function doConvertWeb(id, md, opts) {
     files['strip.lua'] = STRIP_LUA;
     options.filters = ['strip.lua'];
   }
+  wireRuby(options, files);
 
   var t0 = performance.now();
   var res = await pandoc.convert(options, md, files);
@@ -915,6 +980,24 @@ function parseDocxNumbering(xml) {
    \\n として同じランの流れに埋め込む。脚注参照（footnoteReference。
    w:t を持たない）は fnMap に出現順で番号を採り、[n] のテキストにする */
 function parseDocxRuns(pXml, styles, fnMap) {
+  /* w:ruby は w:r の中に w:r が入れ子になる唯一の形。ランの走査前に
+     「親文字（よみ）」の平文ランへ潰す（RN にルビ描画は無いため近似。
+     出力そのものには本物の w:ruby が入っている） */
+  pXml = pXml.replace(/<w:r><w:ruby>[\\s\\S]*?<\\/w:ruby><\\/w:r>/g, function (rb) {
+    var rt = /<w:rt>([\\s\\S]*?)<\\/w:rt>/.exec(rb);
+    var base = /<w:rubyBase>([\\s\\S]*?)<\\/w:rubyBase>/.exec(rb);
+    var pick = function (xml) {
+      var out = '';
+      var tr = /<w:t[^>]*>([\\s\\S]*?)<\\/w:t>/g;
+      var tm;
+      while ((tm = tr.exec(xml || '')) !== null) out += tm[1];
+      return out;
+    };
+    var baseT = pick(base && base[1]);
+    var rtT = pick(rt && rt[1]);
+    if (!baseT) return '';
+    return '<w:r><w:t>' + baseT + (rtT ? '（' + rtT + '）' : '') + '</w:t></w:r>';
+  });
   var runs = [];
   var re = /<w:r>([\\s\\S]*?)<\\/w:r>/g;
   var m;
@@ -947,6 +1030,8 @@ function parseDocxRuns(pXml, styles, fnMap) {
     if ((base && base.i) || /<w:i\\s*\\/>/.test(rb)) run.italic = true;
     if (/<w:u /.test(rb)) run.underline = true;
     if (/<w:strike\\s*\\/>/.test(rb)) run.strike = true;
+    /* 傍点（w:em）。RN に圏点描画は無いため太字で近似（出力には本物が入る） */
+    if (/<w:em /.test(rb)) run.bold = true;
     if (base && base.mono) run.mono = true;
     if (base && base.color) run.color = base.color;
     runs.push(run);
@@ -1073,6 +1158,7 @@ async function doConvertDoc(id, md, opts) {
   files['drop-notes.lua'] = DROP_NOTES_LUA;
   filters.push('drop-notes.lua');
   options.filters = filters;
+  wireRuby(options, files);
 
   var t0 = performance.now();
   var res = await pandoc.convert(options, md, files);
@@ -1120,6 +1206,12 @@ window.__morphoSetTemplate = function (b64) {
   }
 };
 
+/* ルビ・傍点フィルタを配線する（全形式で常時有効。出し分けはフィルタ内の FORMAT） */
+function wireRuby(options, files) {
+  files['ruby.lua'] = RUBY_LUA;
+  options.filters = (options.filters || []).concat(['ruby.lua']);
+}
+
 /* pptx 系の変換オプションへ reference-doc を配線する */
 function wireTemplate(opts, options, files) {
   if (opts.useTemplate && TEMPLATE_BLOB) {
@@ -1145,6 +1237,7 @@ async function doConvert(id, md, opts, format) {
       files['strip.lua'] = STRIP_LUA;
       options.filters = ['strip.lua'];
     }
+    wireRuby(options, files);
     wireTemplate(opts, options, files);
 
     var t0 = performance.now();
@@ -1204,6 +1297,7 @@ async function doExport(id, md, opts, format) {
       files['drop-notes.lua'] = DROP_NOTES_LUA;
       options.filters = (options.filters || []).concat(['drop-notes.lua']);
     }
+    wireRuby(options, files);
     if (format === 'pptx') wireTemplate(opts, options, files);
 
     var t0 = performance.now();
