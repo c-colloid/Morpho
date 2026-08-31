@@ -196,7 +196,7 @@ epub は既定スタイルシートに `div.column{display:inline-block; width:5
 - ルビ `{漢字|かんじ}` の Lua パターンは `|` を要求するので `{.compare}` にはマッチしない。
   そもそも属性はリーダーが構文段階で消費する
 - **衝突する相手は 2 つある**。改行編集（`locateEditable` が `:::` 行を段落として飲み込む）と、
-  画像挿入（カーソルが行の途中だとフェンス行を 3 行に割る）。どちらも v0.14 で塞ぐ
+  画像挿入（カーソルが行の途中だとフェンス行を 3 行に割る）。どちらも v0.14 で塞ぐ（`v014-foundation.md`）
 
 ---
 
@@ -268,35 +268,23 @@ v0.17 でこの 1 回の実験だけは消化して `preview-formats.md` の決�
 
 既存フィールドは変えず追加のみ。すべて後方互換。
 
-```ts
-export interface SlideShape {
-  // 既存: placeholder / phIdx / frame / anchor / paragraphs
-  /** <p:ph sz=""> の生値。OOXML の枠サイズ種別であって「列である」の印ではない（実測） */
-  phSz?: 'half' | 'quarter' | null;
-  /** レイアウト固有 lstStyle で解決した階層別字サイズ（1/100pt）。null は DeckInfo 既定 */
-  szLvl?: number[] | null;
-}
+**この節の初稿（`phSz` / `szLvl` / `order`）は v0.14 の検証で置き換わった。**
+実際に当てて動かした型は `v014-foundation.md`「型の差分」にある。要点だけ:
 
-/** 表（p:graphicFrame）。まず枠だけ描いて「消えない」ことを保証する */
-export interface SlideTable {
-  x: number; y: number; w: number; h: number;
-  /** 解析済みのセル。未実装のあいだは undefined */
-  rows?: string[][];
-}
+- `szLvl?: number[]` → **`lvlStyle?: Array<LevelStyle | null> | null`**。
+  字サイズだけでなく `marL` / `indent` / `algn` / `bullet` も必要で、
+  さらに**「拾えなければ null」でないと**マスターへ落とせない
+  （配列を常に返すと truthy になり、`sz` を持たない Comparison のタイトルが
+  マスターの 3300 に届かない。実測）
+- `phSz` は**足さない**。`sz="half"` は列の印にならず、判定はレイアウト名と `phIdx` で行う
+- `SlideTable` は `rows?` を予約せず、代わりに `rowCount` と `colWidths` を持つ
+  （出力に書かれているのはこの 2 つだけ。列幅の合計は枠幅と一致しない）
+- `order`（重なり順）は**入れない**。使わないフィールドを境界に足さない
 
-export interface SlideOutline {
-  // 既存: index / layout / shapes / images / notes
-  tables: SlideTable[];
-  /** spTree の文書順。shapes/images/tables の重なり順を復元する唯一の情報 */
-  order?: Array<{ kind: 'shape' | 'image' | 'table'; i: number }>;
-}
-```
-
-- **`szLvl` は必須**。現状レイアウト固有の `lstStyle` を読まないため、段組みの本文が 14% 大きく、
-  `Content with Caption` のタイトルが 2.2 倍で描かれる（実測 5）。
-  「実際の出力そのものを読む」原則への実測済みの違反であり、段組みを一般提供する前に直さないと
-  **唯一の安全弁（嘘はプレビューで露見する）が働かない**
-- 「この図形は列か」はレイアウト名と `phIdx` で判定する。`phSz` は補助情報として持つだけ
+`lvlStyle` は必須。現状レイアウト固有の `lstStyle` を読まないため、段組みの本文が 14% 大きく、
+`Content with Caption` のタイトルが 2.2 倍で描かれる（実測 5）。
+「実際の出力そのものを読む」原則への実測済みの違反であり、段組みを一般提供する前に直さないと
+**唯一の安全弁（嘘はプレビューで露見する）が働かない**。
 - **意味クラスはシーンに載せない**。クラスは pandoc が消費して出力に残らず、
   `.compare` と `.note-aside` は Lua 適用後の pptx では同一の XML になる。UI 側が原稿から引く
 - `DocBlock` は当面変更しない。docx に段組みの痕跡が無い以上、文書プレビューが
@@ -380,7 +368,8 @@ export interface Placement {
 
 | 版 | 中身 | 実機に届くもの |
 |---|---|---|
-| **v0.14** 壊れない土台 | `findInherited` を「idx はレイアウト内に閉じる／マスターへ落ちるときは body 系に限る／idx 優先 → type フォールバック」へ。レイアウト固有 `lstStyle` の `szLvl` 解決と `SlideSurface` / `adjustDeck` の追随。`locateEditable` に fenced div の行種別。画像挿入を `patchBody` へ統一。`<p:graphicFrame>` の枠だけ描画。ガードの層分けと Alert 文面 | 手書きの段組みで左右の縦位置が揃い、Comparison で見出しが重ならず、表のある列が空白にならず、カラム内で長押ししても原稿が壊れない。画像＋本文スライドのタイトルが 2.2 倍で描かれる嘘が消える |
+| **v0.14** 原稿を守る | `locateEditable` に fenced div の行種別。改行編集をインライン記法の内側で止める。画像挿入を `patchBody` へ統一し、着地をスライド区間の末尾にする。ガードの層分けと Alert 文面。**設計と検証は `v014-foundation.md`** | カラム内で長押ししても、画像を入れても原稿が壊れない |
+| **v0.14.1** プレビューの嘘を消す | `findInherited` を「idx はレイアウト内に閉じる／idx 優先 → type フォールバック」へ。レイアウト固有 `lstStyle` の解決と `SlideSurface` の追随。`<p:graphicFrame>` の枠だけ描画。**`lstStyle` は継承照合と不可分なので同じ版に入れる** | 左右の縦位置が揃い、Comparison で見出しが重ならず、表のある列が空白にならず、画像＋本文スライドのタイトルが 2.2 倍で描かれる嘘が消える |
 | **v0.15** 段組みの挿入 UI | 長押しの用途メニュー、`lineBreakEdit` のブロック列挙を `listBlocks()` として公開、`***` 隔離を含む挿入テンプレート、`patchBody` の 1 段 Undo、Diagnostic 3 本（3 列超過を「要対応」へ格上げ / Comparison 選択 / `width=` は pptx で効かない） | 記法を知らずに段組みが書ける。書いても編集機能が死なない |
 | **v0.16** テーマ層 | `.morphotheme`（JSON。`frontMatter.ts` はスカラーしか読めず YAML パーサが無い）、`src/theme/`、意味クラスのコンパイラ、Lua をブリッジへ渡す経路の集約（現在フィルタは `bridgeHtml.ts` 内の定数で 6 箇所に散っている）、列比、組み込みテーマ 1 本。**縦書きとインスペクタ v1 の席をスキーマに空けておく** | 段組みの列比が変えられる。その版で見た目が変わる |
 | **v0.17** 刷り分け | docx（流す / 表）と epub・Web の CSS 注入、書き出し前の劣化告知、`headingSegments` への一般化、PDF 可否の 1 回の実験 | 「この配置は Word では 1 本の流れになります」が書き出しメニューに出る |
@@ -391,7 +380,7 @@ export interface Placement {
 
 | 版 | `scripts/check-*.mjs` |
 |---|---|
-| v0.14 | `check-scene`: 「`type="body"` が 2 つあるレイアウト」「レイアウトとマスターで idx が衝突する表」「レイアウト固有 lstStyle」の 3 ケース。`check-linebreak`: `:::` フェンスを含むブロックの列挙と再構築。`check-deck`: 段組み原稿 1 本 |
+| v0.14 / v0.14.1 | `check-image-insert`（新規）・`check-linebreak`・`check-scene`・`check-deck` への追加。内訳は `v014-foundation.md` の「検査に足すもの」 |
 | v0.15 | **「`::: columns` を含む原稿で slideCount と区間数が一致する」を常時検証**（これが赤いうちは挿入 UI を出せない）。`check-cursor` に段組みのケース |
 | v0.16 | テーマコンパイラの単体検査。`check-template` に「`Two Content` / `Comparison` の列プレースホルダに `<a:xfrm>` があるか」（無いと画像・表が**無警告で**マスターの日付枠へ落ちる） |
 | v0.17 | `check-deck` に docx の段組み（流す / 表）と Web の CSS 注入 |
@@ -455,7 +444,7 @@ pandoc 既定テンプレートから起こしたものはリポジトリの MIT
 - **`{#s-xxxx}` の可搬性コスト。** pptx の出力には現れないが、CommonMark / GFM のリーダーでは
   見出しに literal のまま見える。`::: columns` のフェンス行も同じ。
   どちらも「原稿は汚れる」という事実を README に正しく書く
-- **文字サイズ設定と `szLvl` の関係。** 設定が絶対値のままだと、段組み（2100）や
+- **文字サイズ設定と `lvlStyle` の関係。** 設定が絶対値のままだと、段組み（2100）や
   `Content with Caption`（title 1500）で設定値と描画が食い違う。
   設定を「解決値に対する倍率」へ変える必要があるか未決
 - **縦書きと段組みの併用。** pandoc 既定テンプレートには `Vertical Title and Text`

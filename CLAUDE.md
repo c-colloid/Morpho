@@ -532,6 +532,7 @@ notes/status-and-plan.md             現在地と残りの計画（棚卸し）
 notes/roadmap-pptx.md                三層分離と「飾る力」の中期計画
 notes/preview-formats.md             プレビューの形式切り替え
 notes/columns-and-images.md          段組みと画像配置の設計
+notes/v014-foundation.md             v0.14 の土台修理（設計と検証）
 scripts/init.sh                      Pages 有効化と基準出力の再生成
 ```
 
