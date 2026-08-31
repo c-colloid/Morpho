@@ -150,14 +150,17 @@ Comparison / Content with Caption / Blank
 （`docs/index.html` に加えて、アプリ本体にも 0.11.0 で実装済み —
 `app/src/design/template.ts` の配線盤。原本は書き換えず、変換直前に適用）。
 
-### 5. 表の後ろにコンテンツがあるとスライドが分割される（pandoc 3.1.3）
+### 5. 表の後ろにコンテンツがあるとスライドが分割される（pandoc 3.1.3 / **3.10 でも健在**）
 
 表がコンテンツプレースホルダを占有するため、後続ブロックがタイトルなしの独立スライドになる。
-**pandoc 3.9 では解消されている可能性がある**（同一入力で 64枚 → 52枚）。要確認。
+「pandoc 3.9 で解消されている可能性」と書いていたが、**pandoc-wasm 1.1.0（3.10 相当）で未解消**。
+表の直後に段落を1つ置くだけでスライドが1枚増える（実測）。表より前に置けば増えない。
+`notes/footer-design.md`「実測で確定した事実 3」。
 
-### 6. 脚注は末尾の "Notes" スライドに集約される（pandoc 3.1.3）
+### 6. 脚注は末尾の "Notes" スライドに集約される（pandoc 3.1.3 / **3.10 でも健在**）
 
-pandoc 3.9 では消滅している可能性がある。**無警告のデータロスなら要 lint。** 未検証。
+**未解消。** `fixtures/pptx-benchmark.md` では著者が一度も書いていない 64 枚目
+"Notes" スライドが生える（実測）。**無警告のデータロス。** lint の対象。
 
 ### 7. HTML コメントが RawBlock 警告を出す
 
@@ -196,6 +199,29 @@ U+000B（垂直タブ。ページ上は改行に見える）。
 PowerPoint の判定に最も近く、この問題を実際に検出できた唯一の検証器。
 
 ---
+
+### 10. pptx ライターは raw openxml を素通しする — FORMAT ガードが無いと docx へ漏れる
+
+`RawBlock('openxml', …)` は `<p:spTree>` 直下へ、`RawInline` は `<a:p>` 内の run として
+そのまま出力される（pptx ライターの表現力ではなく OOXML の表現力が上限になる）。
+便利だが、**FORMAT ガードを外すと pptx 用の `<p:sp>` が `word/document.xml` へ
+無警告で注入される**（html は INFO 警告で捨てるだけ）。Lua では必ず
+`if FORMAT ~= 'pptx' then … end` で分岐する。検査は pptx ではなく docx / html 側に置く。
+
+### 11. docx の `custom-style` は styleId ではなく表示名で照合される
+
+`::: {custom-style="X"}` の X は `<w:name w:val>`（表示名・大文字小文字は無視）と突き合わされる。
+styleId で書くと既存スタイルに当たらず、**同じ styleId を持つ2つ目の `w:style` が生成される**。
+照合に外れた名前は `basedOn=BodyText`・サイズ指定なしで自動生成されるため、
+「小さい文字」にはならない（既定 reference.docx で本文 12pt より小さい段落スタイルは
+`Abstract` / `AbstractTitle` の 10pt だけ）。
+
+### 12. `pandoc.utils.stringify` は RawInline を空文字として捨てる
+
+`ruby.lua` の後ろに stringify を使うフィルタを置くと、**docx でルビ・圏点が無警告で消える**。
+pptx ではルビが `Str` / `Strong` に落ちるため再現せず、pptx のテストだけでは絶対に検出できない。
+inline を保つなら `pandoc.utils.blocks_to_inlines` を使う。
+なお `PANDOC_WRITER_OPTIONS.slide_level` は nil で、Lua から実効スライドレベルは読めない。
 
 ## 警告の重要度分類
 
@@ -309,8 +335,9 @@ App Extension のメモリ上限は約 120 MB（後述）。
 （WASM 上の Lua フィルタは検証済み → `notes/findings.md` 6。
 日本語の gsub も動くが、否定文字クラスはバイト単位で壊れるので遅延量指定子を使う）
 
-- pandoc 3.9 で「表の後ろのスライド分割」が解消されているか
-- pandoc 3.9 で脚注がどこへ行くか（本文 / ノート / 消滅）
+（「表の後ろのスライド分割」と「脚注の Notes スライド」は**どちらも 3.10 で未解消**と
+確定した → 落とし穴 5・6 を更新。`app/scripts/dump-footer.mjs`）
+
 - Typst 経由の日本語 PDF（CJK フォントを WASM FS に配置する必要がある）— 優先度低
 
 （「自作テンプレートで reference-doc が実際に効くか」は**検証済み・効く**。
@@ -462,6 +489,7 @@ app/                                 アプリ本体（React Native + Expo）
 docs/index.html                      GitHub Pages で公開する検証ハーネス
 fixtures/pptx-benchmark.md           50枚規模のテストデッキ（自己診断型）
 notes/findings.md                    検証の経緯
+notes/footer-design.md               フッター（出典・注釈）の設計と検証
 scripts/init.sh                      Pages 有効化と基準出力の再生成
 ```
 

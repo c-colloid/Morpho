@@ -215,7 +215,8 @@ npm run check
 ### pandoc の実出力を見る
 
 ```bash
-node scripts/dump-pptx.mjs [file.md]
+node scripts/dump-pptx.mjs [file.md]     # pandoc が吐く pptx の中身
+node scripts/dump-footer.mjs             # フッター帯・記法・注入の実測（未実装機能の設計根拠）
 ```
 
 **パーサを推測で書かないこと。** 実際に pandoc を回して XML を見る。
