@@ -35,6 +35,9 @@ runInContext(body, ctx);
 const parse = win.__morphoParseShapes;
 const parseFrames = win.__morphoParsePlaceholderFrames;
 const findFrame = win.__morphoFindFrame;
+const findAnchor = win.__morphoFindAnchor;
+const parseLvlStyle = win.__morphoParseLvlStyle;
+const parseTables = win.__morphoParseTables;
 assert.equal(typeof parse, 'function', '__morphoParseShapes が生えていない');
 
 let n = 0;
@@ -277,6 +280,104 @@ t('座標なしのレイアウト（pandoc 既定）は素通りする', () => {
   const phs = parseFrames(layout);
   assert.equal(phs[0].frame, null);
   assert.equal(findFrame(phs, 'title', null), null);
+});
+
+
+/* ---- v0.14: 段組みで露出する継承の 3 ケース（A-1 / A-2 / A-6） ---- */
+
+/* pandoc 既定テンプレートの実測値から起こした最小の板 */
+const L_TWO =
+  '<p:sp><p:nvSpPr><p:nvPr><p:ph idx="1" /></p:nvPr></p:nvSpPr>' +
+  '<p:spPr><a:xfrm><a:off x="457200" y="1600200" /><a:ext cx="4038600" cy="3600450" /></a:xfrm></p:spPr>' +
+  '<p:txBody><a:bodyPr/><a:lstStyle><a:lvl1pPr><a:defRPr sz="2100"/></a:lvl1pPr>' +
+  '<a:lvl2pPr><a:defRPr sz="1800"/></a:lvl2pPr></a:lstStyle></p:txBody></p:sp>' +
+  '<p:sp><p:nvSpPr><p:nvPr><p:ph idx="2" /></p:nvPr></p:nvSpPr>' +
+  '<p:spPr><a:xfrm><a:off x="4648200" y="1600200" /><a:ext cx="4038600" cy="3600450" /></a:xfrm></p:spPr>' +
+  '<p:txBody><a:bodyPr/><a:lstStyle><a:lvl1pPr><a:defRPr sz="2100"/></a:lvl1pPr></a:lstStyle></p:txBody></p:sp>' +
+  '<p:sp><p:nvSpPr><p:nvPr><p:ph idx="10" sz="half" type="dt" /></p:nvPr></p:nvSpPr><p:spPr/>' +
+  '<p:txBody><a:bodyPr anchor="ctr"/><a:lstStyle/></p:txBody></p:sp>';
+
+const L_CMP =
+  '<p:sp><p:nvSpPr><p:nvPr><p:ph idx="1" type="body" /></p:nvPr></p:nvSpPr>' +
+  '<p:spPr><a:xfrm><a:off x="457200" y="1151335" /><a:ext cx="4040188" cy="597756" /></a:xfrm></p:spPr>' +
+  '<p:txBody><a:bodyPr anchor="b"/><a:lstStyle><a:lvl1pPr marL="0" indent="0"><a:buNone/>' +
+  '<a:defRPr sz="1800" b="1"/></a:lvl1pPr></a:lstStyle></p:txBody></p:sp>' +
+  '<p:sp><p:nvSpPr><p:nvPr><p:ph idx="3" type="body" /></p:nvPr></p:nvSpPr>' +
+  '<p:spPr><a:xfrm><a:off x="4645026" y="1151335" /><a:ext cx="4041775" cy="597756" /></a:xfrm></p:spPr>' +
+  '<p:txBody><a:bodyPr anchor="b"/><a:lstStyle><a:lvl1pPr marL="0" indent="0"><a:buNone/>' +
+  '<a:defRPr sz="1000" b="1"/></a:lvl1pPr></a:lstStyle></p:txBody></p:sp>';
+
+/* マスターは idx の名前空間が別（dt が idx=2）。ここが A-1 の発症源 */
+const MASTER_DT =
+  MASTER +
+  '<p:sp><p:nvSpPr><p:nvPr><p:ph idx="2" sz="half" type="dt" /></p:nvPr></p:nvSpPr>' +
+  '<p:spPr><a:xfrm><a:off x="457200" y="4767263" /><a:ext cx="2133600" cy="365125" /></a:xfrm></p:spPr>' +
+  '<p:txBody><a:bodyPr anchor="ctr"/><a:lstStyle/></p:txBody></p:sp>';
+
+t('A-1 レイアウトの idx はレイアウト内で閉じる（マスターの日付枠を拾わない）', () => {
+  const lay = parseFrames(L_TWO);
+  const mas = parseFrames(MASTER_DT);
+  /* 右の列（idx=2）。レイアウトにもマスターにも anchor は無いのが真値 */
+  assert.equal(findAnchor(lay, 'body', 2, true) ?? findAnchor(mas, 'body', 2, false) ?? null, null);
+  /* 枠はレイアウトの右列 */
+  assert.equal((findFrame(lay, 'body', 2, true) || findFrame(mas, 'body', 2, false)).x, 4648200);
+});
+
+t('A-2 type="body" が 2 つあるレイアウトは idx で選ぶ', () => {
+  const lay = parseFrames(L_CMP);
+  assert.equal(findFrame(lay, 'body', 1, true).x, 457200);
+  assert.equal(findFrame(lay, 'body', 3, true).x, 4645026);
+});
+
+t('装飾枠はレイアウトでは body へ落とさない／マスターでは落とす', () => {
+  const lay = parseFrames(L_CMP);
+  const mas = parseFrames(MASTER); /* 日付枠を持たないマスター */
+  /* レイアウト内で dt を body（左見出し枠）へ落とすと重なるので落とさない */
+  assert.equal(findFrame(lay, 'dt', 10, true), null);
+  /* マスターでは従来どおり落ちる。落とさないと図形がプレビューから消える */
+  assert.equal(findFrame(mas, 'dt', 10, false).y, 1200151);
+});
+
+t('A-6 レイアウト固有 lstStyle を階層別に読む', () => {
+  const lay = parseFrames(L_TWO);
+  const sz = findInheritedSz(lay, 'body', 1);
+  assert.equal(sz[0].sz, 2100);
+  assert.equal(sz[1].sz, 1800);
+  /* 2 列目は lvl1 しか持たない。lvl2 以降は穴のまま DeckInfo へ落ちる */
+  const sz2 = findInheritedSz(lay, 'body', 2);
+  assert.equal(sz2[0].sz, 2100);
+  assert.equal(sz2[1], undefined);
+});
+
+function findInheritedSz(phList, type, idx) {
+  const hit = phList.filter((p) => p.idx === idx)[0];
+  assert.ok(hit, 'idx=' + idx + ' の枠が無い');
+  return Array.from(hit.lvlStyle);
+}
+
+t('A-6 sz を持たない lvl1pPr は null（マスターの既定へ落とす）', () => {
+  const only = parseLvlStyle('<p:txBody><a:lstStyle><a:lvl1pPr><a:defRPr/></a:lvl1pPr></a:lstStyle></p:txBody>');
+  assert.equal(only, null);
+  /* 自己閉じ・対書きの buNone をどちらも拾う */
+  const a = parseLvlStyle('<a:lstStyle><a:lvl1pPr marL="0"><a:buNone/></a:lvl1pPr></a:lstStyle>');
+  const b = parseLvlStyle('<a:lstStyle><a:lvl1pPr marL="0"><a:buNone></a:buNone></a:lvl1pPr></a:lstStyle>');
+  assert.equal(a[0].bullet, 'none');
+  assert.equal(b[0].bullet, 'none');
+});
+
+t('A-5 表は枠と行数・列幅として読める', () => {
+  const gf =
+    '<p:graphicFrame><p:nvGraphicFramePr><p:nvPr><p:ph idx="1"/></p:nvPr></p:nvGraphicFramePr>' +
+    '<p:xfrm><a:off x="457200" y="1193800"/><a:ext cx="8229600" cy="3390900"/></p:xfrm>' +
+    '<a:graphic><a:graphicData><a:tbl><a:tblGrid><a:gridCol w="4114800" /><a:gridCol w="4114800" /></a:tblGrid>' +
+    '<a:tr h="0"><a:tc/></a:tr><a:tr h="0"><a:tc/></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame>';
+  const tb = parseTables(gf);
+  assert.equal(tb.length, 1);
+  assert.deepEqual({ ...tb[0], colWidths: Array.from(tb[0].colWidths) },
+    { x: 457200, y: 1193800, w: 8229600, h: 3390900, rowCount: 2, colWidths: [4114800, 4114800] });
+  /* 表でない graphicFrame（グラフ・OLE）は落とす。trPr を行と数えない */
+  assert.equal(parseTables('<p:graphicFrame><p:xfrm><a:off x="0" y="0"/><a:ext cx="1" cy="1"/></p:xfrm>' +
+    '<a:graphic><a:graphicData><a:chart/></a:graphicData></a:graphic></p:graphicFrame>').length, 0);
 });
 
 console.log(`\n${n} 件すべて通過`);

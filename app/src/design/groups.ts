@@ -98,7 +98,11 @@ export function copyDesignToAllSlides(
   const srcGroups = design.groups.filter((g) => g.contentIndex === fromCi);
   /* 置き換えの対象はコンテンツスライド（1..total）。表紙（ci=0）の装飾は
      元スライドでない限り保持する */
-  const keepCover = (ci: number) => ci === fromCi || (ci === 0 && fromCi !== 0);
+  /* totalSlides は「いま変換できているスライド数」なので、原稿が先行して
+     いる（デバウンス中・末尾に *** を打った直後など）と実際より小さくなる。
+     範囲外の装飾まで消すと復元できないので、作り直す範囲の外は保持する */
+  const keepCover = (ci: number) =>
+    ci === fromCi || (ci === 0 && fromCi !== 0) || ci > totalSlides;
   const decorations: SlideDecoration[] = design.decorations.filter((d) =>
     keepCover(d.contentIndex),
   );

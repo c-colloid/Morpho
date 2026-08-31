@@ -172,4 +172,51 @@ t('locate → rebuild を原稿に書き戻しても他の行を壊さない', (
   assert.ok(next.includes('# 二枚目'));
 });
 
+
+/* ---------- v0.14: fenced div（段組み・ノート） ---------- */
+
+const COLS = [
+  '# 二つの案',
+  '',
+  '::: {.columns}',
+  '::: {.column}',
+  '案 A は pandoc をそのまま使う方法です。',
+  ':::',
+  '::: {.column}',
+  '案 B は自前 writer に差し替える方法です。',
+  ':::',
+  ':::',
+  '',
+].join('\n');
+
+t('柵の中の段落だけを掴み、柵を巻き込まない', () => {
+  const loc = locateEditable(COLS, 1, '案 A は pandoc をそのまま使う方法です。');
+  assert.ok(loc.ok);
+  assert.equal(loc.block.raw, '案 A は pandoc をそのまま使う方法です。');
+  const next = COLS.slice(0, loc.block.start) + rebuildBlock(loc.block, new Set([4])) + COLS.slice(loc.block.end);
+  /* 行頭 ::: の本数が保たれる = 段組みが壊れていない */
+  assert.equal((next.match(/^ {0,3}:::/gm) || []).length, 6);
+  assert.match(next, /案 A[^\n]*\\\n[^\n]*方法です。/);
+});
+
+t('柵の行そのものは編集対象にしない', () => {
+  assert.equal(locateEditable(COLS, 1, '::: {.columns}').ok, false);
+});
+
+t('::: notes の中は候補にしない（本文と同じ文がノートにあっても誤爆しない）', () => {
+  const doc = '# t\n\n::: notes\n本文の段落です。についての補足。\n:::\n\n本文の段落です。\n';
+  const loc = locateEditable(doc, 1, '本文の段落です。');
+  assert.ok(loc.ok);
+  assert.equal(loc.block.raw, '本文の段落です。');
+  const next = doc.slice(0, loc.block.start) + rebuildBlock(loc.block, new Set([3])) + doc.slice(loc.block.end);
+  assert.equal((next.match(/^ {0,3}:::/gm) || []).length, 2, 'ノートの柵が消えた:\n' + next);
+});
+
+t('意図した縮退: 行頭 ::: を含む段落は編集できない（壊さずに止まる）', () => {
+  const doc = '# t\n\nThis is a paragraph.\n::: and this continues.\nMore text here.\n';
+  const loc = locateEditable(doc, 1, 'This is a paragraph. ::: and this continues. More text here.');
+  assert.equal(loc.ok, false);
+  assert.equal(loc.reason, 'not-found');
+});
+
 console.log(`\n${n} 件すべて通過`);

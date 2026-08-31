@@ -4,10 +4,12 @@ import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import type {
   ConvertOptions,
   DeckInfo,
+  LevelStyle,
   Paragraph,
   SlideDecoration,
   SlideOutline,
   SlideShape,
+  SlideTable,
   TextRun,
 } from '../converter/types';
 import Svg, { Polygon } from 'react-native-svg';
@@ -26,6 +28,7 @@ import { shapePoints, textRect } from '../design/shapeGeometry';
  * 限界（意図的な近似）:
  * - 行の折り返しは PowerPoint のフォントメトリクスと完全一致しない
  * - 和文フォントは OS 既定（テーマの ea は空だった）
+ * - 表は枠と列幅だけを描く。行高と罫線は出力に無い（実測）
  */
 
 const EMU_PER_PT = 12700;
@@ -218,6 +221,15 @@ export function SlideSurface({
           <View key={'im' + i} style={[box, styles.imageFallback]} />
         );
       })}
+      {(slide.tables ?? []).map((t, i) => (
+        <TableBox
+          key={'tb' + i}
+          table={t}
+          scale={scale}
+          color={deck.colors.dk1 ?? '#000000'}
+          annotate={!!onParagraphLongPress}
+        />
+      ))}
       {slide.shapes.map((shape, i) => (
         <ShapeBox
           key={i}
@@ -256,6 +268,87 @@ export function SlideSurface({
             {footer.text}
           </Text>
         </View>
+      )}
+    </View>
+  );
+}
+
+/**
+ * 表の枠。
+ *
+ * 実出力に入っているのは枠の矩形・列幅・行数だけで、行高は h="0"（中身任せ）、
+ * 罫線と塗りは組み込みの表スタイル参照（pandoc 既定テンプレートでは実体が
+ * パッケージに無い。いずれも実測）。中身を描けるふりをせず、破線の枠と
+ * 列の区切り、行×列のラベルで「ここに表がある」ことだけを示す。
+ * 枠は本文プレースホルダぶんの予約で、中身の量には一切追随しない（実測）。
+ */
+function TableBox({
+  table,
+  scale,
+  color,
+  annotate,
+}: {
+  table: SlideTable;
+  scale: number;
+  color: string;
+  /** 編集面でだけラベルを出す。スライドショーには編集用の注記を出さない */
+  annotate: boolean;
+}) {
+  const px = (emu: number) => (emu / EMU_PER_PT) * scale;
+  const line = Math.max(1, scale);
+  const fontSize = Math.max(7, 12 * scale);
+  /* 列の区切り位置（左端からの累積）。pandoc の列幅は 1pt 刻みに丸められ、
+     合計が枠幅と一致しないことがあるので枠内へクランプする（実測） */
+  const dividers: number[] = [];
+  let acc = 0;
+  for (let i = 0; i < table.colWidths.length - 1; i++) {
+    acc += table.colWidths[i];
+    dividers.push(Math.min(acc, table.w));
+  }
+  const label =
+    table.colWidths.length > 0
+      ? '表 ' + table.rowCount + '行 × ' + table.colWidths.length + '列'
+      : '表 ' + table.rowCount + '行';
+  const wide = px(table.w) > fontSize * (label.length + 1);
+  return (
+    <View
+      pointerEvents="none"
+      style={{
+        position: 'absolute',
+        left: px(table.x),
+        top: px(table.y),
+        width: px(table.w),
+        height: px(table.h),
+        borderWidth: line,
+        borderStyle: 'dashed',
+        borderColor: withAlpha(color, 0.35),
+      }}
+    >
+      {dividers.map((d, i) => (
+        <View
+          key={i}
+          style={{
+            position: 'absolute',
+            left: px(d) - line,
+            top: 0,
+            bottom: 0,
+            width: line,
+            backgroundColor: withAlpha(color, 0.18),
+          }}
+        />
+      ))}
+      {annotate && wide && (
+        <Text
+          numberOfLines={1}
+          style={{
+            margin: fontSize * 0.4,
+            fontSize,
+            lineHeight: fontSize * 1.25,
+            color: withAlpha(color, 0.55),
+          }}
+        >
+          {label}
+        </Text>
       )}
     </View>
   );
@@ -319,6 +412,7 @@ function ShapeBox({
               isCover={isCover}
               isSub={isSub}
               ordinal={numbers[pi]}
+              lvlStyle={shape.lvlStyle}
               deck={deck}
               scale={scale}
               color={color}
@@ -332,6 +426,7 @@ function ShapeBox({
             isCover={isCover}
             isSub={isSub}
             ordinal={numbers[pi]}
+            lvlStyle={shape.lvlStyle}
             deck={deck}
             scale={scale}
             color={color}
@@ -348,6 +443,7 @@ function SurfaceParagraph({
   isCover,
   isSub,
   ordinal,
+  lvlStyle,
   deck,
   scale,
   color,
@@ -359,29 +455,38 @@ function SurfaceParagraph({
   /** 表紙サブタイトル（subTitle）。既定は本文サイズを継承（実測） */
   isSub: boolean;
   ordinal: number;
+  /** 継承元プレースホルダの階層別既定。DeckInfo より優先し、段落の明示指定には負ける */
+  lvlStyle?: Array<LevelStyle | null> | null;
   deck: DeckInfo;
   scale: number;
   color: string;
 }) {
-  /* sz は 1/100pt。lvl の範囲外は最後の値に丸める */
+  /* プレースホルダ固有の既定（レイアウトの lstStyle）。lvl は 0..8 に丸める */
+  const ps = lvlStyle?.[Math.min(paragraph.level, 8)] ?? null;
+  /* sz は 1/100pt。優先順位は 表紙の文字サイズ設定 > プレースホルダ固有 > デッキ既定。
+     表紙の 2 つは applyTextSizes がスライド側の lstStyle へ注入するので
+     出力でもこの順に勝つ（実測）。lvl の範囲外は最後の値に丸める */
   const szHundredths = isTitle
-    ? (isCover && deck.ctrTitleSz != null ? deck.ctrTitleSz : deck.titleSz)
+    ? isCover && deck.ctrTitleSz != null
+      ? deck.ctrTitleSz
+      : ps?.sz ?? deck.titleSz
     : isSub && deck.subTitleSz != null
       ? deck.subTitleSz
-      : deck.bodySz[Math.min(paragraph.level, deck.bodySz.length - 1)] ?? 1800;
+      : ps?.sz ?? deck.bodySz[Math.min(paragraph.level, deck.bodySz.length - 1)] ?? 1800;
   const fontSize = (szHundredths / 100) * scale;
   /* 字下げは実出力の marL / indent から。段落の上書きが無ければマスターの
      lvl 既定を継承する（pandoc 既定は marL=342900*(n+1), indent=-342900）。
      行頭記号の位置 = marL + indent なので、行の左端はその和 */
   const lvl = Math.min(paragraph.level, deck.bodyMarL.length - 1);
-  const marL = paragraph.marL ?? deck.bodyMarL[lvl] ?? 0;
-  const hang = paragraph.indent ?? deck.bodyIndent[lvl] ?? 0;
+  const marL = paragraph.marL ?? ps?.marL ?? deck.bodyMarL[lvl] ?? 0;
+  const hang = paragraph.indent ?? ps?.indent ?? deck.bodyIndent[lvl] ?? 0;
   const indentPt = Math.max(0, (marL + hang) / EMU_PER_PT);
 
   /* 水平揃え: 段落の上書き → スタイル既定（タイトルは titleStyle、本文は
      bodyStyle の lvl 既定）。pandoc 既定マスターのタイトルは中央揃え（実測） */
   const algn =
     paragraph.algn ??
+    ps?.algn ??
     (isTitle ? deck.titleAlgn : isSub ? 'ctr' : deck.bodyAlgn?.[lvl]) ??
     'l';
   const textAlign =
@@ -401,7 +506,9 @@ function SurfaceParagraph({
       ? null
       : paragraph.bullet === 'number'
         ? ordinal + '.'
-        : (deck.bodyBuChar?.[lvl] ?? (paragraph.level > 0 ? '◦' : '•'));
+        : ps?.bullet === 'none'
+          ? null
+          : (deck.bodyBuChar?.[lvl] ?? (paragraph.level > 0 ? '◦' : '•'));
 
   return (
     <View

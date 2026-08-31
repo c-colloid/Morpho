@@ -329,6 +329,38 @@ function parsePics(slideXml) {
   return out;
 }
 
+/* 表（p:graphicFrame の a:tbl）。枠は自前の <p:xfrm> に必ず入っていて
+   プレースホルダ継承は要らない（実測。reference-doc を与えた場合も
+   レイアウト枠を解決した絶対値がスライドへ書かれる）。
+   v0.14 は枠と行数・列幅だけ。セルの中身は後の版 */
+function parseTables(slideXml) {
+  var out = [];
+  var re = /<p:graphicFrame\\b[^>]*>([\\s\\S]*?)<\\/p:graphicFrame>/g;
+  var m;
+  while ((m = re.exec(slideXml)) !== null) {
+    var gf = m[1];
+    /* 表以外の graphicFrame（グラフ・OLE・図表）は落とす */
+    if (!/<a:tbl\\b/.test(gf)) continue;
+    var xf = /<p:xfrm\\b[^>]*>([\\s\\S]*?)<\\/p:xfrm>/.exec(gf);
+    var frame = xf ? parseXfrm(xf[1]) : null;
+    if (!frame) continue;
+    var cols = [];
+    var cre = /<a:gridCol\\b[^>]*\\sw="(\\d+)"/g;
+    var cm;
+    while ((cm = cre.exec(gf)) !== null) cols.push(Number(cm[1]));
+    out.push({
+      x: frame.x,
+      y: frame.y,
+      w: frame.w,
+      h: frame.h,
+      rowCount: (gf.match(/<a:tr\\b/g) || []).length,
+      colWidths: cols
+    });
+  }
+  return out;
+}
+/* パーサだけ検査できるように外へ出す（scripts/check-scene.mjs が使う） */
+window.__morphoParseTables = parseTables;
 function parseShapes(slideXml) {
   var shapes = [];
   var re = /<p:sp>([\\s\\S]*?)<\\/p:sp>/g;
@@ -362,6 +394,7 @@ function parseShapes(slideXml) {
       phIdx: phIdx,
       frame: parseXfrm(sp),
       anchor: anchor,
+      lvlStyle: parseLvlStyle(sp),
       paragraphs: paragraphs
     });
   }
@@ -377,6 +410,61 @@ function parseXfrm(xml) {
   var ext = /<a:ext\\s+cx="(\\d+)"\\s+cy="(\\d+)"/.exec(xml);
   if (!off || !ext) return null;
   return { x: Number(off[1]), y: Number(off[2]), w: Number(ext[1]), h: Number(ext[2]) };
+}
+
+/* <a:lstStyle> の lvl1..lvl9 を読む。プレースホルダ固有の既定は
+   スライド自身 → レイアウト の順に上書きされる（マスターは DeckInfo が持つ）。
+   ここが読めていないと Two Content の本文を 2400 で描いて実際は 2100、
+   Content with Caption のタイトルを 3300 で描いて実際は 1500 になる（実測）。
+   何も拾えないレイアウト（Title and Content 等）では null を返し、
+   DeckInfo の既定へそのまま落とす。階層ごと・プロパティごとの疎な配列なので、
+   sz だけ持つ階層は marL を DeckInfo から継ぐ。
+   正規表現の後方参照はソースに二重バックスラッシュで書くこと
+   （単一だと八進エスケープ扱いでテンプレートリテラルが構文エラーになる。
+   applyTextSizes の lvlNpPr 置換と同じ作法） */
+function parseLvlStyle(spXml) {
+  var lst = /<a:lstStyle>([\\s\\S]*?)<\\/a:lstStyle>/.exec(spXml);
+  if (!lst) return null;
+  var out = null;
+  /* 対と自己閉じの両方を拾う（PowerPoint 製の reference-doc は
+     <a:lvl1pPr marL="0" indent="0"/> のように自己閉じで書くことがある） */
+  var re = /<a:lvl(\\d)pPr\\b([^>]*?)(\\/>|>([\\s\\S]*?)<\\/a:lvl\\1pPr>)/g;
+  var m;
+  while ((m = re.exec(lst[1])) !== null) {
+    var i = Number(m[1]) - 1;
+    if (i < 0 || i > 8) continue;
+    var attrs = m[2];
+    var body = m[4] || '';
+    var ent = null;
+    var sz = /<a:defRPr[^>]*\\bsz="(\\d+)"/.exec(body);
+    if (sz) { ent = ent || {}; ent.sz = Number(sz[1]); }
+    var ml = /\\bmarL="(-?\\d+)"/.exec(attrs);
+    if (ml) { ent = ent || {}; ent.marL = Number(ml[1]); }
+    var ind = /\\bindent="(-?\\d+)"/.exec(attrs);
+    if (ind) { ent = ent || {}; ent.indent = Number(ind[1]); }
+    var al = /\\balgn="(\\w+)"/.exec(attrs);
+    if (al) { ent = ent || {}; ent.algn = al[1]; }
+    if (/<a:buNone(\\s*\\/>|>[\\s\\S]*?<\\/a:buNone>)/.test(body)) { ent = ent || {}; ent.bullet = 'none'; }
+    if (ent) { out = out || []; out[i] = ent; }
+  }
+  return out;
+}
+window.__morphoParseLvlStyle = parseLvlStyle;
+
+/* 二つの階層既定を重ねる（over が勝つ）。両方 null なら null */
+function mergeLvlStyle(base, over) {
+  if (!base) return over || null;
+  if (!over) return base;
+  var out = [];
+  for (var i = 0; i < 9; i++) {
+    var b = base[i], o = over[i];
+    if (!b && !o) continue;
+    var e = {};
+    if (b) for (var k in b) e[k] = b[k];
+    if (o) for (var k2 in o) e[k2] = o[k2];
+    out[i] = e;
+  }
+  return out.length ? out : null;
 }
 
 /* レイアウト / マスターのプレースホルダ一覧（type, idx, frame）。
@@ -401,37 +489,73 @@ function parsePlaceholderFrames(xml) {
       type: type ? type[1] : null,
       idx: idx ? Number(idx[1]) : null,
       frame: parseXfrm(m[1]),
-      anchor: anchor
+      anchor: anchor,
+      lvlStyle: parseLvlStyle(m[1])
     });
   }
   return out;
 }
 window.__morphoParsePlaceholderFrames = parsePlaceholderFrames;
 
-/* プレースホルダの継承照合。タイトルは type で、本文は type か idx で照合し、
-   ctrTitle（Title Slide）はマスターに無いので title に落とす。
-   key（frame / anchor）が入っている要素だけを候補にする */
-function findInherited(phList, type, idx, key) {
-  var want = type === 'ctrTitle' ? 'title' : type;
-  for (var i = 0; i < phList.length; i++) {
-    if (phList[i][key] && phList[i].type === want) return phList[i][key];
+/* 日付・フッタ・スライド番号・ヘッダ・ノートのスライド画像。
+   本文ではないので「レイアウト内では」body へ落とさない
+   （落とすと Comparison の左見出し枠を拾う）。配列で持つのは
+   オブジェクトだと type="constructor" 等がプロトタイプ由来で真になるため */
+var PH_FURNITURE = ['dt', 'ftr', 'sldNum', 'hdr', 'sldImg'];
+function isFurniture(t) { return PH_FURNITURE.indexOf(t) >= 0; }
+
+/* プレースホルダの継承照合。
+   スライドの <p:ph idx> が指すのは「そのスライドのレイアウト」の枠なので、
+   idx はレイアウト内でだけ意味を持つ（same=true）。マスターは idx の名前空間が
+   別物（実測: レイアウトの dt は idx=10 / マスターの dt は idx=2）なので
+   type だけで照合する。ctrTitle（Title Slide）はレイアウトにしか無いので
+   マスターへ落ちるときだけ title に読み替える。
+   key（frame / anchor / lvlStyle）が入っている要素だけを答えにするが、
+   「枠はあるが値が無い」場合は type 照合へ流さず素通しして次の階層へ渡す */
+function findInherited(phList, type, idx, key, same) {
+  var wants = type === 'ctrTitle' ? ['ctrTitle', 'title'] : [type];
+  var want = wants[wants.length - 1];
+  /* 1. idx 優先。レイアウト内に閉じる */
+  if (same && idx !== null) {
+    var seen = false;
+    for (var i = 0; i < phList.length; i++) {
+      if (phList[i].idx !== idx) continue;
+      seen = true;
+      if (phList[i][key]) return phList[i][key];
+    }
+    /* その idx の枠は在るが値を持たない → 兄弟の枠ではなく上位階層へ */
+    if (seen) return null;
   }
-  if (idx !== null) {
+  /* 2. type 照合 */
+  for (var w = 0; w < wants.length; w++) {
     for (var j = 0; j < phList.length; j++) {
-      if (phList[j][key] && phList[j].idx === idx) return phList[j][key];
+      if (phList[j][key] && phList[j].type === wants[w]) return phList[j][key];
     }
   }
-  /* subTitle 等: type でも idx でも一致しなければ body に落とす */
-  if (want !== 'title') {
+  /* 3. subTitle 等の本文系は body に落とす。レイアウト照合のときだけ
+     日付・フッタ等の装飾枠を除く（マスターでも除くと、日付枠を持たない
+     テンプレートで frame が null になり図形がプレビューから消える。実測） */
+  if (want !== 'title' && !(same && isFurniture(want))) {
     for (var k = 0; k < phList.length; k++) {
       if (phList[k][key] && phList[k].type === 'body') return phList[k][key];
     }
   }
+  /* 4. 最後の手段の idx 照合。type を書かないマスター（<p:ph idx="1"/>）向けの保険。
+     pandoc 既定テンプレートでは一度も通らない（実測）。
+     日付・フッタ等の装飾枠は除く — これを許すとマスターの idx=2（日付枠）を拾う */
+  if (idx !== null && !isFurniture(want)) {
+    for (var m = 0; m < phList.length; m++) {
+      if (phList[m][key] && phList[m].idx === idx && !isFurniture(phList[m].type)) {
+        return phList[m][key];
+      }
+    }
+  }
   return null;
 }
-function findFrame(phList, type, idx) { return findInherited(phList, type, idx, 'frame'); }
-function findAnchor(phList, type, idx) { return findInherited(phList, type, idx, 'anchor'); }
+function findFrame(phList, type, idx, same) { return findInherited(phList, type, idx, 'frame', same); }
+function findAnchor(phList, type, idx, same) { return findInherited(phList, type, idx, 'anchor', same); }
 window.__morphoFindFrame = findFrame;
+window.__morphoFindAnchor = findAnchor;
 
 /* デッキ情報: 寸法・配色・既定の文字サイズ */
 function parseDeck(zip, dec) {
@@ -599,15 +723,37 @@ function parsePptx(u8) {
       if (!sh.frame) {
         /* 自前の座標が無ければ レイアウト → マスター の順で継承（実測どおり） */
         sh.frame =
-          findFrame(layoutPh, sh.placeholder, sh.phIdx) ||
-          findFrame(deck.masterPh, sh.placeholder, sh.phIdx);
+          findFrame(layoutPh, sh.placeholder, sh.phIdx, true) ||
+          findFrame(deck.masterPh, sh.placeholder, sh.phIdx, false);
+      }
+      /* プレースホルダ固有の階層既定: レイアウト → スライド自身の順に重ねる。
+         マスターは DeckInfo（titleSz / bodySz / bodyMarL …）が持つので
+         ここでは混ぜず、null のまま UI 側の既定へ落とす。
+         第 5 引数 true は「この phList はスライドの idx と同じ名前空間」の宣言で、
+         frame / anchor と同じ照合器に乗る（A-1/A-2 の修正がそのまま効く） */
+      sh.lvlStyle = mergeLvlStyle(
+        sh.placeholder
+          ? findInherited(layoutPh, sh.placeholder, sh.phIdx, 'lvlStyle', true)
+          : null,
+        sh.lvlStyle);
+      if (sh.lvlStyle) {
+        /* この図形が実際に使う階層までで切る（シーンは postMessage で
+           RN へ渡るので、使わない 9 階層ぶんを毎回運ばない） */
+        var mx = 0;
+        for (var pi = 0; pi < sh.paragraphs.length; pi++) {
+          if (sh.paragraphs[pi].level > mx) mx = sh.paragraphs[pi].level;
+        }
+        sh.lvlStyle = sh.lvlStyle.slice(0, Math.min(mx, 8) + 1);
+        var any = false;
+        for (var qi = 0; qi < sh.lvlStyle.length; qi++) if (sh.lvlStyle[qi]) any = true;
+        if (!any) sh.lvlStyle = null;
       }
       if (!sh.anchor) {
         /* 垂直アンカーも同じ継承。pandoc 既定ではタイトルがマスターの
            anchor="ctr" を継承する（実測） */
         sh.anchor =
-          findAnchor(layoutPh, sh.placeholder, sh.phIdx) ||
-          findAnchor(deck.masterPh, sh.placeholder, sh.phIdx);
+          findAnchor(layoutPh, sh.placeholder, sh.phIdx, true) ||
+          findAnchor(deck.masterPh, sh.placeholder, sh.phIdx, false);
       }
     }
     return {
@@ -615,6 +761,7 @@ function parsePptx(u8) {
       layout: layoutName(n),
       shapes: shapes,
       images: parsePics(xml),
+      tables: parseTables(xml),
       notes: notesFor(n)
     };
   });
@@ -632,13 +779,21 @@ function warnText(w) {
   return (w && (w.message || w.msg)) || JSON.stringify(w);
 }
 
-function classify(warnings, stderr) {
+/* extra は Morpho 自身が原稿から出した診断（段組みなど）。
+   pandoc は段組みの失敗にほとんど警告を出さない（62 通り中 32 通りが完全に無警告。
+   notes/column-input.md）ので、変換器の警告分類だけに頼っていては永久に届かない */
+function classify(warnings, stderr, extra) {
   var all = (warnings || []).map(warnText);
   if (stderr) {
     stderr.split(/\\r?\\n/).forEach(function (l) { if (l.trim()) all.push(l); });
   }
   var buckets = [];
   var byLabel = {};
+  (extra || []).forEach(function (d) {
+    if (byLabel[d.label]) { byLabel[d.label].count += 1; return; }
+    byLabel[d.label] = d;
+    buckets.push(d);
+  });
   all.forEach(function (text) {
     var rule = null;
     for (var i = 0; i < RULES.length; i++) {
@@ -953,6 +1108,9 @@ window.__morphoDecorateWebHtml = decorateWebHtml;
 window.__morphoDropNotesLua = DROP_NOTES_LUA;
 
 async function doConvertWeb(id, md, opts) {
+  /* 内容層の記法を pandoc の語彙へ実現する（原稿は書き換えない） */
+  var col = expandColumns(md);
+  md = col.md;
   var options = {
     from: READER,
     to: 'html',
@@ -980,7 +1138,7 @@ async function doConvertWeb(id, md, opts) {
     result: {
       kind: 'web',
       html: decorateWebHtml(html),
-      diagnostics: classify(res.warnings, res.stderr),
+      diagnostics: classify(res.warnings, res.stderr, col.diags),
       ms: ms,
       bytes: new Blob([html]).size
     }
@@ -1278,6 +1436,9 @@ window.__morphoParseDocx = parseDocx;
    CLAUDE.md 落とし穴 8: notes は docx へ無警告で溶けるため、書き出しと同じ
    Lua フィルタで除去してから解析する — プレビューと書き出しを一致させる */
 async function doConvertDoc(id, md, opts) {
+  /* 内容層の記法を pandoc の語彙へ実現する（原稿は書き換えない） */
+  var col = expandColumns(md);
+  md = col.md;
   var options = { from: READER, to: 'docx', 'output-file': 'out.docx' };
   if (opts.metadata && Object.keys(opts.metadata).length) options.metadata = opts.metadata;
   var files = {};
@@ -1308,7 +1469,7 @@ async function doConvertDoc(id, md, opts) {
       kind: 'doc',
       blocks: parsed.blocks,
       styles: parsed.styles,
-      diagnostics: classify(res.warnings, res.stderr),
+      diagnostics: classify(res.warnings, res.stderr, col.diags),
       ms: ms,
       bytes: buf.length
     }
@@ -1337,6 +1498,152 @@ window.__morphoSetTemplate = function (b64) {
     RN({ type: 'boot-error', message: 'template decode failed: ' + String((e && e.message) || e) });
   }
 };
+
+/* ---------- 段組み（+++ の列区切り） ----------
+   内容層の記法。原稿は書き換えず、pandoc へ渡す文字列だけを作る。
+   設計と実測は ../../../notes/column-input.md。
+
+   規則: スライド区間の中に区切りが 1 つでもあれば、その区間の本文まるごとを
+   列に割る（見出しと末尾の ::: notes は列の外）。「段組みの外に本文がある」
+   状態が原理的に作れないので、pandoc の「無警告で消える / スライドが割れる」を
+   構造的に回避する（実測）。
+
+   COL_SEP は src/text/columns.ts と同じ正規表現。ブリッジは WebView 用の
+   文字列なので import できず、二重に持っている。食い違うと原稿とプレビューで
+   列の切れ目がずれるので、scripts/check-columns.mjs が一致を検証している。 */
+var COL_SEP = /^[ \\t]*[+＋]([ \\t]*[+＋]){2,}[ \\t]*$/;
+var COL_H1 = /^#[ \\t]/;
+var COL_HR = /^ {0,3}([*_-])(?:[ \\t]*\\1){2,}[ \\t]*$/;
+var COL_CODE = /^ {0,3}(\`\`\`|~~~)/;
+var COL_NOTES_OPEN = /^[ \\t]*(?:>[ \\t]*)*:::+[ \\t]*(?:\\{[^}]*\\.notes[^}]*\\}|notes\\b)/;
+var COL_DIV_CLOSE = /^[ \\t]*(?:>[ \\t]*)*:::+[ \\t]*$/;
+var COL_DIV_ANY = /^[ \\t]*(?:>[ \\t]*)*:::+/;
+/* 段落 1 つぶんの画像 / パイプ表の先頭行 */
+var COL_IMAGE = /^[ \\t]*!\\[[^\\]]*\\]\\([^)]*\\)[ \\t]*$/;
+var COL_TABLE = /^[ \\t]*\\|/;
+
+/* 列の先頭ブロックの種別と、その後ろにブロックが続くか。
+   CLAUDE.md 落とし穴 13: 列の先頭が画像か表だと後続ブロックが全部消える */
+function colHead(colLines) {
+  var i = 0;
+  while (i < colLines.length && colLines[i].trim() === '') i++;
+  if (i >= colLines.length) return { kind: 'empty', more: false };
+  var kind = COL_IMAGE.test(colLines[i]) ? 'image'
+    : COL_TABLE.test(colLines[i]) ? 'table' : 'other';
+  var j = i;
+  while (j < colLines.length && colLines[j].trim() !== '') j++;
+  var more = false;
+  for (var k = j; k < colLines.length; k++) {
+    if (colLines[k].trim() !== '') { more = true; break; }
+  }
+  return { kind: kind, more: more };
+}
+
+function expandColumns(md) {
+  var lines = md.split('\\n');
+  var diags = [];
+  var segs = [];
+  var start = 0;
+  var inCode = false;
+  for (var i = 0; i < lines.length; i++) {
+    if (COL_CODE.test(lines[i])) { inCode = !inCode; continue; }
+    if (inCode) continue;
+    if (i > start && (COL_H1.test(lines[i]) || COL_HR.test(lines[i]))) {
+      segs.push([start, i]);
+      start = i;
+    }
+  }
+  segs.push([start, lines.length]);
+
+  var out = [];
+  for (var s = 0; s < segs.length; s++) {
+    var seg = lines.slice(segs[s][0], segs[s][1]);
+    var sepIdx = [];
+    var f = false;
+    var notes = 0;
+    for (var j = 0; j < seg.length; j++) {
+      if (COL_CODE.test(seg[j])) { f = !f; continue; }
+      if (f) continue;
+      if (COL_NOTES_OPEN.test(seg[j])) { notes++; continue; }
+      if (notes > 0) { if (COL_DIV_CLOSE.test(seg[j])) notes--; continue; }
+      if (COL_SEP.test(seg[j])) sepIdx.push(j);
+    }
+    if (!sepIdx.length) { out = out.concat(seg); continue; }
+
+    var head = 0;
+    while (head < seg.length &&
+      (seg[head].trim() === '' || COL_H1.test(seg[head]) || COL_HR.test(seg[head]))) head++;
+    /* 末尾の ::: notes ブロックは列の外へ出す。閉じ柵から遡って開き柵を探す
+       （中身の行で止まらないこと。別の柵に当たったら notes ではないので諦める） */
+    var tail = seg.length;
+    var e = seg.length - 1;
+    while (e >= 0 && seg[e].trim() === '') e--;
+    if (e >= 0 && COL_DIV_CLOSE.test(seg[e])) {
+      for (var t = e - 1; t >= 0; t--) {
+        if (COL_NOTES_OPEN.test(seg[t])) { tail = t; break; }
+        if (COL_DIV_ANY.test(seg[t])) break;
+      }
+    }
+    var body = seg.slice(head, tail);
+    var rel = [];
+    for (var r = 0; r < sepIdx.length; r++) {
+      var v = sepIdx[r] - head;
+      if (v >= 0 && v < body.length) rel.push(v);
+    }
+    if (!rel.length) { out = out.concat(seg); continue; }
+
+    var cols = [];
+    var prev = 0;
+    for (var c = 0; c < rel.length; c++) { cols.push(body.slice(prev, rel[c])); prev = rel[c] + 1; }
+    cols.push(body.slice(prev));
+
+    /* 展開してはいけない形。展開すると後続が無警告で消えるので、
+       そのまま（1 段のまま）渡して診断を出す。内容の順序は変えない */
+    var unsafe = null;
+    for (var u = 0; u < cols.length; u++) {
+      var h = colHead(cols[u]);
+      if ((h.kind === 'image' || h.kind === 'table') && h.more) { unsafe = h.kind; break; }
+    }
+    if (unsafe) {
+      var what = unsafe === 'image' ? '画像' : '表';
+      diags.push({
+        kind: 'design',
+        label: what + 'の後ろの内容が消えるため段組みにしませんでした',
+        hint: what + 'を列の最後に置くか、*** で別のスライドにしてください',
+        text: '列の先頭が' + what + 'で、その後ろに内容が続いています',
+        count: 1
+      });
+      /* 段組みにはしないが、区切りは内容ではなく記法なので消費する。
+         残すと本文に生の +++ が出る（実測）。空行に置き換えて段落の切れ目は保つ */
+      for (var y = 0; y < seg.length; y++) if (COL_SEP.test(seg[y])) seg[y] = '';
+      out = out.concat(seg);
+      continue;
+    }
+
+    if (cols.length > 2) {
+      diags.push({
+        kind: 'design',
+        label: '3 列目以降はスライドに出ません',
+        hint: 'スライドは 2 列までです（Web 書き出しでは ' + cols.length + ' 列とも出ます）',
+        text: cols.length + ' 列の段組みがあります',
+        count: 1
+      });
+    }
+
+    out = out.concat(seg.slice(0, head));
+    out.push('::: {.columns}');
+    for (var q = 0; q < cols.length; q++) {
+      out.push('::: {.column}');
+      var inner = cols[q].join('\\n').replace(/^\\n+|\\n+$/g, '');
+      if (inner) out = out.concat(inner.split('\\n'));
+      out.push(':::');
+    }
+    out.push(':::');
+    out = out.concat(seg.slice(tail));
+  }
+  return { md: out.join('\\n'), diags: diags };
+}
+window.__morphoExpandColumns = expandColumns;
 
 /* ルビ・傍点フィルタを配線する（全形式で常時有効。出し分けはフィルタ内の FORMAT） */
 function wireRuby(options, files) {
@@ -1423,6 +1730,9 @@ async function doConvert(id, md, opts, format) {
     opts = opts || {};
     if (format === 'web') { await doConvertWeb(id, md, opts); return; }
     if (format === 'doc') { await doConvertDoc(id, md, opts); return; }
+    /* 内容層の記法を pandoc の語彙へ実現する（原稿は書き換えない） */
+    var col = expandColumns(md);
+    md = col.md;
     var options = {
       from: READER,
       to: 'pptx',
@@ -1455,7 +1765,7 @@ async function doConvert(id, md, opts, format) {
         slideCount: parsed.slideCount,
         slides: parsed.slides,
         deck: parsed.deck,
-        diagnostics: classify(res.warnings, res.stderr),
+        diagnostics: classify(res.warnings, res.stderr, col.diags),
         ms: ms,
         bytes: buf.length
       }
@@ -1477,6 +1787,9 @@ async function doExport(id, md, opts, format) {
   try {
     if (!pandoc) throw new Error('converter is not ready yet');
     opts = opts || {};
+    /* 内容層の記法を pandoc の語彙へ実現する（原稿は書き換えない） */
+    var col = expandColumns(md);
+    md = col.md;
     var name = 'out.' + format;
     var options = {
       from: READER,
@@ -1544,7 +1857,7 @@ async function doExport(id, md, opts, format) {
         base64: base64,
         bytes: out.size,
         ms: ms,
-        diagnostics: classify(res.warnings, res.stderr)
+        diagnostics: classify(res.warnings, res.stderr, col.diags)
       }
     });
   } catch (e) {

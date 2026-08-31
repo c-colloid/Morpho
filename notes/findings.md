@@ -22,6 +22,16 @@ YAML メタデータブロックとして解釈されたもの。デスクトッ
 手元の pandoc 3.1.3 では 64 枚。差分 12 枚の内訳は「表の後ろのスライド分割 11枚」と
 「末尾の Notes スライド 1枚」と推定される。要確認。
 
+**追記（2026-08-31・決着）:** pandoc-wasm 1.1.0 に入っている **3.10** で同じ入力を
+アプリと同じ経路（front matter を剥がして `options.metadata` で渡す）に通すと **64 枚**で、
+3.1.3 と一致する。推定した 2 つの原因も 3.10 で健在:
+
+- 表の後ろの段落は独立スライドになる（「表 → 段落」= 2 枚 / 「段落 → 表」= 1 枚）
+- 脚注は末尾の "Notes" スライドへ集約される（本文には `[1]` の参照が残る）
+
+つまり **52 枚は 3.10 では再現しない**。版の特定できない観測として扱い、
+CLAUDE.md の落とし穴 5・6 は「3.1.3 / 3.10 で確認」に書き換えた。
+
 RawBlock 警告（HTML コメント）が1件出たが、変換自体は成功。
 
 ## 4. reference-doc → 検証中
@@ -201,8 +211,77 @@ splitFrontMatter 自体は原稿に忠実なまま — ノート編集・改行�
 教訓: pptx の検証は Open XML SDK 系（npm: @ooxml-tools/validate）でないと
 PowerPoint の判定を代弁できない。
 
+## 11. 段組みと画像配置の実挙動 — pandoc 3.10 で全部測った
 
-## 11. フッター（出典・注釈）の実測 — 設計は `notes/footer-design.md`
+`notes/columns-and-images.md` の設計の土台。pandoc-wasm 1.1.0（= pandoc 3.10）を
+Node から回した実測。**実機 iPad / PowerPoint / Word での見え方は未検証。**
+
+### 段組み（`::: {.columns}`）
+
+pptx は Two Content レイアウトに載せ、`<p:ph idx="1" sz="half"/>` /
+`<p:ph idx="2" sz="half"/>` の 2 枠を出す。`spPr` は空でレイアウト継承。
+
+**割れる。** 同じ見出しの下に段組み以外のブロックがあるとスライドが分かれる
+（見出し+段組みのみ = 1枚 / +導入 = 2枚 / +後続 = 2枚 / 段組み×2 = 2枚 /
+段組み+`::: notes` = 1枚）。非 INFO の警告はゼロ。
+`slideSegments` の区間数はどれも 1 なので、**一致するのは 2 形だけ**。
+
+**消える。** 3 列目は `BlockNotRendered`（verbosity=INFO）1 件だけ残して消える。
+波括弧なしの 2 語（`::: columns compare`）は Title and Content に落ちて**警告ゼロで段組みが消える**。
+波括弧つき（`::: {.columns .compare}`）なら段組みになる。
+
+**幅は効かない。** `width=` を 4 通り（なし / 40:60 / 10:90 / 1in:3in）試して
+slide1.xml の sha256 が完全一致。列幅はレイアウト（reference-doc）が決める。
+
+形式ごとの落ち方: pptx = 2 列まで・幅無視 / docx = **痕跡ゼロ**（`w:cols` も `w:tbl` も
+出ず左→右に流れる・警告ゼロ）/ html = `<div class="columns">` と `style="width:40%"` が残り、
+pandoc 既定 CSS の `div.columns{display:flex; gap:1.5em;}` で**素で 2 段になる**。
+
+### 画像の配置は pandoc が全部決めている
+
+400×200 と 300×900 の PNG で実測（スライドは 9144000×5143500 EMU = 10×5.625 in・16:9）。
+
+| 原稿 | レイアウト | 枚数 | 画像 |
+|---|---|---|---|
+| 画像のみ（横長） | Title and Content | 1 | (1.29, 1.31) 7.42×3.71 in |
+| 画像のみ（縦長） | Title and Content | 1 | (4.39, 1.31) 1.24×3.71 in |
+| キャプションあり | Title and Content | 1 | (1.85, 1.31) 6.31×3.15 in |
+| 本文 → 画像 | **Content with Caption** | 1 | (3.90, 1.22) 5.58×2.79 in（本文が左・画像が右） |
+| 画像 → 本文 | Title and Content ×2 | **2** | 割れる |
+| 画像 ×2 | Title and Content ×2 | **2** | 割れる |
+| 段組みの左右に画像 | Two Content | 1 | 左 (0.50, 2.06) / 右 (5.44, 1.31) |
+
+- 単独の画像は本文枠に**高さ基準**で収まり水平中央。列の中では**幅基準**で収まり垂直中央
+- `{width=50%}` `{width=1in}` は無視される（`<a:ext>` が 1 EMU も変わらない）
+- **テキストと画像を意図して並べるなら段組みが正解**（「本文 → 画像」の順だけが
+  Content with Caption を引き当て、逆順は 2 枚に割れる）
+
+### 照合キーの穴
+
+`![](a.png "図のタイトル")` は `descr="図のタイトル\n\na.png"` になり、
+同じ画像を左右の列に置くと `<p:pic>` が 2 つとも `descr="a.png"` `id="0"` で完全に同一。
+**ファイル名だけでは一意にならない** → 「descr の最終行 + spTree の出現順」で照合する。
+
+### プレースホルダ継承の落とし穴（Morpho 側のバグの原因）
+
+```
+slideMaster1   title=ctr / body idx1=(anchor なし) / dt idx2 sz="half" anchor="ctr"
+Two Content    body idx1 x=457200 / body idx2 x=4648200（どちらも anchor なし）
+Comparison     body idx1 x=457200 anchor=b / body idx3 x=4645026 anchor=b（type="body" が 2 つ）
+lstStyle lvl1  master title=3300 body=2400 ／ Two Content=2100 ／ Comparison=1800
+               ／ Content with Caption title=1500 body#2=1050 ／ Section Header title=3000
+```
+
+- **マスターとレイアウトで `idx` の名前空間が違う。** 越境して照合すると
+  段組みの右列がマスターの日付枠（`idx=2` anchor=ctr）を拾う
+- **`type="body"` が 2 つあるレイアウトがある。** type を idx より先に照合すると
+  Comparison の右見出しが左見出しの座標を取り、文字が重なる
+- **字サイズはレイアウト固有の `lstStyle` にもある。** マスターの 1 組だけ読むと、
+  段組みの本文が 14% 大きく、Content with Caption のタイトルが 2.2 倍で描かれる
+- **`sz="half"` は「列である」の印ではない。** 列でないもの（Content with Caption の
+  本文枠）にも付き、列なのに付かないもの（Comparison の左見出し）もある
+
+## 12. フッター（出典・注釈）の実測 — 設計は `notes/footer-design.md`
 
 「出典や注釈を小さくかけるフッター」の設計にあたって、pandoc-wasm 1.1.0（3.10 相当）の
 実出力を 8 方向から測った。結論と設計は `notes/footer-design.md`、再現は
@@ -244,14 +323,11 @@ OOXML 後処理で「pandoc が実際に置いたスライド」を読む。
 
 ### ついでに見つかった既存の不具合（未修正）
 
-1. **文書全体の設定（文字サイズ・テンプレート配線盤）が典型的な原稿で開けない。**
-   `DecorSheet` の入口が `contentIndexOf` を通り、`slideCount - titleOffset` と
-   `slideSegments(body).length` が一致しないと Alert で止まる。`#` の下に `##` を置く
-   普通の階層構造では必ず発火する（15 行の原稿で 6 対 2、benchmark で 63 対 8）
-2. **`designFile.ts` の `sanitizeDecorText` が 3 つ同時に壊れている。**
+1. **`designFile.ts` の `sanitizeDecorText` が 3 つ同時に壊れている。**
    U+FFFE を素通しし（注入した pptx がスキーマ検証 1 件になる）、XML 1.0 で合法な
    U+007F を落とし、20 字で切る。`frontMatter.ts` の `XML_INVALID_RE` と共通化すべき
-3. **`titleOffset = metadata.title ? 1 : 0` が誤り。** 表紙は `author` / `subtitle` / `date`
+2. **`titleOffset = metadata.title ? 1 : 0` が誤り。** 表紙は `author` / `subtitle` / `date`
    のどれか単独でも生える
-4. **表紙の日付が 24pt で描かれている。** `dt` は `isTitle` / `isCover` / `isSub` の
+3. **表紙の日付が 24pt で描かれている。** `dt` は `isTitle` / `isCover` / `isSub` の
    どれにも当たらず `bodySz[0]` になるが、枠の高さは 21.6pt
+

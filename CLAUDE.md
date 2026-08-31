@@ -40,7 +40,7 @@
 | エディタはネイティブのテキスト入力を使う | iPad の日本語 IME 対応。同時に pandoc がスレッドを止める問題も解決する（webview は別プロセス）。Mac が無いため実装は React Native（`TextInput` の実体は `UITextView`）|
 | WKWebView は不可視の計算エンジンとして使う | Markdown を渡すと描画用の JSON を返す。描画はネイティブ側 |
 | wasm の配信は `WKURLSchemeHandler` | `file://` + `instantiateStreaming` は CORS で失敗する。localhost サーバは不要 |
-| pandoc のバージョンは固定して同梱 | 3.1.3 → 3.9 で同一入力のスライド数が 64 → 52 に変化した。差し替えると過去の資料の構成が変わる |
+| pandoc のバージョンは固定して同梱 | 版によって同一入力のスライド数が変わる。差し替えると過去の資料の構成が変わる（下記） |
 | **配布形態はネイティブアプリ。PWA は採用しない** | **製品の主役はエディタ。Safari は File System Access API 非対応（OPFS のみ）で iCloud Drive の .md を開いて上書き保存できず、日本語 IME も web の textarea では実用に耐えない。この2点がエディタの中心を直撃する** |
 | **変換器は差し替え可能なプロトコルの裏に置く** | **pandoc は主役ではなくバックエンド。GPL の結論次第で MIT の自前 writer に交換する余地を残す** |
 
@@ -150,17 +150,22 @@ Comparison / Content with Caption / Blank
 （`docs/index.html` に加えて、アプリ本体にも 0.11.0 で実装済み —
 `app/src/design/template.ts` の配線盤。原本は書き換えず、変換直前に適用）。
 
-### 5. 表の後ろにコンテンツがあるとスライドが分割される（pandoc 3.1.3 / **3.10 でも健在**）
+### 5. 表の後ろにコンテンツがあるとスライドが分割される（3.1.3 / 3.10 で確認）
 
 表がコンテンツプレースホルダを占有するため、後続ブロックがタイトルなしの独立スライドになる。
-「pandoc 3.9 で解消されている可能性」と書いていたが、**pandoc-wasm 1.1.0（3.10 相当）で未解消**。
-表の直後に段落を1つ置くだけでスライドが1枚増える（実測）。表より前に置けば増えない。
-`notes/footer-design.md`「実測で確定した事実 3」。
+**3.10 でも解消していない**（実測: 「表 → 段落」は 2 枚に割れ、2 枚目はタイトルなし。
+順序を逆にした「段落 → 表」は 1 枚に収まる）。
+フッターの目印を見出しへ巻き上げる理由もこれ（`notes/footer-design.md`）。
 
-### 6. 脚注は末尾の "Notes" スライドに集約される（pandoc 3.1.3 / **3.10 でも健在**）
+`fixtures/pptx-benchmark.md` は 3.1.3 と 3.10 のどちらでも **64 枚**（front matter を剥がして
+`options.metadata` で渡すアプリと同じ経路で実測。本文だけなら表紙が減って 63 枚）。
+以前ここに書いていた「3.9 で 52 枚」は 3.10 では再現しないので、版の特定できない観測として扱う。
 
-**未解消。** `fixtures/pptx-benchmark.md` では著者が一度も書いていない 64 枚目
-"Notes" スライドが生える（実測）。**無警告のデータロス。** lint の対象。
+### 6. 脚注は末尾の "Notes" スライドに集約される（3.1.3 / 3.10 で確認）
+
+**3.10 でも健在**（実測: 本文に `[1]` の参照が残り、末尾に "Notes" というタイトルの
+スライドが 1 枚増えて脚注本文がそこへ入る）。データは消えないが、
+書き手が意図しない場所へ移動する。docx では footnotes.xml に隔離される（文書プレビューは実装済み）。
 
 ### 7. HTML コメントが RawBlock 警告を出す
 
@@ -198,9 +203,86 @@ U+000B（垂直タブ。ページ上は改行に見える）。
 検証には Open XML SDK 移植の `@ooxml-tools/validate`（npm）が使える。
 PowerPoint の判定に最も近く、この問題を実際に検出できた唯一の検証器。
 
+### 10. 段組み（`::: {.columns}`）はスライドを割る
+
+pptx ライターは段組みを Two Content レイアウトに載せるが、**同じ見出しの下に段組み以外の
+ブロックがあると、そこでスライドが割れる**（非 INFO の警告はゼロ）。実測（3.10）:
+
+| 原稿 | 枚数 |
+|---|---|
+| 見出し + 段組みのみ | **1 枚**（Two Content・タイトルあり） |
+| 見出し + 段組み + `::: notes` | **1 枚** |
+| 見出し + 導入 + 段組み | 2 枚 |
+| 見出し + 段組み + 後続 | 2 枚 |
+| 見出し + 段組み + 段組み | 2 枚 |
+
+Morpho は `slideSegments`（境界は行頭 `# ` と水平線）でカーソル位置とスライドを対応させているので、
+割れると対応が崩れ、`contentIndexOf` が **文書全体で** null を返して編集機能が止まる。
+
+**対処:** 段組みはスライド区間の中で（見出しと末尾の `::: notes` を除いて）
+唯一のブロックにする。UI から挿入するときは `***` で隔離する。
+
+### 11. 3 列目以降は INFO 相当の警告だけで消える
+
+`.column` を 3 つ書くと先頭 2 列しか出力されず、3 列目は消える。残る痕跡は
+`{"type":"BlockNotRendered","verbosity":"INFO","pretty":"Not rendering Div (\"\",[\"column\"],[])…"}` の 1 件だけ。
+
+同じ形の消え方をする記法がもう一つある。**波括弧なしの 2 語は段組みにならない**:
+
+```
+::: columns              → Two Content（段組みになる）
+::: columns compare      → Title and Content（段組みが消える・警告ゼロ）
+::: {.columns .compare}  → Two Content（段組みになる）
+```
+
+同じく**痕跡なく消える**ものがもう一つ。`+ + +`（間に空白のある 3 つの `+`）は
+本文から行ごと消える（警告ゼロ。実測）。`+++`（空白なし）はただの段落として残るので、
+**空白の有無で「残る」と「消える」が入れ替わる**。
+
+**対処:** 意味クラスを重ねるときは必ず波括弧を使う。3 列超過は変換器の警告分類で
+「要対応」へ格上げする（既定では下の表のどれにも一致せず「その他の警告 / 情報」に落ちる）。
+そもそも段組みの入力に pandoc ネイティブ記法を使わせない —
+Morpho は `+++`（列区切り）を内容層に持つ（`notes/column-input.md`）。
+
+### 12. pptx は列幅も画像サイズも原稿の指定を見ない
+
+- `::: {.column width="40%"}` を 4 通り（指定なし / 40%:60% / 10%:90% / 1in:3in）で試して、
+  **slide1.xml の sha256 が完全に一致した**。列幅はレイアウト（reference-doc）が決める
+- 画像の `{width=50%}` `{width=1in}` も同じく無視される（`<a:ext>` が 1 EMU も変わらない）
+
+同じ記法が形式ごとに別の結果になる:
+
+| 形式 | `::: {.columns}` |
+|---|---|
+| pptx | Two Content（2 列まで）。`width=` は無視 |
+| docx | **痕跡ゼロ**。`w:cols` も `w:tbl` も出ず、左→右に段落が並ぶだけ。**警告ゼロ** |
+| html | `<div class="columns"><div class="column" style="width:40%;">` が出る。pandoc 既定 CSS が `div.columns{display:flex; gap:1.5em;}` を持つので**素で 2 段になり `width=` も効く** |
+
+**対処:** 寸法は原稿ではなくテーマ層（レイアウト枠）に置く。
+設計は `notes/columns-and-images.md`。
+
+### 13. 列の先頭が画像か表だと、その列の後続ブロックが消える
+
+段組みの列（`.column`）の中で、**先頭のブロックが画像または表**だと、
+その後ろのブロックが段落・箇条書き・画像・表を問わず**すべて出力から消える**（実測）。
+
+| 列の中身 | 結果 | 痕跡 |
+|---|---|---|
+| 画像 → 段落 / 箇条書き / 画像 | 後続が消える | INFO 3 件のみ |
+| 表 → 段落 | 後続が消える | **警告ゼロ**（INFO も出ない） |
+| 段落 → 画像 / 表 | 両方残る（Comparison が選ばれる） | — |
+
+列にはスライドを割って逃げる先が無いのが原因。
+段組みでない普通のスライドなら、同じ並びは 2 枚に割れて内容は残る（落とし穴 5 と同型）。
+つまり**段組みにした瞬間に「割れる」が「消える」へ変わる**。
+
+**対処:** 変換前に原稿を見て「列の先頭ブロックが画像または表で、かつ後続がある」を
+検出したら**段組みに展開せず**、要対応の診断を出す。順序を入れ替えて逃げてはいけない
+（変換器が内容の順序を変えるのは三層分離違反）。設計は `notes/column-input.md`。
+
 ---
 
-### 10. pptx ライターは raw openxml を素通しする — FORMAT ガードが無いと docx へ漏れる
+### 14. pptx ライターは raw openxml を素通しする — FORMAT ガードが無いと docx へ漏れる
 
 `RawBlock('openxml', …)` は `<p:spTree>` 直下へ、`RawInline` は `<a:p>` 内の run として
 そのまま出力される（pptx ライターの表現力ではなく OOXML の表現力が上限になる）。
@@ -208,7 +290,7 @@ PowerPoint の判定に最も近く、この問題を実際に検出できた唯
 無警告で注入される**（html は INFO 警告で捨てるだけ）。Lua では必ず
 `if FORMAT ~= 'pptx' then … end` で分岐する。検査は pptx ではなく docx / html 側に置く。
 
-### 11. docx の `custom-style` は styleId ではなく表示名で照合される
+### 15. docx の `custom-style` は styleId ではなく表示名で照合される
 
 `::: {custom-style="X"}` の X は `<w:name w:val>`（表示名・大文字小文字は無視）と突き合わされる。
 styleId で書くと既存スタイルに当たらず、**同じ styleId を持つ2つ目の `w:style` が生成される**。
@@ -216,14 +298,14 @@ styleId で書くと既存スタイルに当たらず、**同じ styleId を持�
 「小さい文字」にはならない（既定 reference.docx で本文 12pt より小さい段落スタイルは
 `Abstract` / `AbstractTitle` の 10pt だけ）。
 
-### 12. `pandoc.utils.stringify` は RawInline を空文字として捨てる
+### 16. `pandoc.utils.stringify` は RawInline を空文字として捨てる
 
 `ruby.lua` の後ろに stringify を使うフィルタを置くと、**docx でルビ・圏点が無警告で消える**。
 pptx ではルビが `Str` / `Strong` に落ちるため再現せず、pptx のテストだけでは絶対に検出できない。
 inline を保つなら `pandoc.utils.blocks_to_inlines` を使う。
 なお `PANDOC_WRITER_OPTIONS.slide_level` は nil で、Lua から実効スライドレベルは読めない。
 
-### 13. Lua フィルタの診断は `pandoc.log.warn` でしか届かない
+### 17. Lua フィルタの診断は `pandoc.log.warn` でしか届かない
 
 `io.stderr:write` はホストのコンソールへ `[WASI stderr] …` として出るだけで、
 **`result.stderr` は空文字列のまま**（実測）。アプリの `classify` には何も渡らない。
@@ -238,6 +320,7 @@ inline を保つなら `pandoc.utils.blocks_to_inlines` を使う。
 |---|---|---|
 | `not found in resource path` | 致命的 | 変換が停止し出力が生成されない |
 | `Couldn't find layout named` | 要対応 | デザインが崩れる |
+| `BlockNotRendered` / `Not rendering Div` | 要対応 | 3 列目の消滅など**無警告に近いデータロス**。既定の分類表に無いので落ちてくる（要追加） |
 | `Not rendering RawBlock` | 情報 | 多くは HTML コメント。無視してよい |
 
 ---
@@ -344,10 +427,15 @@ App Extension のメモリ上限は約 120 MB（後述）。
 （WASM 上の Lua フィルタは検証済み → `notes/findings.md` 6。
 日本語の gsub も動くが、否定文字クラスはバイト単位で壊れるので遅延量指定子を使う）
 
-（「表の後ろのスライド分割」と「脚注の Notes スライド」は**どちらも 3.10 で未解消**と
-確定した → 落とし穴 5・6 を更新。`app/scripts/dump-footer.mjs`）
-
+- `to: 'pdf'` が wasm で原理的に可能か（1 回の実験で確定させる。`notes/preview-formats.md` の宿題）
 - Typst 経由の日本語 PDF（CJK フォントを WASM FS に配置する必要がある）— 優先度低
+- 後処理（装飾注入・OOXML 書き換え）を含む端から端までの遅延。47 ms は pandoc の変換時間のみ
+- 起動時の wasm 取得がオフラインでどうなるか（永続キャッシュが無い。README の「初回のみ」は未確認）
+
+（「表の後ろのスライド分割」と「脚注の行き先」は**決着した** → 落とし穴 5・6。
+どちらも 3.10 で健在。使っている pandoc は pandoc-wasm 1.1.0 に入っている **3.10**
+（wasm バイナリ中の `pandoc-3.10`。README の「1.0.0 は 3.9」から上がっている）。
+段組みと画像配置まわりの残件は `notes/columns-and-images.md` の「リスクと未検証」）
 
 （「自作テンプレートで reference-doc が実際に効くか」は**検証済み・効く**。
 pandoc.wasm でもテーマ色が出力へ引き継がれ、和名レイアウトは警告つきで
@@ -438,7 +526,7 @@ GPL と App Store 利用規約（デバイス数制限・DRM）の非互換は�
 |---|---|---|
 | ライセンス | GPL-2.0+ | MIT |
 | サイズ | 55.9 MB | 数百 KB |
-| 既知の落とし穴 | 7件を回避する必要がある | 最初から持たない |
+| 既知の落とし穴 | 13件を回避する必要がある | 最初から持たない |
 | docx / epub 等 | 無料で付いてくる | 別途実装 |
 | 実装量 | ほぼゼロ | 数ヶ月 |
 
@@ -498,6 +586,12 @@ app/                                 アプリ本体（React Native + Expo）
 docs/index.html                      GitHub Pages で公開する検証ハーネス
 fixtures/pptx-benchmark.md           50枚規模のテストデッキ（自己診断型）
 notes/findings.md                    検証の経緯
+notes/status-and-plan.md             現在地と残りの計画（棚卸し）
+notes/roadmap-pptx.md                三層分離と「飾る力」の中期計画
+notes/preview-formats.md             プレビューの形式切り替え
+notes/columns-and-images.md          段組みと画像配置の設計
+notes/v014-foundation.md             v0.14 の土台修理（設計と検証）
+notes/column-input.md                段組みの入力（+++ の記法）
 notes/footer-design.md               フッター（出典・注釈）の設計と検証
 scripts/init.sh                      Pages 有効化と基準出力の再生成
 ```

@@ -27,6 +27,9 @@ import {
   setFrontMatterValue,
   splitFrontMatter,
 } from '../converter/frontMatter';
+import { insertBlock } from '../text/blockInsert.ts';
+import { COLUMN_SEPARATOR_TEXT } from '../text/columns.ts';
+import { findSplitSuspects } from '../preview/slideSync.ts';
 import { usePandocConverter } from '../converter/usePandocConverter';
 import { WebView } from 'react-native-webview';
 
@@ -270,6 +273,9 @@ export default function EditorScreen() {
 
   const onChangeSource = useCallback(
     (text: string) => {
+      /* 直後に flushSave() を呼ぶ経路（画像挿入）があるので、レンダーを待たずに
+         ここで ref も進める。レンダー時に同じ値が再代入されるので冪等 */
+      sourceRef.current = text;
       setSource(text);
       dirtyRef.current = true;
       setSaveState({ kind: 'editing' });
@@ -277,6 +283,28 @@ export default function EditorScreen() {
       saveTimer.current = setTimeout(() => void flushSave(), SAVE_MS);
     },
     [flushSave],
+  );
+
+  /* front matter を保ったまま本文だけ差し替える。
+     原稿へ書き戻す操作（画像挿入・ノート編集・改行編集）はすべてここを通す */
+  const patchBody = useCallback(
+    (nextBody: string, nextCursor?: number) => {
+      const src = sourceRef.current;
+      const { body } = splitFrontMatter(src);
+      onChangeSource(src.slice(0, src.length - body.length) + nextBody);
+      /* エディタは非制御なので、プログラム的な差し替えは remount で画面へ反映する */
+      setEditorEpoch((e) => e + 1);
+      /* remount 後の TextInput は選択位置を持たない。挿し込んだ直後だけ戻す
+         （handleSelectSlide と同じ作法。focus してから1フレーム置く） */
+      if (nextCursor !== undefined) {
+        const input = editorRef.current;
+        if (input) {
+          input.focus();
+          requestAnimationFrame(() => editorRef.current?.setSelection(nextCursor, nextCursor));
+        }
+      }
+    },
+    [onChangeSource],
   );
 
   /* ---------- 文書デザインデータ（装飾。三層分離の第3層） ---------- */
@@ -482,6 +510,9 @@ export default function EditorScreen() {
   const handleInsertImage = useCallback(async () => {
     const id = activeIdRef.current;
     if (!id) return;
+    /* ピッカーを開いている間の差し替えを見張る基準 */
+    const baseSource = sourceRef.current;
+    const baseCursor = cursorRef.current;
     try {
       const picked = await DocumentPicker.getDocumentAsync({
         type: ['public.image', 'image/*'],
@@ -494,25 +525,36 @@ export default function EditorScreen() {
         encoding: FileSystem.EncodingType.Base64,
       });
       const name = await saveAsset(id, asset.name ?? 'image.png', b64);
-      /* カーソル位置に参照を差し込む。行の途中なら前後に改行を足す。
-         front matter の中・手前には入れない（メタデータを壊す） */
-      const src = sourceRef.current;
-      const fmLen = src.length - splitFrontMatter(src).body.length;
-      const at = Math.min(Math.max(cursorRef.current, fmLen), src.length);
-      const before = src.slice(0, at);
-      const after = src.slice(at);
-      const insert =
-        (before === '' || before.endsWith('\n') ? '' : '\n') +
-        '![](' + name + ')' +
-        (after.startsWith('\n') || after === '' ? '' : '\n');
-      const next = before + insert + after;
-      onChangeSource(next);
-      setEditorEpoch((e) => e + 1);
+      /* ピッカーを開いている間に原稿が差し替わるとカーソル位置は無意味になる
+         （外部ファイルの取り込みが AppState 'active' で走る経路がある）。
+         改行編集と同じ楽観ロックで中止する。画像は保存済みなので名前を伝える */
+      if (activeIdRef.current !== id || sourceRef.current !== baseSource) {
+        Alert.alert(
+          '画像を挿入できませんでした',
+          '選んでいる間に原稿が変わりました。原稿に ![](' + name + ') と書けば使えます',
+        );
+        return;
+      }
+      /* 位置決めは純関数へ。フェンス行を割らず、必ず単独の段落として入れる */
+      const { body } = splitFrontMatter(baseSource);
+      const fmLen = baseSource.length - body.length;
+      const r = insertBlock(body, baseCursor - fmLen, '![](' + name + ')');
+      patchBody(r.body, fmLen + r.cursor);
       await flushSave();
     } catch (e) {
       Alert.alert('画像を挿入できませんでした', String(e instanceof Error ? e.message : e));
     }
-  }, [flushSave]);
+  }, [flushSave, patchBody]);
+
+  /* 段組み（`+++` の列区切り）を入れる。1 行なので位置決めだけ blockInsert に任せる。
+     記法そのものは notes/column-input.md。書き手が手で `+++` と打っても同じ */
+  const handleInsertColumn = useCallback(() => {
+    const src = sourceRef.current;
+    const { body } = splitFrontMatter(src);
+    const fmLen = src.length - body.length;
+    const r = insertBlock(body, cursorRef.current - fmLen, COLUMN_SEPARATOR_TEXT);
+    patchBody(r.body, fmLen + r.cursor);
+  }, [patchBody]);
 
   /* ---------- 更新チェック（起動時に1回・失敗は黙って無視） ---------- */
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
@@ -1017,17 +1059,6 @@ export default function EditorScreen() {
   const [notesSheet, setNotesSheet] = useState<{ ci: number; text: string } | null>(null);
   const [breakSheet, setBreakSheet] = useState<EditableBlock | null>(null);
 
-  /* front matter を保ったまま本文だけ差し替える */
-  const patchBody = useCallback(
-    (nextBody: string) => {
-      const src = sourceRef.current;
-      const { body } = splitFrontMatter(src);
-      onChangeSource(src.slice(0, src.length - body.length) + nextBody);
-      /* エディタは非制御なので、プログラム的な差し替えは remount で画面へ反映する */
-      setEditorEpoch((e) => e + 1);
-    },
-    [onChangeSource],
-  );
 
   /* front matter を含めて原稿ごと差し替える（フッターの 1 行書き換えが使う） */
   const patchSource = useCallback(
@@ -1045,28 +1076,65 @@ export default function EditorScreen() {
    * 原稿の区間数と食い違うと対応が取れないので、その場合は null を返して
    * 呼び出し側で編集を止める（誤った区間への書き込みを防ぐ）。
    */
-  const contentIndexOrNull = useCallback((slideIndex: number): number | null => {
-    const { metadata, body } = splitFrontMatter(sourceRef.current);
-    const titleOffset = metadata.title !== undefined ? 1 : 0;
-    const slideCount = resultRef.current?.slideCount ?? 0;
-    if (slideCount - titleOffset !== slideSegments(body).length) return null;
-    return slideIndex - titleOffset;
-  }, []);
-
-  /** 原稿へ書き戻す操作（ノート・改行）用。対応が取れないときは知らせて止める */
   const contentIndexOf = useCallback(
     (slideIndex: number): number | null => {
-      const ci = contentIndexOrNull(slideIndex);
-      if (ci === null) {
+      const { metadata, body } = splitFrontMatter(sourceRef.current);
+      const titleOffset = metadata.title !== undefined ? 1 : 0;
+      const slideCount = resultRef.current?.slideCount ?? 0;
+      const segs = slideSegments(body).length;
+      if (slideCount - titleOffset !== segs) {
+        /* 犯人の推定は「不足枚数と推定した箇所の数が一致する」ときだけ出す。
+           合わないときは別の理由（`##` による slide level 2 など）が混ざっている
+           ので、外れた場所へ案内するより汎用の文面のほうが親切 */
+        const suspects = findSplitSuspects(body);
+        const s =
+          suspects.length > 0 && suspects.length === slideCount - titleOffset - segs
+            ? suspects[0]
+            : undefined;
+        const why =
+          s !== undefined
+            ? `${s.segment} 番目の「${s.heading ?? '見出しなし'}」のスライドで、` +
+              `${{ columns: '段組み', table: '表', image: '画像', unknown: '内容' }[s.cause]}` +
+              'の前後に別の内容が入っているため、スライドが分かれています。' +
+              '区切りたい位置に `***` の行を入れると使えます'
+            : 'スライドの分かれ方が原稿の区切りと違います。原稿側で編集してください';
         Alert.alert(
-          'スライドと原稿の対応が取れません',
-          '見出しの階層や表の後ろでスライドが分割される構成では番号がずれるため、' +
-            'プレビューからの編集を使えません。原稿側で編集してください',
+          'ノート・改行の編集は使えません',
+          why + '。（装飾・文字サイズ・テンプレートはそのまま使えます）',
+          s !== undefined
+            ? [
+                { text: '閉じる', style: 'cancel' as const },
+                {
+                  text: 'その場所へ移動',
+                  onPress: () => {
+                    const pos = sourceRef.current.length - body.length + s.insertAt;
+                    editorRef.current?.focus();
+                    requestAnimationFrame(() => editorRef.current?.setSelection(pos, pos));
+                  },
+                },
+              ]
+            : undefined,
         );
+        return null;
       }
-      return ci;
+      return slideIndex - titleOffset;
     },
-    [contentIndexOrNull],
+    [],
+  );
+
+  /**
+   * プレビューの slide.index → 装飾・文字サイズ・テンプレートが使う番号。
+   *
+   * contentIndex は「出力スライド番号 − titleOffset」そのもので、描画
+   * （decorBySlide）も注入（applyDecorations）も同じ式で戻す。原稿に書かない層
+   * なので原稿の区間数とは無関係 — 表や段組みでスライドが割れても止めない
+   * （止めると、原稿と関係のないデザイン操作まで道連れになる）
+   */
+  const designIndexOf = useCallback(
+    (slideIndex: number): number =>
+      slideIndex -
+      (splitFrontMatter(sourceRef.current).metadata.title !== undefined ? 1 : 0),
+    [],
   );
 
   const handleEditNotes = useCallback(
@@ -1148,8 +1216,6 @@ export default function EditorScreen() {
   );
 
   /* ---------- 装飾（飾る力） ---------- */
-  const [decorSheetOpen, setDecorSheetOpen] = useState(false);
-  /** 装飾パネルの対象スライド。null = 番号の対応が取れず文書全体の設定だけ出す */
   const [decorSheetCi, setDecorSheetCi] = useState<number | null>(null);
   /* パネルとプレビュー上の直接操作で共有する選択状態 */
   const [selectedDecorId, setSelectedDecorId] = useState<string | null>(null);
@@ -1158,19 +1224,10 @@ export default function EditorScreen() {
   /* 装飾ドラッグ中はプレビューの縦スクロールを止める（実機での競合対策） */
   const [decorDragging, setDecorDragging] = useState(false);
 
-  /**
-   * 装飾パネルを開く。
-   *
-   * スライド番号の対応が取れない構成（`#` の下に `##` を置く普通の階層構造でも
-   * 起きる）でも**開く** — 文字サイズ・テンプレート・フッターは文書全体の設定で
-   * 番号を必要としないのに、以前は入口ごと塞がっていた。
-   * ci=null のときパネルはスライドごとの節を出さない。
-   * ci=0 = タイトルスライド（表紙）。装飾は原稿に書かないので表紙にも置ける
-   */
   const handleEditDecor = useCallback(
     (slideIndex: number) => {
-      const ci = contentIndexOrNull(slideIndex);
-      setDecorSheetOpen(true);
+      const ci = designIndexOf(slideIndex);
+      /* ci=0 = タイトルスライド（表紙）。装飾は原稿に書かないので表紙にも置ける */
       setDecorSheetCi((prev) => {
         if (prev !== ci) {
           setSelectedDecorId(null);
@@ -1179,7 +1236,7 @@ export default function EditorScreen() {
         return ci;
       });
     },
-    [contentIndexOrNull],
+    [designIndexOf],
   );
 
   const handleAddDecor = useCallback(
@@ -1315,8 +1372,14 @@ export default function EditorScreen() {
   const handleCopyDecorToAll = useCallback(() => {
     const ci = decorSheetCi;
     if (ci === null) return;
-    const { body } = splitFrontMatter(sourceRef.current);
-    const total = slideSegments(body).length;
+    /* contentIndex は出力スライド番号の座標系。ただし result は最大 1.5 秒
+       遅れる（デバウンス）ので、原稿の区間数と大きいほうを採り、
+       範囲外の既存装飾は copyDesignToAllSlides 側が保持する */
+    const { metadata, body } = splitFrontMatter(sourceRef.current);
+    const total = Math.max(
+      (resultRef.current?.slideCount ?? 0) - (metadata.title !== undefined ? 1 : 0),
+      slideSegments(body).length,
+    );
     Alert.alert(
       '全スライドへコピー',
       `${ci === 0 ? '表紙' : `スライド ${ci}`}の装飾を全 ${total} 枚のコンテンツスライドへコピーします。` +
@@ -1470,8 +1533,7 @@ export default function EditorScreen() {
   }, [design, titleOffset]);
 
   /* 直接操作を有効にするスライド（パネルを開いているスライドのみ） */
-  const editingSlideIndex =
-    decorSheetOpen && decorSheetCi !== null ? decorSheetCi + titleOffset : null;
+  const editingSlideIndex = decorSheetCi === null ? null : decorSheetCi + titleOffset;
 
   /* ---------- スライドショー ---------- */
   const [showOpen, setShowOpen] = useState(false);
@@ -1597,6 +1659,9 @@ export default function EditorScreen() {
             <Text style={styles.paneLabel}>原稿</Text>
             <Pressable hitSlop={8} onPress={() => void handleInsertImage()}>
               <Text style={styles.imageInsert}>画像</Text>
+            </Pressable>
+            <Pressable hitSlop={8} onPress={handleInsertColumn}>
+              <Text style={styles.imageInsert}>段組み</Text>
             </Pressable>
             <Text style={styles.paneMeta}>
               {source.length}字 · {saveLabel}
@@ -1782,8 +1847,8 @@ export default function EditorScreen() {
         onClose={() => setBreakSheet(null)}
       />
       <DecorSheet
-        visible={decorSheetOpen}
-        contentIndex={decorSheetCi}
+        visible={decorSheetCi !== null}
+        contentIndex={decorSheetCi ?? 1}
         decorations={design.decorations.filter((d) => d.contentIndex === decorSheetCi)}
         deck={previewDeck ?? result?.deck ?? null}
         selectedId={selectedDecorId}
@@ -1812,7 +1877,6 @@ export default function EditorScreen() {
         onCycleLayout={handleCycleLayout}
         onRemoveTemplate={handleRemoveTemplate}
         onClose={() => {
-          setDecorSheetOpen(false);
           setDecorSheetCi(null);
           setSelectedDecorId(null);
           setMarkedIds(new Set());

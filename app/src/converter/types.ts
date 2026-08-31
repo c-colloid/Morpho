@@ -69,6 +69,20 @@ export interface Frame {
   h: number;
 }
 
+/**
+ * プレースホルダ固有の階層別既定（OOXML の lstStyle 1 階層ぶん）。
+ * レイアウトが持つ既定を段落へ流し込むための器で、値の無いプロパティは
+ * DeckInfo（＝マスター由来の既定）へ落とす。sz は 1/100pt、marL / indent は EMU。
+ */
+export interface LevelStyle {
+  sz?: number;
+  marL?: number;
+  indent?: number;
+  algn?: string;
+  /** 行頭記号を出さない（Paragraph.bullet と同じ語彙の部分集合） */
+  bullet?: 'none';
+}
+
 export interface SlideShape {
   /**
    * プレースホルダの種別（title / ctrTitle / subTitle / body など）。
@@ -84,6 +98,12 @@ export interface SlideShape {
    * null は既定（上揃え）。pandoc 既定マスターのタイトルは ctr（実測）
    */
   anchor?: string | null;
+  /**
+   * この図形の継承元プレースホルダが持つ階層別既定（lvl1..lvl9 の疎配列）。
+   * 添字は段落の level。穴と null は DeckInfo の既定へ落とす。
+   * 何も持たないレイアウト（Title and Content 等）では null
+   */
+  lvlStyle?: Array<LevelStyle | null> | null;
   paragraphs: Paragraph[];
 }
 
@@ -99,6 +119,32 @@ export interface SlideImage {
   h: number;
 }
 
+/**
+ * スライド上の表。
+ *
+ * 出力に書かれているのは枠の矩形と列幅・行数だけで、罫線と塗りは
+ * 組み込みの表スタイル参照になっている（pandoc 既定テンプレートでは
+ * その実体がパッケージに無い。reference-doc の tableStyles.xml は
+ * そのまま出力へ運ばれる。いずれも実測）。
+ * v0.14 は「消えないこと」の保証だけを目的に、枠と行列数を持つ。
+ * セルの中身は後の版で DocBlock.rows と同じ形で足す。
+ */
+export interface SlideTable {
+  /** スライド座標系の EMU。継承ではなく出力に書かれた実座標（実測） */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** 行数（ヘッダ行を含む） */
+  rowCount: number;
+  /**
+   * 列幅（EMU、左→右）。長さが列数。
+   * 合計は w と一致しないことがある（pandoc は列幅を 1pt 刻みに丸める。
+   * 実測: 13 列で 139700 EMU 不足）。描画は枠内へクランプすること
+   */
+  colWidths: number[];
+}
+
 export interface SlideOutline {
   /** 1 始まり */
   index: number;
@@ -107,6 +153,8 @@ export interface SlideOutline {
   shapes: SlideShape[];
   /** 画像（p:pic）。無ければ空配列 */
   images: SlideImage[];
+  /** 表（p:graphicFrame の a:tbl）。無ければ空配列 */
+  tables: SlideTable[];
   /** 発表者ノート（::: notes ::: 由来）。無ければ空配列 */
   notes: Paragraph[];
 }
