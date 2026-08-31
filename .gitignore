@@ -3,3 +3,4 @@ node_modules/
 *.pptx
 !fixtures/*.pptx
 out.pptx
+app/.probes/
