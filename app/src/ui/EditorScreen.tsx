@@ -23,6 +23,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LatestOnly } from '../converter/latestOnly';
 import { sanitizeForXml, splitFrontMatter } from '../converter/frontMatter';
 import { insertBlock } from '../text/blockInsert.ts';
+import { COLUMN_SEPARATOR_TEXT } from '../text/columns.ts';
 import { findSplitSuspects } from '../preview/slideSync.ts';
 import { usePandocConverter } from '../converter/usePandocConverter';
 import { WebView } from 'react-native-webview';
@@ -537,6 +538,16 @@ export default function EditorScreen() {
       Alert.alert('画像を挿入できませんでした', String(e instanceof Error ? e.message : e));
     }
   }, [flushSave, patchBody]);
+
+  /* 段組み（`+++` の列区切り）を入れる。1 行なので位置決めだけ blockInsert に任せる。
+     記法そのものは notes/column-input.md。書き手が手で `+++` と打っても同じ */
+  const handleInsertColumn = useCallback(() => {
+    const src = sourceRef.current;
+    const { body } = splitFrontMatter(src);
+    const fmLen = src.length - body.length;
+    const r = insertBlock(body, cursorRef.current - fmLen, COLUMN_SEPARATOR_TEXT);
+    patchBody(r.body, fmLen + r.cursor);
+  }, [patchBody]);
 
   /* ---------- 更新チェック（起動時に1回・失敗は黙って無視） ---------- */
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
@@ -1587,6 +1598,9 @@ export default function EditorScreen() {
             <Text style={styles.paneLabel}>原稿</Text>
             <Pressable hitSlop={8} onPress={() => void handleInsertImage()}>
               <Text style={styles.imageInsert}>画像</Text>
+            </Pressable>
+            <Pressable hitSlop={8} onPress={handleInsertColumn}>
+              <Text style={styles.imageInsert}>段組み</Text>
             </Pressable>
             <Text style={styles.paneMeta}>
               {source.length}字 · {saveLabel}

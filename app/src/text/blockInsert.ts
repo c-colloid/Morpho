@@ -17,6 +17,7 @@
  *  - `::: notes` の中とコードフェンスの中には入れない
  */
 import { slideSegments } from '../preview/cursorSlide.ts';
+import { COLUMN_SEPARATOR } from './columns.ts';
 
 export type InsertMove = null | 'block' | 'column' | 'notes' | 'code' | 'front-matter';
 
@@ -141,6 +142,21 @@ export function insertBlock(body: string, cursor: number, block: string): BlockI
   if (cursor <= 0 && seg.start > 0) moved = 'front-matter';
   else if (cursor <= 0) moved = null;
 
+  /* 0. `+++`（列区切り）がある区間では、カーソルのいる列の末尾へ置く。
+     区間の末尾へ送ると最後の列に入ってしまい、書き手の意図と食い違う。
+     最後の列にいるときは下の「区間の末尾」の規則へ落ちる（notes と *** を越えない） */
+  const sepLines: number[] = [];
+  for (let k = 0; k < lines.length; k++) {
+    if (!lines[k].code && COLUMN_SEPARATOR.test(lines[k].text)) sepLines.push(k);
+  }
+  if (sepLines.length) {
+    const next = sepLines.find((k) => k > li);
+    if (next !== undefined) {
+      const end = trimBack(lines, 0, next);
+      return place(body, end < lines.length ? lines[end].at : seg.end, block, 'column');
+    }
+  }
+
   /* 1. カーソルのいる列（無ければ区間の最後の列） */
   let colOpen = -1;
   const st = stackAt(lines, li);
@@ -205,15 +221,18 @@ export function insertBlock(body: string, cursor: number, block: string): BlockI
     at = end < lines.length ? lines[end].at : seg.end;
     if (end >= lines.length) at = seg.end;
   }
-  at = Math.max(0, Math.min(at, body.length));
+  return place(body, at, block, moved);
+}
 
+/** 着地点へ独立した段落として置く。前後に空行を確保し、元の行は決して割らない */
+function place(body: string, atRaw: number, block: string, moved: InsertMove): BlockInsertResult {
+  const at = Math.max(0, Math.min(atRaw, body.length));
   const prev = body.slice(0, at);
   const rest = body.slice(at);
   const lead = prev === '' ? '' : prev.endsWith('\n\n') ? '' : prev.endsWith('\n') ? '\n' : '\n\n';
   const tail = rest === '' ? '\n' : rest.startsWith('\n') ? '\n' : '\n\n';
-  const insert = lead + block + tail;
   return {
-    body: prev + insert + rest,
+    body: prev + lead + block + tail + rest,
     cursor: at + lead.length + block.length,
     moved,
   };

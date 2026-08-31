@@ -8,6 +8,7 @@ import { createContext, runInContext } from 'node:vm';
 import assert from 'node:assert/strict';
 import { unzipSync, zipSync, strToU8, strFromU8 } from 'fflate';
 import { convert } from '../node_modules/pandoc-wasm/src/index.node.js';
+import { slideSegments } from '../src/preview/cursorSlide.ts';
 
 const src = readFileSync(new URL('../src/converter/bridgeHtml.ts', import.meta.url), 'utf8');
 const decl = src.indexOf('export const BRIDGE_HTML');
@@ -645,6 +646,72 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
   });
   t('段組み: 全図形の frame が解決される（プレビューから消えない）', () => {
     for (const sl of sc.slides) for (const sh of sl.shapes) assert.ok(sh.frame, JSON.stringify(sh));
+  });
+}
+
+/* ---------- +++（列区切り）を本物の pandoc に通す ---------- */
+{
+  const expand = win.__morphoExpandColumns;
+  const PNG = Uint8Array.from(
+    atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='),
+    (c) => c.charCodeAt(0),
+  );
+  const segs = (md) => slideSegments(md).length;
+  const run = async (md) => {
+    const e = expand(md);
+    const r = await convert(
+      { from: 'markdown-yaml_metadata_block+east_asian_line_breaks', to: 'pptx', 'output-file': 'p.pptx' },
+      e.md, { 'z.png': new Blob([PNG]) },
+    );
+    const sc2 = win.__morphoParsePptx(new Uint8Array(await r.files['p.pptx'].arrayBuffer()));
+    return {
+      sc: sc2,
+      nonInfo: r.warnings.filter((w) => w.verbosity !== 'INFO'),
+      diags: Array.from(e.diags).map((d) => d.label),
+    };
+  };
+
+  const basic = '# 見出し\n\n左のテキスト\n\n+++\n\n右のテキスト\n';
+  const b = await run(basic);
+  t('+++: 1 枚の Two Content になり、非 INFO 警告が出ない', () => {
+    assert.equal(b.nonInfo.length, 0, JSON.stringify(b.nonInfo));
+    assert.equal(b.sc.slideCount, 1);
+    assert.equal(b.sc.slides[0].layout, 'Two Content');
+    const bodies = b.sc.slides[0].shapes.filter((x) => x.placeholder === 'body');
+    assert.equal(bodies.length, 2);
+    assert.equal(bodies[0].frame.x, 457200);
+    assert.equal(bodies[1].frame.x, 4648200);
+  });
+  t('+++: スライド数と原稿の区間数が一致する（contentIndexOf が死なない）', () => {
+    assert.equal(b.sc.slideCount, segs(basic));
+  });
+
+  const intro = '# 見出し\n\n導入の文。\n\n左\n\n+++\n\n右\n';
+  const i = await run(intro);
+  t('+++: 導入があってもスライドが割れない（pandoc 記法なら 2 枚に割れる形）', () => {
+    assert.equal(i.sc.slideCount, 1);
+    assert.equal(i.sc.slideCount, segs(intro));
+    assert.equal(i.sc.slides[0].layout, 'Two Content');
+  });
+
+  const three = '# 見出し\n\nA\n\n+++\n\nB\n\n+++\n\nC\n';
+  const th = await run(three);
+  t('+++: 3 列は 2 列に落ち、自前の診断が出る（pandoc は INFO しか出さない）', () => {
+    assert.equal(th.sc.slideCount, 1);
+    assert.equal(th.nonInfo.length, 0);
+    assert.deepEqual(th.diags, ['3 列目以降はスライドに出ません']);
+  });
+
+  const unsafe = '# 実験\n\n![](z.png)\n\n図1: 装置\n\n+++\n\n右の説明\n';
+  const u = await run(unsafe);
+  t('+++: 列の先頭が画像で後続があるときは展開せず、内容を保つ（落とし穴 13）', () => {
+    assert.deepEqual(u.diags, ['画像の後ろの内容が消えるため段組みにしませんでした']);
+    const texts = u.sc.slides.flatMap((sl) =>
+      sl.shapes.flatMap((sh) => sh.paragraphs.map((pp) => pp.runs.map((rr) => rr.text).join(''))));
+    assert.ok(texts.some((x) => x.includes('図1')), 'キャプションが消えている');
+    assert.ok(texts.some((x) => x.includes('右の説明')), '右の内容が消えている');
+    assert.ok(!texts.some((x) => /\+\+\+/.test(x)), '本文に生の +++ が出ている');
+    assert.equal(u.sc.slides.reduce((a, sl) => a + sl.images.length, 0), 1, '画像が消えている');
   });
 }
 

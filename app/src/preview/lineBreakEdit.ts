@@ -7,6 +7,7 @@
  * 表示粒度（語 / 字）は UI 側の見せ方であって、データはオフセットのみ。
  */
 import { slideSegments } from './cursorSlide.ts';
+import { COLUMN_SEPARATOR } from '../text/columns.ts';
 
 /* 改行を外して繋ぐとき、両側が ASCII の語なら空白を挟む。
    和文は east_asian_line_breaks と同じく直結する */
@@ -185,7 +186,7 @@ export function locateEditable(
   interface Cand {
     startLine: number;
     endLine: number;
-    kind: 'para' | 'item' | 'heading' | 'table' | 'fence' | 'div';
+    kind: 'para' | 'item' | 'heading' | 'table' | 'fence' | 'div' | 'colsep';
     prefix: string;
   }
   const cands: Cand[] = [];
@@ -220,6 +221,14 @@ export function locateEditable(
       continue;
     }
     if (notesDepth > 0) {
+      i++;
+      continue;
+    }
+    /* 段組みの列区切り（`+++`）も 1 行で独立した境界。
+       段落として飲み込むと、長押し → 適用しただけで区切りが本文に溶けて
+       段組みが消える（fenced div と同型の事故。notes/column-input.md） */
+    if (COLUMN_SEPARATOR.test(line)) {
+      cands.push({ startLine: i, endLine: i, kind: 'colsep', prefix: '' });
       i++;
       continue;
     }
@@ -261,7 +270,8 @@ export function locateEditable(
       !/^[ \t]*#/.test(lines[j]) &&
       !/^[ \t]*\|/.test(lines[j]) &&
       !/^ {0,3}(```|~~~)/.test(lines[j]) &&
-      !DIV_FENCE.test(lines[j])
+      !DIV_FENCE.test(lines[j]) &&
+      !COLUMN_SEPARATOR.test(lines[j])
     ) {
       j++;
     }
@@ -276,7 +286,7 @@ export function locateEditable(
   };
 
   for (const c of cands) {
-    if (c.kind === 'fence' || c.kind === 'div') continue;
+    if (c.kind === 'fence' || c.kind === 'div' || c.kind === 'colsep') continue;
     const raw = lines.slice(c.startLine, c.endLine + 1).join('\n');
     // 箇条書きは接頭辞と継続行の字下げを外してから正規化する
     const deprefixed =

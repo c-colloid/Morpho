@@ -195,6 +195,7 @@ src/store/      ── 永続化と共有
   updateCheck.ts         新しい版の通知
 
 src/text/       ── 文字列ユーティリティ（純関数）
+  columns.ts             段組みの記法（+++ の列区切り）。内容層の語彙で pandoc を知らない
   blockInsert.ts         ブロック（画像等）の挿入位置。行を割らず、柵と区間の末尾を守る
   assetNames.ts          画像ファイル名の正規化・重複回避
   diffLines.ts           行 Diff（競合ダイアログ）
@@ -235,6 +236,7 @@ npm run check
 | `check-notes-edit.mjs` | 発表者ノートの読み取りと書き戻し |
 | `check-linebreak.mjs` | 改行位置編集（正規化・分割・オフセット適用・対象特定・柵と禁止区間） |
 | `check-image-insert.mjs` | 画像の挿入位置（行を割らない・独立段落・柵と区間の末尾） |
+| `check-columns.mjs` | 段組みの記法（`+++`）。判定・展開・診断と、**アプリと変換器で規則が食い違っていないこと** |
 | `check-update.mjs` | 版の比較と更新通知 |
 | `check-design.mjs` | 装飾・グループ・文字サイズ・.morphodesign の往復 |
 | `check-diff.mjs` | 行 Diff（競合ダイアログ） |
@@ -263,7 +265,7 @@ node scripts/dump-pptx.mjs [file.md]
 | 太字 / 斜体 / 下線 | `<a:rPr b="1" i="1" u="sng"/>` |
 | コード | `<a:latin typeface="Courier"/>` |
 | 段落の字下げ | 普通の段落は `marL="0" indent="0"` 明示、箇条書きはマスターの lvl 既定（`marL=342900×(n+1)`, `indent=-342900`）を継承 |
-| 段組み `::: {.columns}` | `<p:ph idx="1" sz="half"/>` と `<p:ph idx="2" sz="half"/>` の 2 枠。`spPr` は空でレイアウト継承。**`width=` は無視される** |
+| 段組み `::: {.columns}` | `<p:ph idx="1" sz="half"/>` と `<p:ph idx="2" sz="half"/>` の 2 枠。`spPr` は空でレイアウト継承。**`width=` は無視される**。Morpho の `+++` はブリッジの `expandColumns` がこの形へ展開する |
 | 段組み（列に画像や表が混ざる） | Comparison レイアウト。`type="body"` の枠が idx=1 と idx=3 の**2 つ**ある |
 | 画像 | `<p:pic>`。`cNvPr descr` に元ファイル名（title 属性があると `"タイトル\n\n名前"`）。`<a:off>/<a:ext>` は pandoc が決め、**`{width=}` は無視される** |
 | 表 | `<p:graphicFrame><a:tbl>`。`<p:sp>` ではないので図形の走査には掛からない |
@@ -304,9 +306,11 @@ flex:1 の兄弟がもう1人いることが算術で確定した。
 
 棚卸しの全体像は `../notes/status-and-plan.md`。ここでは開発者向けの要点だけ。
 
-- **段組みの記法がまだ手打ち。** 0.14.0 で崩れも原稿破壊も直したが、書き手は 8 行の柵を
-  自分で打つ必要がある。打ちやすい `+++`（列区切り）と挿入 UI は次の版。
-  設計は `../notes/column-input.md`
+- **段組みの列幅が変えられない。** 0.15.0 で `+++` の記法と挿入 UI は入ったが、
+  列の比率はレイアウト（reference-doc）が決めるので、テーマ層（次の版）の担当。
+  設計は `../notes/columns-and-images.md`
+- **pandoc ネイティブ記法の打ち間違いを救う正規化**（全角波括弧・ドット忘れなど）は未実装。
+  設計と実測は `../notes/column-input.md`。`+++` を使えば踏まないので優先度は下げた
 - 画像の大きさ・位置を指定する手段（pandoc が全部決めている。`{width=}` は pptx で無視される）
 - テーマ層（三層分離の第2層）。**コード上はまだゼロ**
 - 表のセルの解析と描画（0.14.0 は枠と行数・列数まで）
