@@ -169,7 +169,8 @@ src/converter/  ── 変換。ここより上は pandoc を知らない
                          pptx の OOXML 解析（図形 / 段落 / ラン・座標継承・ノート）・
                          docx の三層解析（document / styles / numbering → DocBlock）
   usePandocConverter.tsx 不可視 WebView をマウントして Converter 実装を提供する hook
-  frontMatter.ts         front matter を自前で剥がす（CLAUDE.md 落とし穴 1 の回避）
+  frontMatter.ts         front matter を自前で剥がす（CLAUDE.md 落とし穴 1 の回避）。
+                         1 行だけの書き戻しと、読めない書き方の診断も持つ
   latestOnly.ts          待機枠を1件だけ持つ変換キュー
 
 src/preview/    ── 原稿とスライドの対応（純関数）
@@ -177,6 +178,10 @@ src/preview/    ── 原稿とスライドの対応（純関数）
                          （コードフェンス内の # や *** は境界として無視する）
   notesEdit.ts           発表者ノート（::: notes :::）の読み取りと書き戻し
   lineBreakEdit.ts       改行位置編集。正規化・語 / 字分割・オフセット適用・対象特定
+
+src/design/     ── デザインデータ（三層分離の第3層）
+  footer.ts              フッターの体裁。帯の EMU 解決・色・浄化。プレビューと
+                         書き出しが同じ 1 つの結果を使う唯一の場所
 
 src/store/      ── 永続化と共有
   documents.ts           複数文書のアプリ内保存（一覧・作成・保存・削除）
@@ -210,6 +215,7 @@ npm run check
 | `check-cursor.mjs` | カーソル位置 → スライド番号の対応 |
 | `check-notes-edit.mjs` | 発表者ノートの読み取りと書き戻し |
 | `check-linebreak.mjs` | 改行位置編集（正規化・分割・オフセット適用・対象特定） |
+| `check-footer.mjs` | フッター（帯の解決・色・浄化・注入・Open XML 妥当性と較正） |
 | `check-deck.mjs` | **統合検査**: 本物の pandoc.wasm で pptx / html / docx を作り、座標・配色・字サイズ・字下げ・改行・ノート・Web の CSS 注入・docx のノート除去までを確認 |
 
 ### pandoc の実出力を見る

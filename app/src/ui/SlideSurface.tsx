@@ -2,6 +2,7 @@ import React from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type {
+  ConvertOptions,
   DeckInfo,
   Paragraph,
   SlideDecoration,
@@ -11,6 +12,7 @@ import type {
 } from '../converter/types';
 import Svg, { Polygon } from 'react-native-svg';
 
+import { footerColorHex } from '../design/footer';
 import { decorationColorHex } from '../design/presets';
 import { shapePoints, textRect } from '../design/shapeGeometry';
 
@@ -162,6 +164,7 @@ export function SlideSurface({
   deck,
   width,
   decorations,
+  footer,
   imageUriOf,
   onParagraphPress,
   onParagraphLongPress,
@@ -171,6 +174,12 @@ export function SlideSurface({
   width: number;
   /** このスライドの装飾。本文の背面に実寸で描く（書き出しと同じ z 順） */
   decorations?: SlideDecoration[];
+  /**
+   * フッター（出典・注釈）。書き出しへ渡すのとまったく同じ解決済みの値を受ける
+   * （src/design/footer.ts の toExportFooter）。これでプレビューと出力が
+   * 構造的に一致する。表紙かどうかの判定も同じ規則で親が済ませてある
+   */
+  footer?: ConvertOptions['footer'] | null;
   /** 画像名 → 描画用 URI（アセット保存庫）。未指定なら画像は枠だけ描く */
   imageUriOf?: (name: string) => string;
   /** 段落のタップ。段落は Pressable がタップを吸うので、親のタップ処理へ流すために使う */
@@ -219,6 +228,35 @@ export function SlideSurface({
           onParagraphLongPress={onParagraphLongPress}
         />
       ))}
+      {footer && (
+        /* 書き出しでは装飾より後に注入する = 最前面。ここも最後に描く。
+           長押しは付けない（原稿に無い文字列を探しに行ってしまう） */
+        <View
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            left: px(footer.x),
+            top: px(footer.y),
+            width: px(footer.w),
+            height: px(footer.h),
+            justifyContent: 'center',
+            /* 収まらない出典は枠で切らずにあふれさせる（実出力と同じ扱い） */
+            overflow: 'visible',
+          }}
+        >
+          <Text
+            style={{
+              fontSize: (footer.sz / 100) * scale,
+              lineHeight: (footer.sz / 100) * scale * 1.25,
+              color: footerColorHex(footer.color, deck.colors),
+              textAlign:
+                footer.algn === 'ctr' ? 'center' : footer.algn === 'l' ? 'left' : 'right',
+            }}
+          >
+            {footer.text}
+          </Text>
+        </View>
+      )}
     </View>
   );
 }

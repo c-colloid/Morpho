@@ -19,6 +19,10 @@ import {
   PRESETS, SHAPE_PRESETS, decorationColorHex, nudge, type PresetKind,
 } from '../design/presets';
 import { sanitizeDecorText } from '../design/designFile';
+import {
+  DEFAULT_FOOTER_STYLE, MAX_FOOTER_PT, MAX_FOOTER_TEXT, MIN_FOOTER_PT,
+  sanitizeFooterText, withFooterDefaults, type FooterStyle,
+} from '../design/footer';
 import { clampPt, type TextSizes } from '../design/textSizes';
 
 const SCHEMES = ['accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6'] as const;
@@ -68,6 +72,10 @@ export function DecorSheet({
   groups,
   onGroupMarked,
   onUngroup,
+  footerText,
+  onUpdateFooterText,
+  footerStyle,
+  onUpdateFooterStyle,
   onAdd,
   onUpdate,
   onRemove,
@@ -85,8 +93,12 @@ export function DecorSheet({
   onClose,
 }: {
   visible: boolean;
-  /** 対象のコンテンツスライド番号（1 始まり） */
-  contentIndex: number;
+  /**
+   * 対象のコンテンツスライド番号（1 始まり・0 は表紙）。
+   * null = 原稿とスライド番号の対応が取れない構成。スライドごとの節は出さず、
+   * 文書全体の設定（フッター・文字サイズ・テンプレート）だけを使えるようにする
+   */
+  contentIndex: number | null;
   /** そのスライドの装飾（配列順 = 背面から前面） */
   decorations: SlideDecoration[];
   deck: DeckInfo | null;
@@ -106,6 +118,12 @@ export function DecorSheet({
   onDuplicate: (id: string) => void;
   onReorder: (id: string, dir: 'back' | 'front') => void;
   onCopyToAll: () => void;
+  /** デッキ全体の出典。文言は原稿の front matter にあるので、書き戻しは原稿へ */
+  footerText: string;
+  onUpdateFooterText: (text: string) => void;
+  /** フッターの体裁（デザインデータ）。undefined = 既定 */
+  footerStyle: Partial<FooterStyle> | undefined;
+  onUpdateFooterStyle: (f: Partial<FooterStyle> | undefined) => void;
   /** 文書全体の文字サイズ設定（pt）。undefined = テンプレート既定 */
   textSizes: TextSizes | undefined;
   onUpdateTextSizes: (t: TextSizes | undefined) => void;
@@ -193,7 +211,9 @@ export function DecorSheet({
         <View style={styles.titleBar} {...responder.panHandlers}>
           <Text style={styles.grip}>⠿</Text>
           <Text style={styles.title}>
-            {contentIndex === 0 ? '表紙' : `スライド ${contentIndex}`} の装飾
+            {contentIndex === null
+              ? '文書全体の設定'
+              : `${contentIndex === 0 ? '表紙' : `スライド ${contentIndex}`} の装飾`}
           </Text>
           <Pressable hitSlop={10} onPress={onClose}>
             <Text style={styles.close}>✕</Text>
@@ -207,235 +227,254 @@ export function DecorSheet({
           ]}
           contentContainerStyle={styles.scrollBody}
         >
-          <Text style={styles.section}>追加（プリセット）</Text>
-          <View style={styles.presetRow}>
-            {PRESETS.map((p) => (
-              <Pressable key={p.kind} style={styles.presetBtn} onPress={() => onAdd(p.kind)}>
-                <Text style={styles.presetLabel}>{p.label}</Text>
-              </Pressable>
-            ))}
-            {SHAPE_PRESETS.map((p) => (
-              <Pressable key={p.kind} style={styles.presetBtn} onPress={() => onAdd(p.kind)}>
-                <Text style={styles.presetLabel}>{p.label}</Text>
-              </Pressable>
-            ))}
-          </View>
+          {contentIndex === null ? (
+            /* 番号の対応が取れない構成（`#` の下に `##` を置くだけで起きる）。
+               スライドごとの装飾は使えないが、文書全体の設定は番号を必要としない */
+            <Text style={styles.note}>
+              見出しの階層や表の分割で原稿とスライド番号の対応が取れないため、
+              スライドごとの装飾は使えません。下の文書全体の設定は使えます
+            </Text>
+          ) : (
+            <>
+              <Text style={styles.section}>追加（プリセット）</Text>
+              <View style={styles.presetRow}>
+                {PRESETS.map((p) => (
+                  <Pressable key={p.kind} style={styles.presetBtn} onPress={() => onAdd(p.kind)}>
+                    <Text style={styles.presetLabel}>{p.label}</Text>
+                  </Pressable>
+                ))}
+                {SHAPE_PRESETS.map((p) => (
+                  <Pressable key={p.kind} style={styles.presetBtn} onPress={() => onAdd(p.kind)}>
+                    <Text style={styles.presetLabel}>{p.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
 
-          <Text style={styles.section}>
-            配置済み{decorations.length ? `（${decorations.length}・下ほど前面）` : '（なし）'}
-          </Text>
-          {decorations.map((d, i) => (
-            <View key={d.id} style={styles.item}>
-              <Pressable
-                style={styles.itemHead}
-                onPress={() => onSelectItem(selectedId === d.id ? null : d.id)}
-              >
-                <Pressable hitSlop={6} onPress={() => onToggleMark(d.id)}>
-                  <Text style={[styles.mark, markedIds.has(d.id) && styles.markOn]}>
-                    {markedIds.has(d.id) ? '●' : '○'}
+              <Text style={styles.section}>
+                配置済み{decorations.length ? `（${decorations.length}・下ほど前面）` : '（なし）'}
+              </Text>
+              {decorations.map((d, i) => (
+                <View key={d.id} style={styles.item}>
+                  <Pressable
+                    style={styles.itemHead}
+                    onPress={() => onSelectItem(selectedId === d.id ? null : d.id)}
+                  >
+                    <Pressable hitSlop={6} onPress={() => onToggleMark(d.id)}>
+                      <Text style={[styles.mark, markedIds.has(d.id) && styles.markOn]}>
+                        {markedIds.has(d.id) ? '●' : '○'}
+                      </Text>
+                    </Pressable>
+                    <View
+                      style={[
+                        styles.chip,
+                        {
+                          backgroundColor: decorationColorHex(d.color, colors),
+                          opacity: Math.max(0.15, d.opacity / 100),
+                          borderRadius: d.shape === 'roundRect' ? 6 : 2,
+                        },
+                      ]}
+                    />
+                    <Text style={styles.itemLabel}>
+                      {label(d, i)}
+                      {(() => {
+                        const gi = groups.findIndex((g) => g.memberIds.includes(d.id));
+                        return gi >= 0 ? `  G${gi + 1}` : '';
+                      })()}
+                    </Text>
+                    <Pressable hitSlop={6} onPress={() => onReorder(d.id, 'back')}>
+                      <Text style={styles.itemTool}>↑</Text>
+                    </Pressable>
+                    <Pressable hitSlop={6} onPress={() => onReorder(d.id, 'front')}>
+                      <Text style={styles.itemTool}>↓</Text>
+                    </Pressable>
+                    <Pressable hitSlop={6} onPress={() => onDuplicate(d.id)}>
+                      <Text style={styles.itemTool}>⧉</Text>
+                    </Pressable>
+                    <Text style={styles.itemToggle}>{selectedId === d.id ? '▾' : '▸'}</Text>
+                  </Pressable>
+
+                  {selected?.id === d.id && (
+                    <View style={styles.controls}>
+                      <View style={styles.swatchLine}>
+                        <Text style={styles.swatchLabel}>形</Text>
+                        {SHAPE_GLYPHS.map((s) => (
+                          <Pressable
+                            key={s.shape}
+                            style={[styles.shapeBtn, d.shape === s.shape && styles.shapeOn]}
+                            onPress={() => onUpdate({ ...d, shape: s.shape })}
+                          >
+                            <Text style={styles.shapeGlyph}>{s.glyph}</Text>
+                          </Pressable>
+                        ))}
+                      </View>
+
+                      <View style={styles.swatchLine}>
+                        <Text style={styles.swatchLabel}>塗り</Text>
+                        {SCHEMES.map((s) => (
+                          <Pressable
+                            key={s}
+                            style={[
+                              styles.swatch,
+                              { backgroundColor: colors[s] ?? '#888888' },
+                              !d.noFill && d.color.scheme === s && styles.swatchOn,
+                            ]}
+                            onPress={() => {
+                              const { noFill: _n, ...rest } = d;
+                              onUpdate({ ...rest, color: { scheme: s } });
+                            }}
+                          />
+                        ))}
+                        <Pressable
+                          style={[styles.noFillChip, d.noFill && styles.swatchOn]}
+                          onPress={() => {
+                            if (d.noFill) {
+                              const { noFill: _n, ...rest } = d;
+                              onUpdate(rest);
+                            } else {
+                              /* 塗りも枠も無いと見えなくなるので、枠線を伴わせる */
+                              onUpdate({
+                                ...d,
+                                noFill: true,
+                                line: d.line ?? { color: d.color, widthPt: 1 },
+                              });
+                            }
+                          }}
+                        >
+                          <Text style={styles.noFillText}>なし</Text>
+                        </Pressable>
+                      </View>
+
+                      {d.text != null ? (
+                        <View style={styles.textRow}>
+                          <Text style={styles.stepperLabel}>テキスト</Text>
+                          <TextInput
+                            key={d.id}
+                            style={styles.textInput}
+                            defaultValue={d.text}
+                            maxLength={20}
+                            onChangeText={(t) => onUpdate({ ...d, text: sanitizeDecorText(t) })}
+                            placeholder="1"
+                          />
+                          <Pressable
+                            hitSlop={6}
+                            onPress={() => {
+                              const { text: _t, ...rest } = d;
+                              onUpdate(rest);
+                            }}
+                          >
+                            <Text style={styles.itemTool}>✕</Text>
+                          </Pressable>
+                        </View>
+                      ) : (
+                        <Pressable
+                          style={styles.removeBtn}
+                          onPress={() => onUpdate({ ...d, text: '' })}
+                        >
+                          <Text style={styles.ungroupText}>テキストを追加</Text>
+                        </Pressable>
+                      )}
+
+                      <Stepper
+                        label={`不透明度 ${d.opacity}%`}
+                        onDec={() => onUpdate({ ...d, opacity: Math.max(5, d.opacity - 5) })}
+                        onInc={() => onUpdate({ ...d, opacity: Math.min(100, d.opacity + 5) })}
+                      />
+                      <Stepper
+                        label={`枠線 ${d.line ? `${d.line.widthPt}pt` : 'なし'}`}
+                        onDec={() => {
+                          if (!d.line) return;
+                          const w = Math.round((d.line.widthPt - 0.5) * 2) / 2;
+                          if (w <= 0) {
+                            /* 枠を消すとき、塗りなしのままだと見えなくなるので塗りも戻す */
+                            const { line: _l, noFill: _n, ...rest } = d;
+                            onUpdate(rest);
+                          } else {
+                            onUpdate({ ...d, line: { ...d.line, widthPt: w } });
+                          }
+                        }}
+                        onInc={() => {
+                          const w = Math.min(12, Math.round(((d.line?.widthPt ?? 0) + 0.5) * 2) / 2);
+                          onUpdate({ ...d, line: { color: d.line?.color ?? d.color, widthPt: w } });
+                        }}
+                      />
+                      {d.line && (
+                        <View style={styles.swatchLine}>
+                          <Text style={styles.swatchLabel}>枠色</Text>
+                          {SCHEMES.map((s) => (
+                            <Pressable
+                              key={s}
+                              style={[
+                                styles.swatch,
+                                { backgroundColor: colors[s] ?? '#888888' },
+                                d.line?.color.scheme === s && styles.swatchOn,
+                              ]}
+                              onPress={() =>
+                                onUpdate({ ...d, line: { ...d.line!, color: { scheme: s } } })
+                              }
+                            />
+                          ))}
+                        </View>
+                      )}
+                      <Stepper
+                        label="位置 左右"
+                        onDec={() => onUpdate(nudge(d, 'x', -1, slideW, slideH))}
+                        onInc={() => onUpdate(nudge(d, 'x', 1, slideW, slideH))}
+                      />
+                      <Stepper
+                        label="位置 上下"
+                        onDec={() => onUpdate(nudge(d, 'y', -1, slideW, slideH))}
+                        onInc={() => onUpdate(nudge(d, 'y', 1, slideW, slideH))}
+                      />
+                      <Stepper
+                        label="幅"
+                        onDec={() => onUpdate(nudge(d, 'w', -1, slideW, slideH))}
+                        onInc={() => onUpdate(nudge(d, 'w', 1, slideW, slideH))}
+                      />
+                      <Stepper
+                        label="高さ"
+                        onDec={() => onUpdate(nudge(d, 'h', -1, slideW, slideH))}
+                        onInc={() => onUpdate(nudge(d, 'h', 1, slideW, slideH))}
+                      />
+
+                      {(() => {
+                        const g = groups.find((x) => x.memberIds.includes(d.id));
+                        return g ? (
+                          <Pressable style={styles.removeBtn} onPress={() => onUngroup(g.id)}>
+                            <Text style={styles.ungroupText}>グループ解除</Text>
+                          </Pressable>
+                        ) : null;
+                      })()}
+                      <Pressable style={styles.removeBtn} onPress={() => onRemove(d.id)}>
+                        <Text style={styles.removeText}>この装飾を削除</Text>
+                      </Pressable>
+                    </View>
+                  )}
+                </View>
+              ))}
+
+              {markedIds.size >= 2 && (
+                <Pressable style={styles.groupBtn} onPress={onGroupMarked}>
+                  <Text style={styles.groupText}>
+                    マークした {markedIds.size} 件をグループ化（一緒に動く）
                   </Text>
                 </Pressable>
-                <View
-                  style={[
-                    styles.chip,
-                    {
-                      backgroundColor: decorationColorHex(d.color, colors),
-                      opacity: Math.max(0.15, d.opacity / 100),
-                      borderRadius: d.shape === 'roundRect' ? 6 : 2,
-                    },
-                  ]}
-                />
-                <Text style={styles.itemLabel}>
-                  {label(d, i)}
-                  {(() => {
-                    const gi = groups.findIndex((g) => g.memberIds.includes(d.id));
-                    return gi >= 0 ? `  G${gi + 1}` : '';
-                  })()}
-                </Text>
-                <Pressable hitSlop={6} onPress={() => onReorder(d.id, 'back')}>
-                  <Text style={styles.itemTool}>↑</Text>
-                </Pressable>
-                <Pressable hitSlop={6} onPress={() => onReorder(d.id, 'front')}>
-                  <Text style={styles.itemTool}>↓</Text>
-                </Pressable>
-                <Pressable hitSlop={6} onPress={() => onDuplicate(d.id)}>
-                  <Text style={styles.itemTool}>⧉</Text>
-                </Pressable>
-                <Text style={styles.itemToggle}>{selectedId === d.id ? '▾' : '▸'}</Text>
-              </Pressable>
-
-              {selected?.id === d.id && (
-                <View style={styles.controls}>
-                  <View style={styles.swatchLine}>
-                    <Text style={styles.swatchLabel}>形</Text>
-                    {SHAPE_GLYPHS.map((s) => (
-                      <Pressable
-                        key={s.shape}
-                        style={[styles.shapeBtn, d.shape === s.shape && styles.shapeOn]}
-                        onPress={() => onUpdate({ ...d, shape: s.shape })}
-                      >
-                        <Text style={styles.shapeGlyph}>{s.glyph}</Text>
-                      </Pressable>
-                    ))}
-                  </View>
-
-                  <View style={styles.swatchLine}>
-                    <Text style={styles.swatchLabel}>塗り</Text>
-                    {SCHEMES.map((s) => (
-                      <Pressable
-                        key={s}
-                        style={[
-                          styles.swatch,
-                          { backgroundColor: colors[s] ?? '#888888' },
-                          !d.noFill && d.color.scheme === s && styles.swatchOn,
-                        ]}
-                        onPress={() => {
-                          const { noFill: _n, ...rest } = d;
-                          onUpdate({ ...rest, color: { scheme: s } });
-                        }}
-                      />
-                    ))}
-                    <Pressable
-                      style={[styles.noFillChip, d.noFill && styles.swatchOn]}
-                      onPress={() => {
-                        if (d.noFill) {
-                          const { noFill: _n, ...rest } = d;
-                          onUpdate(rest);
-                        } else {
-                          /* 塗りも枠も無いと見えなくなるので、枠線を伴わせる */
-                          onUpdate({
-                            ...d,
-                            noFill: true,
-                            line: d.line ?? { color: d.color, widthPt: 1 },
-                          });
-                        }
-                      }}
-                    >
-                      <Text style={styles.noFillText}>なし</Text>
-                    </Pressable>
-                  </View>
-
-                  {d.text != null ? (
-                    <View style={styles.textRow}>
-                      <Text style={styles.stepperLabel}>テキスト</Text>
-                      <TextInput
-                        key={d.id}
-                        style={styles.textInput}
-                        defaultValue={d.text}
-                        maxLength={20}
-                        onChangeText={(t) => onUpdate({ ...d, text: sanitizeDecorText(t) })}
-                        placeholder="1"
-                      />
-                      <Pressable
-                        hitSlop={6}
-                        onPress={() => {
-                          const { text: _t, ...rest } = d;
-                          onUpdate(rest);
-                        }}
-                      >
-                        <Text style={styles.itemTool}>✕</Text>
-                      </Pressable>
-                    </View>
-                  ) : (
-                    <Pressable
-                      style={styles.removeBtn}
-                      onPress={() => onUpdate({ ...d, text: '' })}
-                    >
-                      <Text style={styles.ungroupText}>テキストを追加</Text>
-                    </Pressable>
-                  )}
-
-                  <Stepper
-                    label={`不透明度 ${d.opacity}%`}
-                    onDec={() => onUpdate({ ...d, opacity: Math.max(5, d.opacity - 5) })}
-                    onInc={() => onUpdate({ ...d, opacity: Math.min(100, d.opacity + 5) })}
-                  />
-                  <Stepper
-                    label={`枠線 ${d.line ? `${d.line.widthPt}pt` : 'なし'}`}
-                    onDec={() => {
-                      if (!d.line) return;
-                      const w = Math.round((d.line.widthPt - 0.5) * 2) / 2;
-                      if (w <= 0) {
-                        /* 枠を消すとき、塗りなしのままだと見えなくなるので塗りも戻す */
-                        const { line: _l, noFill: _n, ...rest } = d;
-                        onUpdate(rest);
-                      } else {
-                        onUpdate({ ...d, line: { ...d.line, widthPt: w } });
-                      }
-                    }}
-                    onInc={() => {
-                      const w = Math.min(12, Math.round(((d.line?.widthPt ?? 0) + 0.5) * 2) / 2);
-                      onUpdate({ ...d, line: { color: d.line?.color ?? d.color, widthPt: w } });
-                    }}
-                  />
-                  {d.line && (
-                    <View style={styles.swatchLine}>
-                      <Text style={styles.swatchLabel}>枠色</Text>
-                      {SCHEMES.map((s) => (
-                        <Pressable
-                          key={s}
-                          style={[
-                            styles.swatch,
-                            { backgroundColor: colors[s] ?? '#888888' },
-                            d.line?.color.scheme === s && styles.swatchOn,
-                          ]}
-                          onPress={() =>
-                            onUpdate({ ...d, line: { ...d.line!, color: { scheme: s } } })
-                          }
-                        />
-                      ))}
-                    </View>
-                  )}
-                  <Stepper
-                    label="位置 左右"
-                    onDec={() => onUpdate(nudge(d, 'x', -1, slideW, slideH))}
-                    onInc={() => onUpdate(nudge(d, 'x', 1, slideW, slideH))}
-                  />
-                  <Stepper
-                    label="位置 上下"
-                    onDec={() => onUpdate(nudge(d, 'y', -1, slideW, slideH))}
-                    onInc={() => onUpdate(nudge(d, 'y', 1, slideW, slideH))}
-                  />
-                  <Stepper
-                    label="幅"
-                    onDec={() => onUpdate(nudge(d, 'w', -1, slideW, slideH))}
-                    onInc={() => onUpdate(nudge(d, 'w', 1, slideW, slideH))}
-                  />
-                  <Stepper
-                    label="高さ"
-                    onDec={() => onUpdate(nudge(d, 'h', -1, slideW, slideH))}
-                    onInc={() => onUpdate(nudge(d, 'h', 1, slideW, slideH))}
-                  />
-
-                  {(() => {
-                    const g = groups.find((x) => x.memberIds.includes(d.id));
-                    return g ? (
-                      <Pressable style={styles.removeBtn} onPress={() => onUngroup(g.id)}>
-                        <Text style={styles.ungroupText}>グループ解除</Text>
-                      </Pressable>
-                    ) : null;
-                  })()}
-                  <Pressable style={styles.removeBtn} onPress={() => onRemove(d.id)}>
-                    <Text style={styles.removeText}>この装飾を削除</Text>
-                  </Pressable>
-                </View>
               )}
-            </View>
-          ))}
 
-          {markedIds.size >= 2 && (
-            <Pressable style={styles.groupBtn} onPress={onGroupMarked}>
-              <Text style={styles.groupText}>
-                マークした {markedIds.size} 件をグループ化（一緒に動く）
-              </Text>
-            </Pressable>
+              {decorations.length > 0 && (
+                <Pressable style={styles.copyAllBtn} onPress={onCopyToAll}>
+                  <Text style={styles.copyAllText}>このスライドの装飾を全スライドへコピー</Text>
+                </Pressable>
+              )}
+            </>
           )}
 
-          {decorations.length > 0 && (
-            <Pressable style={styles.copyAllBtn} onPress={onCopyToAll}>
-              <Text style={styles.copyAllText}>このスライドの装飾を全スライドへコピー</Text>
-            </Pressable>
-          )}
+          <Text style={styles.section}>フッター（出典・注釈・文書全体）</Text>
+          <FooterEditor
+            text={footerText}
+            style={footerStyle}
+            onUpdateText={onUpdateFooterText}
+            onUpdateStyle={onUpdateFooterStyle}
+          />
 
           <Text style={styles.section}>文字サイズ（文書全体・pt）</Text>
           {(() => {
@@ -533,6 +572,93 @@ export function DecorSheet({
 }
 
 /** 長押しで連続変化するステッパー（350ms 後から 90ms 間隔） */
+/**
+ * フッターの編集。
+ *
+ * 文言は**原稿の front matter** に書き戻す（三層分離: 出典は内容）。
+ * 打つたびに原稿を差し替えるとエディタが remount されるので、
+ * 確定（フォーカスを外す / 改行）のときだけ書き戻す。
+ */
+function FooterEditor({
+  text,
+  style,
+  onUpdateText,
+  onUpdateStyle,
+}: {
+  text: string;
+  style: Partial<FooterStyle> | undefined;
+  onUpdateText: (t: string) => void;
+  onUpdateStyle: (f: Partial<FooterStyle> | undefined) => void;
+}) {
+  const [draft, setDraft] = useState(text);
+  /* 原稿側が変わったら（別文書に切り替えた等）入力欄も追従させる */
+  const shownRef = useRef(text);
+  if (shownRef.current !== text) {
+    shownRef.current = text;
+    if (draft !== text) setDraft(text);
+  }
+  const commit = () => {
+    const next = sanitizeFooterText(draft).trim();
+    if (next !== text) onUpdateText(next);
+  };
+  const st = withFooterDefaults(style);
+  const upd = (patch: Partial<FooterStyle>) => {
+    const next = { ...style, ...patch };
+    onUpdateStyle(Object.keys(next).length ? next : undefined);
+  };
+  return (
+    <>
+      <TextInput
+        style={styles.textInput}
+        value={draft}
+        maxLength={MAX_FOOTER_TEXT}
+        onChangeText={setDraft}
+        onBlur={commit}
+        onSubmitEditing={commit}
+        returnKeyType="done"
+        placeholder="N Engl J Med 2024;390:1234-45"
+        placeholderTextColor="#9AA0AC"
+      />
+      <Text style={styles.note}>
+        原稿の front matter の footer: に書き込みます。全スライドの下に小さく出ます
+      </Text>
+      <View style={styles.alignRow}>
+        {([
+          { v: 'l', label: '左' },
+          { v: 'ctr', label: '中央' },
+          { v: 'r', label: '右' },
+        ] as const).map((a) => (
+          <Pressable
+            key={a.v}
+            style={[styles.alignBtn, st.align === a.v && styles.alignBtnOn]}
+            onPress={() => upd({ align: a.v })}
+          >
+            <Text style={[styles.alignText, st.align === a.v && styles.alignTextOn]}>
+              {a.label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+      <Stepper
+        label={`大きさ ${st.sizePt}pt`}
+        onDec={() => upd({ sizePt: Math.max(MIN_FOOTER_PT, st.sizePt - 1) })}
+        onInc={() => upd({ sizePt: Math.min(MAX_FOOTER_PT, st.sizePt + 1) })}
+      />
+      <Pressable style={styles.checkRow} onPress={() => upd({ onCover: !st.onCover })}>
+        <Text style={[styles.mark, st.onCover && styles.markOn]}>{st.onCover ? '●' : '○'}</Text>
+        <Text style={styles.checkLabel}>表紙にも出す</Text>
+      </Pressable>
+      {(style && Object.keys(style).length > 0) && (
+        <Pressable style={styles.ungroupBtnLike} onPress={() => onUpdateStyle(undefined)}>
+          <Text style={styles.ungroupText}>
+            フッターの体裁を既定に戻す（{DEFAULT_FOOTER_STYLE.sizePt}pt・右）
+          </Text>
+        </Pressable>
+      )}
+    </>
+  );
+}
+
 function Stepper({
   label,
   onDec,
@@ -703,6 +829,25 @@ const styles = StyleSheet.create({
   removeBtn: { alignSelf: 'flex-start', marginTop: 2 },
   removeText: { fontSize: 12, color: '#B01030', fontWeight: '600' },
   ungroupText: { fontSize: 12, color: '#1B3FE0', fontWeight: '600' },
+
+  note: { fontSize: 11, lineHeight: 15, color: '#666C78', marginTop: 4 },
+  alignRow: { flexDirection: 'row', gap: 6, marginTop: 8 },
+  alignBtn: {
+    flex: 1,
+    height: 30,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: RULE,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  alignBtnOn: { backgroundColor: '#E7ECFF', borderColor: '#1B3FE0' },
+  alignText: { fontSize: 12, color: '#14161B' },
+  alignTextOn: { color: '#1B3FE0', fontWeight: '600' },
+  checkRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 },
+  checkLabel: { fontSize: 12, color: '#14161B' },
+  ungroupBtnLike: { alignSelf: 'flex-start', marginTop: 8 },
 
   mark: { fontSize: 14, color: '#9AA0AC', paddingHorizontal: 1 },
   markOn: { color: '#1B3FE0' },

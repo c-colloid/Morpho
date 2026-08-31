@@ -5,7 +5,8 @@
 import assert from 'node:assert/strict';
 
 /* Node 22 の型ストリップで .ts をそのまま読む（ビルド不要） */
-const { sanitizeForXml, splitFrontMatter } = await import('../src/converter/frontMatter.ts');
+const { sanitizeForXml, splitFrontMatter, setFrontMatterValue, frontMatterIssues } =
+  await import('../src/converter/frontMatter.ts');
 const { referencedImages, sanitizeAssetName } = await import('../src/text/assetNames.ts');
 
 let n = 0;
@@ -83,6 +84,68 @@ t('sanitizeAssetName: パスと危険な文字を落としてフラット名に�
 t('referencedImages: フラット名だけ拾い、URL とパス付きは除外する', () => {
   const md = '![a](one.png) ![b](sub/two.png) ![c](https://x/y.png) ![d](one.png) ![e](three.jpg "t")';
   assert.deepEqual(referencedImages(md).sort(), ['one.png', 'three.jpg']);
+});
+
+/* ---------- front matter の 1 行書き換え（フッターの入力欄が使う） ---------- */
+
+t('setFrontMatterValue: 既存のキーだけを差し替え、他の行に触れない', () => {
+  const src = '---\ntitle: 抄読会\nfooter: 旧\nauthor: 研修医\n---\n\n# 見出し\n';
+  const out = setFrontMatterValue(src, 'footer', 'NEJM 2024;390:1234-45');
+  assert.equal(out, '---\ntitle: 抄読会\nfooter: "NEJM 2024;390:1234-45"\nauthor: 研修医\n---\n\n# 見出し\n');
+  assert.equal(splitFrontMatter(out).body, '\n# 見出し\n', '本文は無傷');
+});
+
+t('setFrontMatterValue: 無いキーは末尾へ足す', () => {
+  const out = setFrontMatterValue('---\ntitle: 抄読会\n---\n\n本文\n', 'footer', 'NEJM');
+  assert.equal(splitFrontMatter(out).metadata.footer, 'NEJM');
+  assert.equal(splitFrontMatter(out).metadata.title, '抄読会');
+});
+
+t('setFrontMatterValue: front matter が無ければ先頭に作る', () => {
+  const out = setFrontMatterValue('# 見出し\n', 'footer', 'NEJM');
+  assert.equal(out, '---\nfooter: "NEJM"\n---\n\n# 見出し\n');
+  assert.equal(splitFrontMatter(out).body, '\n# 見出し\n');
+});
+
+t('setFrontMatterValue: 空文字で消す。継続行も一緒に落とす', () => {
+  const src = '---\ntitle: T\nfooter: |\n  一行目\n  二行目\nauthor: A\n---\n\n本文\n';
+  const out = setFrontMatterValue(src, 'footer', '');
+  assert.equal(out, '---\ntitle: T\nauthor: A\n---\n\n本文\n');
+});
+
+t('setFrontMatterValue: 最後の 1 行を消したら front matter ごと畳み、原稿が元へ戻る', () => {
+  const src = '# 見出し\n\n本文。\n';
+  const added = setFrontMatterValue(src, 'footer', 'NEJM');
+  assert.equal(setFrontMatterValue(added, 'footer', ''), src, '往復して元どおり');
+  /* 空行を持たない書き方でも本文に触れない */
+  assert.equal(setFrontMatterValue('---\nfooter: X\n---\n本文\n', 'footer', ''), '本文\n');
+});
+
+t('setFrontMatterValue: 引用符とバックスラッシュを escape する', () => {
+  const out = setFrontMatterValue('# H\n', 'footer', 'A "B" \\C');
+  assert.equal(splitFrontMatter(out).metadata.footer, 'A "B" \\C');
+});
+
+t('setFrontMatterValue: front matter が無く値も空なら何もしない', () => {
+  assert.equal(setFrontMatterValue('# H\n', 'footer', ''), '# H\n');
+});
+
+t('frontMatterIssues: ブロックスカラーと配列を診断にする（どちらも無警告で壊れる）', () => {
+  const block = frontMatterIssues('---\nfooter: |\n  A\n  B\n---\n\n本文\n');
+  assert.equal(block.length, 1);
+  assert.equal(block[0].kind, 'design');
+  /* splitFrontMatter は "|" の 1 文字を値として拾ってしまう */
+  assert.equal(splitFrontMatter('---\nfooter: |\n  A\n---\n\n本文\n').metadata.footer, '|');
+
+  const nested = frontMatterIssues('---\nfooter:\n  - A\n  - B\n---\n\n本文\n');
+  assert.equal(nested.length, 1);
+  /* こちらはキーごと消える */
+  assert.equal(splitFrontMatter('---\nfooter:\n  - A\n---\n\n本文\n').metadata.footer, undefined);
+});
+
+t('frontMatterIssues: 普通の front matter では何も出さない', () => {
+  assert.deepEqual(frontMatterIssues('---\ntitle: T\nfooter: "A / B"\n---\n\n本文\n'), []);
+  assert.deepEqual(frontMatterIssues('# 見出しだけ\n'), []);
 });
 
 console.log(`\n${n} 件すべて通過`);

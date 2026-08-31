@@ -145,6 +145,12 @@ export interface DeckInfo {
   bodySpcBefPts?: number[];
   /** 階層ごとの行頭記号（buChar）。pandoc 既定は • – • – … の交互。null は既定 */
   bodyBuChar?: Array<string | null>;
+  /**
+   * テンプレートが「フッターを置く場所」として持っている帯（EMU）。
+   * pandoc 既定テンプレートはマスターに 1 本持つ（y=92.69% / 高さ 5.32%・実測）。
+   * 持たないテンプレートでは null になり、比率の既定値へ落とす
+   */
+  ftrBand?: Frame | null;
 }
 
 /**
@@ -244,6 +250,19 @@ export type DecorationShape =
   | 'star5'
   | 'rightArrow';
 
+/**
+ * テーマ配色の参照（DeckInfo.colors のキー）または直接指定。
+ * DecorationColor より広い（dk1 / lt1 と tint を持つ）。既存の .morphodesign
+ * 互換のため DecorationColor は変更しない
+ */
+export interface ThemeColor {
+  scheme?: 'dk1' | 'lt1' | 'accent1' | 'accent2' | 'accent3' | 'accent4' | 'accent5' | 'accent6';
+  /** scheme が無いときに使う（#RRGGBB） */
+  hex?: string;
+  /** 参照色を地色へ寄せる度合い。OOXML の a:tint と同じ 1/1000 %（75000 = 75%） */
+  tint?: number;
+}
+
 export interface DecorationColor {
   /** テーマ配色の参照（accent1〜accent6）。テンプレート差し替えに追従する */
   scheme?: 'accent1' | 'accent2' | 'accent3' | 'accent4' | 'accent5' | 'accent6';
@@ -297,6 +316,24 @@ export interface ConvertOptions {
    * coverTitleSz は表紙スライドの ctrTitle に lstStyle を注入する
    */
   textSizes?: { titleSz?: number; coverTitleSz?: number; coverSubSz?: number; bodySz?: number[] };
+  /**
+   * デッキ全体のフッター（出典・注釈）。pptx のみ。他形式では無視される。
+   * 座標は解決済みの EMU で渡す（装飾と同じ流儀 — テンプレートの帯を読むのも
+   * 比率の既定値へ落とすのもアプリ側の仕事で、変換器は書くだけ）。
+   * 表紙（ctrTitle を持つスライド）は onCover が真のときだけ載せる
+   */
+  footer?: {
+    text: string;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    /** 1/100pt（DeckInfo.titleSz と同じ単位） */
+    sz: number;
+    algn: 'l' | 'ctr' | 'r';
+    color: ThemeColor;
+    onCover?: boolean;
+  };
   /**
    * setReferenceDoc で預けたテンプレートを reference-doc として使う。
    * pptx（スライドプレビューと書き出し）のみ。バイナリを毎回運ばないための
