@@ -155,6 +155,7 @@ Comparison / Content with Caption / Blank
 表がコンテンツプレースホルダを占有するため、後続ブロックがタイトルなしの独立スライドになる。
 **3.10 でも解消していない**（実測: 「表 → 段落」は 2 枚に割れ、2 枚目はタイトルなし。
 順序を逆にした「段落 → 表」は 1 枚に収まる）。
+フッターの目印を見出しへ巻き上げる理由もこれ（`notes/footer-design.md`）。
 
 `fixtures/pptx-benchmark.md` は 3.1.3 と 3.10 のどちらでも **64 枚**（front matter を剥がして
 `options.metadata` で渡すアプリと同じ経路で実測。本文だけなら表紙が減って 63 枚）。
@@ -280,6 +281,38 @@ Morpho は `+++`（列区切り）を内容層に持つ（`notes/column-input.md
 （変換器が内容の順序を変えるのは三層分離違反）。設計は `notes/column-input.md`。
 
 ---
+
+### 14. pptx ライターは raw openxml を素通しする — FORMAT ガードが無いと docx へ漏れる
+
+`RawBlock('openxml', …)` は `<p:spTree>` 直下へ、`RawInline` は `<a:p>` 内の run として
+そのまま出力される（pptx ライターの表現力ではなく OOXML の表現力が上限になる）。
+便利だが、**FORMAT ガードを外すと pptx 用の `<p:sp>` が `word/document.xml` へ
+無警告で注入される**（html は INFO 警告で捨てるだけ）。Lua では必ず
+`if FORMAT ~= 'pptx' then … end` で分岐する。検査は pptx ではなく docx / html 側に置く。
+
+### 15. docx の `custom-style` は styleId ではなく表示名で照合される
+
+`::: {custom-style="X"}` の X は `<w:name w:val>`（表示名・大文字小文字は無視）と突き合わされる。
+styleId で書くと既存スタイルに当たらず、**同じ styleId を持つ2つ目の `w:style` が生成される**。
+照合に外れた名前は `basedOn=BodyText`・サイズ指定なしで自動生成されるため、
+「小さい文字」にはならない（既定 reference.docx で本文 12pt より小さい段落スタイルは
+`Abstract` / `AbstractTitle` の 10pt だけ）。
+
+### 16. `pandoc.utils.stringify` は RawInline を空文字として捨てる
+
+`ruby.lua` の後ろに stringify を使うフィルタを置くと、**docx でルビ・圏点が無警告で消える**。
+pptx ではルビが `Str` / `Strong` に落ちるため再現せず、pptx のテストだけでは絶対に検出できない。
+inline を保つなら `pandoc.utils.blocks_to_inlines` を使う。
+なお `PANDOC_WRITER_OPTIONS.slide_level` は nil で、Lua から実効スライドレベルは読めない。
+
+### 17. Lua フィルタの診断は `pandoc.log.warn` でしか届かない
+
+`io.stderr:write` はホストのコンソールへ `[WASI stderr] …` として出るだけで、
+**`result.stderr` は空文字列のまま**（実測）。アプリの `classify` には何も渡らない。
+`pandoc.log.warn(...)` なら `result.warnings` に構造化された `ScriptingWarning`
+（`message` / `source` / `line`）として届き、既存の `RULES` で分類できる。
+なお同じ label の警告は畳まれて `count` になり、残る `text` は最初の1件だけなので、
+どこで起きたかはメッセージ自身に埋めること。
 
 ## 警告の重要度分類
 
@@ -559,6 +592,7 @@ notes/preview-formats.md             プレビューの形式切り替え
 notes/columns-and-images.md          段組みと画像配置の設計
 notes/v014-foundation.md             v0.14 の土台修理（設計と検証）
 notes/column-input.md                段組みの入力（+++ の記法）
+notes/footer-design.md               フッター（出典・注釈）の設計と検証
 scripts/init.sh                      Pages 有効化と基準出力の再生成
 ```
 

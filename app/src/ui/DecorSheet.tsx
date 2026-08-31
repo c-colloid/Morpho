@@ -19,6 +19,10 @@ import {
   PRESETS, SHAPE_PRESETS, decorationColorHex, nudge, type PresetKind,
 } from '../design/presets';
 import { sanitizeDecorText } from '../design/designFile';
+import {
+  DEFAULT_FOOTER_STYLE, MAX_FOOTER_PT, MAX_FOOTER_TEXT, MIN_FOOTER_PT,
+  sanitizeFooterText, withFooterDefaults, type FooterStyle,
+} from '../design/footer';
 import { clampPt, type TextSizes } from '../design/textSizes';
 
 const SCHEMES = ['accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6'] as const;
@@ -68,6 +72,10 @@ export function DecorSheet({
   groups,
   onGroupMarked,
   onUngroup,
+  footerText,
+  onUpdateFooterText,
+  footerStyle,
+  onUpdateFooterStyle,
   onAdd,
   onUpdate,
   onRemove,
@@ -85,7 +93,7 @@ export function DecorSheet({
   onClose,
 }: {
   visible: boolean;
-  /** 対象のコンテンツスライド番号（1 始まり） */
+  /** 対象のコンテンツスライド番号（1 始まり・0 は表紙） */
   contentIndex: number;
   /** そのスライドの装飾（配列順 = 背面から前面） */
   decorations: SlideDecoration[];
@@ -106,6 +114,12 @@ export function DecorSheet({
   onDuplicate: (id: string) => void;
   onReorder: (id: string, dir: 'back' | 'front') => void;
   onCopyToAll: () => void;
+  /** デッキ全体の出典。文言は原稿の front matter にあるので、書き戻しは原稿へ */
+  footerText: string;
+  onUpdateFooterText: (text: string) => void;
+  /** フッターの体裁（デザインデータ）。undefined = 既定 */
+  footerStyle: Partial<FooterStyle> | undefined;
+  onUpdateFooterStyle: (f: Partial<FooterStyle> | undefined) => void;
   /** 文書全体の文字サイズ設定（pt）。undefined = テンプレート既定 */
   textSizes: TextSizes | undefined;
   onUpdateTextSizes: (t: TextSizes | undefined) => void;
@@ -437,6 +451,14 @@ export function DecorSheet({
             </Pressable>
           )}
 
+          <Text style={styles.section}>フッター（出典・注釈・文書全体）</Text>
+          <FooterEditor
+            text={footerText}
+            style={footerStyle}
+            onUpdateText={onUpdateFooterText}
+            onUpdateStyle={onUpdateFooterStyle}
+          />
+
           <Text style={styles.section}>文字サイズ（文書全体・pt）</Text>
           {(() => {
             const defTitle = Math.round((deck?.titleSz ?? 3300) / 100);
@@ -533,6 +555,93 @@ export function DecorSheet({
 }
 
 /** 長押しで連続変化するステッパー（350ms 後から 90ms 間隔） */
+/**
+ * フッターの編集。
+ *
+ * 文言は**原稿の front matter** に書き戻す（三層分離: 出典は内容）。
+ * 打つたびに原稿を差し替えるとエディタが remount されるので、
+ * 確定（フォーカスを外す / 改行）のときだけ書き戻す。
+ */
+function FooterEditor({
+  text,
+  style,
+  onUpdateText,
+  onUpdateStyle,
+}: {
+  text: string;
+  style: Partial<FooterStyle> | undefined;
+  onUpdateText: (t: string) => void;
+  onUpdateStyle: (f: Partial<FooterStyle> | undefined) => void;
+}) {
+  const [draft, setDraft] = useState(text);
+  /* 原稿側が変わったら（別文書に切り替えた等）入力欄も追従させる */
+  const shownRef = useRef(text);
+  if (shownRef.current !== text) {
+    shownRef.current = text;
+    if (draft !== text) setDraft(text);
+  }
+  const commit = () => {
+    const next = sanitizeFooterText(draft).trim();
+    if (next !== text) onUpdateText(next);
+  };
+  const st = withFooterDefaults(style);
+  const upd = (patch: Partial<FooterStyle>) => {
+    const next = { ...style, ...patch };
+    onUpdateStyle(Object.keys(next).length ? next : undefined);
+  };
+  return (
+    <>
+      <TextInput
+        style={styles.textInput}
+        value={draft}
+        maxLength={MAX_FOOTER_TEXT}
+        onChangeText={setDraft}
+        onBlur={commit}
+        onSubmitEditing={commit}
+        returnKeyType="done"
+        placeholder="N Engl J Med 2024;390:1234-45"
+        placeholderTextColor="#9AA0AC"
+      />
+      <Text style={styles.note}>
+        原稿の front matter の footer: に書き込みます。全スライドの下に小さく出ます
+      </Text>
+      <View style={styles.alignRow}>
+        {([
+          { v: 'l', label: '左' },
+          { v: 'ctr', label: '中央' },
+          { v: 'r', label: '右' },
+        ] as const).map((a) => (
+          <Pressable
+            key={a.v}
+            style={[styles.alignBtn, st.align === a.v && styles.alignBtnOn]}
+            onPress={() => upd({ align: a.v })}
+          >
+            <Text style={[styles.alignText, st.align === a.v && styles.alignTextOn]}>
+              {a.label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+      <Stepper
+        label={`大きさ ${st.sizePt}pt`}
+        onDec={() => upd({ sizePt: Math.max(MIN_FOOTER_PT, st.sizePt - 1) })}
+        onInc={() => upd({ sizePt: Math.min(MAX_FOOTER_PT, st.sizePt + 1) })}
+      />
+      <Pressable style={styles.checkRow} onPress={() => upd({ onCover: !st.onCover })}>
+        <Text style={[styles.mark, st.onCover && styles.markOn]}>{st.onCover ? '●' : '○'}</Text>
+        <Text style={styles.checkLabel}>表紙にも出す</Text>
+      </Pressable>
+      {(style && Object.keys(style).length > 0) && (
+        <Pressable style={styles.ungroupBtnLike} onPress={() => onUpdateStyle(undefined)}>
+          <Text style={styles.ungroupText}>
+            フッターの体裁を既定に戻す（{DEFAULT_FOOTER_STYLE.sizePt}pt・右）
+          </Text>
+        </Pressable>
+      )}
+    </>
+  );
+}
+
 function Stepper({
   label,
   onDec,
@@ -703,6 +812,25 @@ const styles = StyleSheet.create({
   removeBtn: { alignSelf: 'flex-start', marginTop: 2 },
   removeText: { fontSize: 12, color: '#B01030', fontWeight: '600' },
   ungroupText: { fontSize: 12, color: '#1B3FE0', fontWeight: '600' },
+
+  note: { fontSize: 11, lineHeight: 15, color: '#666C78', marginTop: 4 },
+  alignRow: { flexDirection: 'row', gap: 6, marginTop: 8 },
+  alignBtn: {
+    flex: 1,
+    height: 30,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: RULE,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  alignBtnOn: { backgroundColor: '#E7ECFF', borderColor: '#1B3FE0' },
+  alignText: { fontSize: 12, color: '#14161B' },
+  alignTextOn: { color: '#1B3FE0', fontWeight: '600' },
+  checkRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 },
+  checkLabel: { fontSize: 12, color: '#14161B' },
+  ungroupBtnLike: { alignSelf: 'flex-start', marginTop: 8 },
 
   mark: { fontSize: 14, color: '#9AA0AC', paddingHorizontal: 1 },
   markOn: { color: '#1B3FE0' },

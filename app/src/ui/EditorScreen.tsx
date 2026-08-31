@@ -21,7 +21,12 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { LatestOnly } from '../converter/latestOnly';
-import { sanitizeForXml, splitFrontMatter } from '../converter/frontMatter';
+import {
+  frontMatterIssues,
+  sanitizeForXml,
+  setFrontMatterValue,
+  splitFrontMatter,
+} from '../converter/frontMatter';
 import { insertBlock } from '../text/blockInsert.ts';
 import { COLUMN_SEPARATOR_TEXT } from '../text/columns.ts';
 import { findSplitSuspects } from '../preview/slideSync.ts';
@@ -30,6 +35,7 @@ import { WebView } from 'react-native-webview';
 
 import type {
   BootStatus,
+  ConvertOptions,
   ConvertResult,
   Diagnostic,
   DocResult,
@@ -86,6 +92,7 @@ import {
   pruneGroups,
 } from '../design/groups';
 import { parseDesignFile, serializeDesign } from '../design/designFile';
+import { toExportFooter, type FooterStyle } from '../design/footer';
 import { adjustDeck, toExportSizes, type TextSizes } from '../design/textSizes';
 import {
   applyAssignments,
@@ -1053,6 +1060,16 @@ export default function EditorScreen() {
   const [breakSheet, setBreakSheet] = useState<EditableBlock | null>(null);
 
 
+  /* front matter を含めて原稿ごと差し替える（フッターの 1 行書き換えが使う） */
+  const patchSource = useCallback(
+    (next: string) => {
+      if (next === sourceRef.current) return;
+      onChangeSource(next);
+      setEditorEpoch((e) => e + 1);
+    },
+    [onChangeSource],
+  );
+
   /**
    * プレビューの slide.index → 原稿のコンテンツスライド番号。
    * 表の後ろのスライド分割（CLAUDE.md 落とし穴 5）などで pandoc のスライド数が
@@ -1465,6 +1482,44 @@ export default function EditorScreen() {
     [source],
   );
 
+  /* ---------- フッター（出典・注釈） ---------- */
+
+  /* 文言は原稿のもの（notes/footer-design.md の三層分離）。体裁だけがデザインデータ */
+  const deckFooterText = useMemo(() => splitFrontMatter(source).metadata.footer ?? '', [source]);
+
+  /**
+   * 書き出しとプレビューが**同じ 1 つの値**を使う。
+   * これで「プレビューでは合っているのに出力が違う」が構造的に起きない
+   * （文字サイズ設定の toExportSizes / adjustDeck と同じ形）。
+   */
+  const footerSpec = useMemo(
+    () => toExportFooter(deckFooterText, design.footer, previewDeck ?? result?.deck),
+    [deckFooterText, design.footer, previewDeck, result],
+  );
+
+  const handleUpdateFooterText = useCallback(
+    (text: string) => {
+      /* front matter の footer: 行だけを書き換える。他の行・本文には触れない */
+      patchSource(setFrontMatterValue(sourceRef.current, 'footer', text));
+    },
+    [patchSource],
+  );
+
+  const handleUpdateFooterStyle = useCallback(
+    (f: Partial<FooterStyle> | undefined) => {
+      mutateDesign((prev) => {
+        const next = { ...prev };
+        if (f && Object.keys(f).length) next.footer = f;
+        else delete next.footer;
+        return next;
+      });
+    },
+    [mutateDesign],
+  );
+
+  /* 原稿側の問題（front matter の複数行・配列）は変換器の警告と並べて出す */
+  const sourceIssues = useMemo(() => frontMatterIssues(source), [source]);
+
   /* プレビュー用: スライド番号（タイトル込み）→ 装飾の対応表 */
   const decorBySlide = useMemo(() => {
     const map = new Map<number, SlideDecoration[]>();
@@ -1529,6 +1584,12 @@ export default function EditorScreen() {
             textSizes: toExportSizes(
               design.text,
               resultRef.current?.deck?.bodySz ?? [2400, 2100, 1800, 1500, 1500],
+            ),
+            /* プレビューと同じ 1 つの解決結果を渡す */
+            footer: toExportFooter(
+              splitFrontMatter(src).metadata.footer,
+              design.footer,
+              resultRef.current?.deck,
             ),
             useTemplate: design.template !== undefined,
           });
@@ -1727,6 +1788,9 @@ export default function EditorScreen() {
                   <Text style={styles.diagText}>{error}</Text>
                 </View>
               )}
+              {sourceIssues.map((d, i) => (
+                <DiagnosticRow key={'fm' + i} diagnostic={d} />
+              ))}
               {result?.diagnostics.map((d, i) => (
                 <DiagnosticRow key={i} diagnostic={d} />
               ))}
@@ -1742,6 +1806,15 @@ export default function EditorScreen() {
                     active={s.index === highlighted}
                     width={Math.max(0, previewW - 40 - 26)}
                     decorations={decorBySlide.get(s.index)}
+                    footer={
+                      /* 表紙は ctrTitle の有無で判定する — 書き出し側（applyFooters）と
+                         同じ規則。レイアウト名は配線盤が書き換えるので使えない */
+                      footerSpec &&
+                      (footerSpec.onCover ||
+                        !s.shapes.some((sh) => sh.placeholder === 'ctrTitle'))
+                        ? footerSpec
+                        : null
+                    }
                     editingDecor={s.index === editingSlideIndex}
                     selectedDecorId={selectedDecorId}
                     dragMembers={decorDragMembers}
@@ -1793,6 +1866,10 @@ export default function EditorScreen() {
         onCopyToAll={handleCopyDecorToAll}
         textSizes={design.text}
         onUpdateTextSizes={handleUpdateTextSizes}
+        footerText={deckFooterText}
+        onUpdateFooterText={handleUpdateFooterText}
+        footerStyle={design.footer}
+        onUpdateFooterStyle={handleUpdateFooterStyle}
         onExportDesign={handleExportDesign}
         onImportDesign={handleImportDesign}
         template={design.template}
@@ -1937,6 +2014,7 @@ function SlideCard({
   active,
   width,
   decorations,
+  footer,
   imageUriOf,
   editingDecor,
   selectedDecorId,
@@ -1954,6 +2032,8 @@ function SlideCard({
   active: boolean;
   width: number;
   decorations?: SlideDecoration[];
+  /** 解決済みのフッター。このスライドに出さないなら null */
+  footer?: ConvertOptions['footer'] | null;
   imageUriOf?: (name: string) => string;
   /** 装飾パネルを開いているスライド。直接操作レイヤーを重ねる */
   editingDecor: boolean;
@@ -2025,6 +2105,7 @@ function SlideCard({
               deck={deck}
               width={width}
               decorations={shownDecorations}
+              footer={footer}
               imageUriOf={imageUriOf}
               onParagraphPress={() => onSelect(slide.index)}
               onParagraphLongPress={(p) => onParagraphLongPress(slide.index, p)}

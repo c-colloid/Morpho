@@ -169,7 +169,8 @@ src/converter/  ── 変換。ここより上は pandoc を知らない
                          pptx の OOXML 解析（図形 / 段落 / ラン・座標継承・ノート）・
                          docx の三層解析（document / styles / numbering → DocBlock）
   usePandocConverter.tsx 不可視 WebView をマウントして Converter 実装を提供する hook
-  frontMatter.ts         front matter を自前で剥がす（CLAUDE.md 落とし穴 1 の回避）
+  frontMatter.ts         front matter を自前で剥がす（CLAUDE.md 落とし穴 1 の回避）。
+                         1 行だけの書き戻しと、読めない書き方の診断も持つ
   latestOnly.ts          待機枠を1件だけ持つ変換キュー
 
 src/preview/    ── 原稿とスライドの対応（純関数）
@@ -186,6 +187,10 @@ src/design/     ── 見た目のデータ（原稿には書かない層）
   textSizes.ts           文字サイズ設定と、シーンへの反映（adjustDeck）
   template.ts            テンプレート配線盤。レイアウト和名 → 英語名の対応
   designFile.ts          .morphodesign の読み書きと検証
+
+src/design/     ── デザインデータ（三層分離の第3層）
+  footer.ts              フッターの体裁。帯の EMU 解決・色・浄化。プレビューと
+                         書き出しが同じ 1 つの結果を使う唯一の場所
 
 src/store/      ── 永続化と共有
   documents.ts           複数文書のアプリ内保存。外部ファイルの再接続もここが持ち主
@@ -241,12 +246,14 @@ npm run check
 | `check-design.mjs` | 装飾・グループ・文字サイズ・.morphodesign の往復 |
 | `check-diff.mjs` | 行 Diff（競合ダイアログ） |
 | `check-template.mjs` | テンプレート（reference-doc のテーマ色引き継ぎと和名 → 英語名の書き換え） |
+| `check-footer.mjs` | フッター（帯の解決・色・浄化・注入・Open XML 妥当性と較正） |
 | `check-deck.mjs` | **統合検査**: 本物の pandoc.wasm で pptx / html / docx を作り、座標・配色・字サイズ・字下げ・改行・ノート・Web の CSS 注入・docx のノート除去までを確認 |
 
 ### pandoc の実出力を見る
 
 ```bash
-node scripts/dump-pptx.mjs [file.md]
+node scripts/dump-pptx.mjs [file.md]     # pandoc が吐く pptx の中身
+node scripts/dump-footer.mjs             # フッター帯・記法・注入の実測（未実装機能の設計根拠）
 ```
 
 **パーサを推測で書かないこと。** 実際に pandoc を回して XML を見る。

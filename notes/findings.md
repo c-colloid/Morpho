@@ -280,3 +280,54 @@ lstStyle lvl1  master title=3300 body=2400 ／ Two Content=2100 ／ Comparison=1
   段組みの本文が 14% 大きく、Content with Caption のタイトルが 2.2 倍で描かれる
 - **`sz="half"` は「列である」の印ではない。** 列でないもの（Content with Caption の
   本文枠）にも付き、列なのに付かないもの（Comparison の左見出し）もある
+
+## 12. フッター（出典・注釈）の実測 — 設計は `notes/footer-design.md`
+
+「出典や注釈を小さくかけるフッター」の設計にあたって、pandoc-wasm 1.1.0（3.10 相当）の
+実出力を 8 方向から測った。結論と設計は `notes/footer-design.md`、再現は
+`app/scripts/dump-footer.mjs`。ここには経緯と、他の機能にも効く発見だけを残す。
+
+### 期待と逆だったこと
+
+**pptx にはフッター枠が最初からあり、docx には無かった。**
+pandoc 既定 reference の 11 レイアウトすべてが `ftr` / `dt` / `sldNum` を持ち、
+マスターに座標（y=92.69%・高さ 5.32%・9pt・中央揃え）まで入っている。
+一方 docx には `word/footer*.xml` もスタイルも 0 個で、本文 12pt より小さい段落スタイルは
+`Abstract` / `AbstractTitle` の 10pt しか存在しない。
+「スライドは自作、文書は pandoc 任せ」という直感と逆だった。
+
+それでも ftr プレースホルダは使わない判断にした。理由は
+`findInherited` が type / idx で外れると **body の枠へ落ちる**ため、
+ftr を持たないテンプレートでフッターが本文全面に化けること（実測・警告ゼロ）が最大。
+落とし穴 4 と同じ「色は合っているのに配置が違う」壊れ方をする。
+
+### スライド番号は数えてはいけない
+
+`fixtures/pptx-benchmark.md` で `cursorSlide.ts` は 9 枚と数え、pandoc は 64 枚を出した。
+主因は表の分割ではなく **pandoc の slide level 自動判定**で、`#` の直下に `##` を置くと
+slide level が 2 になり `##` がスライドを作る。抄読会の原稿はまさにこの形。
+
+代わりに、Lua で私用領域文字（U+E001 / U+E002）の目印を打ち、
+OOXML 後処理で「pandoc が実際に置いたスライド」を読む。
+ただし**目印を本文の Para として置くと 7 件中 3 件がずれ、デッキが 1 枚増える**。
+**直前の見出しの inline 末尾へ巻き上げる**と benchmark で 7/7 正解し、
+スライド数もレイアウト内訳も 1 バイトも変わらなかった。
+
+### 検証器は較正しないと沈黙に気づけない
+
+`@ooxml-tools/validate`（落とし穴 9 で唯一 PowerPoint の判定を代弁できた検証器）は
+**default export が本体**で、README の 2 引数シグネチャは古い。
+「素の出力 0 件 / 注入後 0 件」だけでは何も言えないので、
+**子要素順をわざと壊した較正ケース**を同居させる（1 件出ることを確認済み）。
+同じ手順で `xmldom` の整形式性チェックを較正したところ、信号がまったく出ないと分かった。
+
+### ついでに見つかった既存の不具合（未修正）
+
+1. **`designFile.ts` の `sanitizeDecorText` が 3 つ同時に壊れている。**
+   U+FFFE を素通しし（注入した pptx がスキーマ検証 1 件になる）、XML 1.0 で合法な
+   U+007F を落とし、20 字で切る。`frontMatter.ts` の `XML_INVALID_RE` と共通化すべき
+2. **`titleOffset = metadata.title ? 1 : 0` が誤り。** 表紙は `author` / `subtitle` / `date`
+   のどれか単独でも生える
+3. **表紙の日付が 24pt で描かれている。** `dt` は `isTitle` / `isCover` / `isSub` の
+   どれにも当たらず `bodySz[0]` になるが、枠の高さは 21.6pt
+

@@ -559,7 +559,7 @@ window.__morphoFindAnchor = findAnchor;
 
 /* デッキ情報: 寸法・配色・既定の文字サイズ */
 function parseDeck(zip, dec) {
-  var deck = { w: 9144000, h: 5143500, colors: {}, titleSz: 3300, bodySz: [2400, 2100, 1800, 1500, 1500], bodyMarL: [], bodyIndent: [], titleAlgn: null, bodyAlgn: [], bodySpcBef: [], bodySpcBefPts: [], bodyBuChar: [] };
+  var deck = { w: 9144000, h: 5143500, colors: {}, ftrBand: null, titleSz: 3300, bodySz: [2400, 2100, 1800, 1500, 1500], bodyMarL: [], bodyIndent: [], titleAlgn: null, bodyAlgn: [], bodySpcBef: [], bodySpcBefPts: [], bodyBuChar: [] };
   /* 既定はマスターの実測値: marL=342900*(n+1), indent=-342900（27pt 刻みのぶら下げ） */
   for (var di = 0; di < 9; di++) {
     deck.bodyMarL.push(342900 * (di + 1));
@@ -634,8 +634,28 @@ function parseDeck(zip, dec) {
       }
     }
     deck.masterPh = parsePlaceholderFrames(master);
+    /* テンプレートが「フッターを置く場所」として持つ帯。pandoc 既定はマスターだけが
+       座標を持ち、11 レイアウトの ftr は空の <p:spPr/>（実測）。レイアウト側に
+       座標を持つテンプレートも実在するので、見つからなければそちらも見る。
+       どこにも無ければ null のままにして、アプリ側の比率の既定値へ落とす */
+    deck.ftrBand = findFtrBand(deck.masterPh);
+    if (!deck.ftrBand) {
+      var layoutNames = Object.keys(zip).filter(function (n) {
+        return /^ppt\\/slideLayouts\\/slideLayout\\d+\\.xml$/.test(n);
+      });
+      for (var fi = 0; fi < layoutNames.length && !deck.ftrBand; fi++) {
+        deck.ftrBand = findFtrBand(parsePlaceholderFrames(dec.decode(zip[layoutNames[fi]])));
+      }
+    }
   } catch (e) { deck.masterPh = []; }
   return deck;
+}
+
+function findFtrBand(phList) {
+  for (var i = 0; i < (phList || []).length; i++) {
+    if (phList[i].type === 'ftr' && phList[i].frame) return phList[i].frame;
+  }
+  return null;
 }
 
 /* 出力そのものを読む。reveal.js に逃げると嘘をつくので pptx を直接開く */
@@ -749,7 +769,7 @@ function parsePptx(u8) {
   return {
     slideCount: slides.length,
     slides: slides,
-    deck: { w: deck.w, h: deck.h, colors: deck.colors, titleSz: deck.titleSz, bodySz: deck.bodySz, bodyMarL: deck.bodyMarL, bodyIndent: deck.bodyIndent, titleAlgn: deck.titleAlgn, bodyAlgn: deck.bodyAlgn, bodySpcBef: deck.bodySpcBef, bodySpcBefPts: deck.bodySpcBefPts, bodyBuChar: deck.bodyBuChar }
+    deck: { w: deck.w, h: deck.h, colors: deck.colors, ftrBand: deck.ftrBand, titleSz: deck.titleSz, bodySz: deck.bodySz, bodyMarL: deck.bodyMarL, bodyIndent: deck.bodyIndent, titleAlgn: deck.titleAlgn, bodyAlgn: deck.bodyAlgn, bodySpcBef: deck.bodySpcBef, bodySpcBefPts: deck.bodySpcBefPts, bodyBuChar: deck.bodyBuChar }
   };
 }
 window.__morphoParsePptx = parsePptx;
@@ -932,6 +952,73 @@ function applyDecorations(bytes, decorations, titleOffset, groups) {
   return zipSync(zip);
 }
 window.__morphoApplyDecorations = applyDecorations;
+
+/* ---- フッター（出典・注釈）の OOXML 後処理（notes/footer-design.md） ----
+   ftr プレースホルダには載せない。座標を持たないテンプレートでは parsePptx の
+   継承解決が本文の枠へ落ちてフッターが本文全面に化けるため（実測・警告ゼロ）。
+   座標を明示したただのテキストボックスを spTree の末尾（＝最前面）へ入れる。
+   座標・字サイズ・揃え・色はアプリ側（src/design/footer.ts）で解決済みの値を
+   そのまま書く — プレビューと書き出しが同じ 1 つの関数から導かれる。 */
+
+function footerColorXml(color) {
+  var tint = color && color.tint != null && color.tint < 100000
+    ? '<a:tint val="' + Math.round(color.tint) + '"/>'
+    : '';
+  if (color && color.scheme) {
+    return '<a:solidFill><a:schemeClr val="' + color.scheme + '">' + tint +
+      '</a:schemeClr></a:solidFill>';
+  }
+  var hex = ((color && color.hex) || '7F7F7F').replace('#', '').toUpperCase();
+  return '<a:solidFill><a:srgbClr val="' + hex + '">' + tint + '</a:srgbClr></a:solidFill>';
+}
+
+/* ECMA-376 の子要素順は nvSpPr(cNvPr → cNvSpPr → nvPr) → spPr → txBody。
+   順を崩すと Open XML SDK の検証が鳴る（較正で確認済み）。
+   <a:buNone/> を省くとパーサが「箇条書き」と読んで行頭記号を描く（実測） */
+function buildFooterSp(f, cNvPrId) {
+  return '<p:sp><p:nvSpPr>' +
+    '<p:cNvPr id="' + cNvPrId + '" name="MorphoFooter"/>' +
+    '<p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>' +
+    '<p:spPr><a:xfrm>' +
+    '<a:off x="' + Math.round(f.x) + '" y="' + Math.round(f.y) + '"/>' +
+    '<a:ext cx="' + Math.round(f.w) + '" cy="' + Math.round(f.h) + '"/>' +
+    '</a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>' +
+    '<p:txBody><a:bodyPr anchor="ctr" wrap="square"/><a:lstStyle/>' +
+    '<a:p><a:pPr marL="0" indent="0" algn="' + (f.algn || 'r') + '"><a:buNone/></a:pPr>' +
+    '<a:r><a:rPr lang="ja-JP" sz="' + Math.round(f.sz) + '">' + footerColorXml(f.color) +
+    '</a:rPr><a:t>' + escapeXmlText(f.text) + '</a:t></a:r>' +
+    '</a:p></p:txBody></p:sp>';
+}
+window.__morphoBuildFooterSp = buildFooterSp;
+
+function applyFooters(bytes, footer) {
+  if (!footer || !footer.text) return bytes;
+  var zip = unzipSync(bytes);
+  var dec2 = new TextDecoder();
+  var names = Object.keys(zip).filter(function (n) {
+    return /^ppt\\/slides\\/slide\\d+\\.xml$/.test(n);
+  });
+  names.forEach(function (name) {
+    var xml = dec2.decode(zip[name]);
+    /* 表紙は ctrTitle の有無で判定する。レイアウト名は配線盤（applyAssignments）が
+       書き換えるので名前では判定できない */
+    if (!footer.onCover && xml.indexOf('type="ctrTitle"') >= 0) return;
+    /* 二重注入の防止。同じ sp が 2 つ並んでも検証器は 0 件で通す（実測）ので、
+       冪等性は注入側で担保するしかない */
+    if (xml.indexOf('name="MorphoFooter"') >= 0) return;
+    var at = xml.indexOf('</p:spTree>');
+    if (at < 0) return;
+    var maxId = 0;
+    var idRe = /\\bid="(\\d+)"/g;
+    var im;
+    while ((im = idRe.exec(xml)) !== null) {
+      if (Number(im[1]) > maxId) maxId = Number(im[1]);
+    }
+    zip[name] = strToU8(xml.slice(0, at) + buildFooterSp(footer, maxId + 1) + xml.slice(at));
+  });
+  return zipSync(zip);
+}
+window.__morphoApplyFooters = applyFooters;
 
 /* 文字サイズの上書き（文書の設定）。
    titleSz / bodySz はマスターの titleStyle / bodyStyle の defRPr sz を書き換える
@@ -1745,6 +1832,11 @@ async function doExport(id, md, opts, format) {
       var processed = applyDecorations(
         new Uint8Array(await out.arrayBuffer()), opts.decorations, titleOffset, opts.groups);
       out = new Blob([processed]);
+    }
+
+    /* フッターは装飾より後 = 最前面。帯の上に置いた装飾に隠されないようにする */
+    if (format === 'pptx' && opts.footer) {
+      out = new Blob([applyFooters(new Uint8Array(await out.arrayBuffer()), opts.footer)]);
     }
 
     var reader = new FileReader();

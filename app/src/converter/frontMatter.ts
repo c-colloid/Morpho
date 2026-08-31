@@ -10,6 +10,8 @@
  * 完全な YAML は要らない。スカラーの key: value だけ拾えば足りる。
  */
 
+import type { Diagnostic } from './types';
+
 export interface SplitDocument {
   metadata: Record<string, string>;
   /** front matter を取り除いた本文 */
@@ -39,7 +41,12 @@ export function sanitizeForXml(doc: SplitDocument): SplitDocument {
 const unquote = (v: string): string => {
   const t = v.trim();
   if (t.length >= 2 && (t[0] === '"' || t[0] === "'") && t[t.length - 1] === t[0]) {
-    return t.slice(1, -1);
+    const inner = t.slice(1, -1);
+    /* YAML のクォート規則ぶんだけ解く。二重引用符は \\ と \"、
+       単引用符は '' が 1 つの ' を表す。setFrontMatterValue の書き戻しと対になる */
+    return t[0] === '"'
+      ? inner.replace(/\\(["\\])/g, '$1')
+      : inner.replace(/''/g, "'");
   }
   return t;
 };
@@ -60,4 +67,96 @@ export function splitFrontMatter(source: string): SplitDocument {
     if (value) metadata[kv[1]] = value;
   }
   return { metadata, body: source.slice(m[0].length) };
+}
+
+/* ---------- front matter の 1 行だけを書き換える ---------- */
+
+const FM_RE = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
+/* 値が空・インデント継続行つき・ブロックスカラー（| > |- >-）の見出し */
+const BLOCK_SCALAR_RE = /^[|>][-+]?\d*$/;
+
+const quote = (v: string): string => '"' + v.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+
+/**
+ * front matter の `key: value` を 1 行だけ追加 / 更新 / 削除する。
+ *
+ * 原稿はユーザーのものなので、**他の行・整形・コメント・本文には触れない**。
+ * value が空文字なら該当行（とそのインデント継続行）を消す。
+ * front matter が無ければ文書の先頭に作る。値は常に単一行・二重引用符つきで書く
+ * （複数行の YAML は splitFrontMatter が読めないため。frontMatterIssues を参照）。
+ */
+export function setFrontMatterValue(source: string, key: string, value: string): string {
+  const v = value.trim();
+  const m = FM_RE.exec(source);
+  if (!m) {
+    if (!v) return source;
+    return '---\n' + key + ': ' + quote(v) + '\n---\n\n' + source;
+  }
+  const nl = m[0].includes('\r\n') ? '\r\n' : '\n';
+  const lines = m[1].split(/\r?\n/);
+  const keyRe = new RegExp('^' + key + '\\s*:');
+  const out: string[] = [];
+  let replaced = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^\s/.test(lines[i]) && keyRe.test(lines[i])) {
+      /* この行に属するインデント継続行（ブロックスカラー・配列）ごと差し替える */
+      while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1])) i++;
+      if (v) out.push(key + ': ' + quote(v));
+      replaced = true;
+      continue;
+    }
+    out.push(lines[i]);
+  }
+  if (!replaced && v) out.push(key + ': ' + quote(v));
+  const body = source.slice(m[0].length);
+  if (out.every((l) => l.trim() === '')) {
+    /* 中身が空になったら front matter ごと畳む。作るときに入れた空行も一緒に
+       落として、「最初から無かった原稿」へ戻す */
+    return body.replace(/^\r?\n/, '');
+  }
+  return '---' + nl + out.join(nl) + nl + '---' + nl + body;
+}
+
+/**
+ * front matter のうち splitFrontMatter が読めない書き方を診断にする。
+ *
+ * スカラーの 1 行しか読まないので、ブロックスカラー（`footer: |`）は値が
+ * "|" の 1 文字に、配列やネストはキーごと消える。どちらも**無警告**で
+ * 起きるため（実測）、気づけるようにここで拾う。
+ */
+export function frontMatterIssues(source: string): Diagnostic[] {
+  const m = FM_RE.exec(source);
+  if (!m) return [];
+  const lines = m[1].split(/\r?\n/);
+  const block: string[] = [];
+  const nested: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s/.test(line) || !line.trim() || line.trimStart().startsWith('#')) continue;
+    const kv = /^([A-Za-z0-9_.-]+)\s*:\s*(.*)$/.exec(line);
+    if (!kv) continue;
+    const value = kv[2].trim();
+    if (BLOCK_SCALAR_RE.test(value)) block.push(kv[1]);
+    else if (!value && i + 1 < lines.length && /^\s+\S/.test(lines[i + 1])) nested.push(kv[1]);
+  }
+  const out: Diagnostic[] = [];
+  if (block.length) {
+    out.push({
+      kind: 'design',
+      label: 'front matter の複数行の値は読めません',
+      hint: '1 行で書いてください（例: footer: "NEJM 2024;390:1234-45 / Lancet 2023;402:1-10"）',
+      text: block.map((k) => k + ': | または >').join(', '),
+      count: block.length,
+    });
+  }
+  if (nested.length) {
+    out.push({
+      kind: 'design',
+      label: 'front matter の配列・入れ子は読めません',
+      hint: 'この項目は無視されます。1 行のスカラーで書いてください',
+      text: nested.join(', '),
+      count: nested.length,
+    });
+  }
+  return out;
 }

@@ -9,7 +9,9 @@
 import * as FileSystem from 'expo-file-system/legacy';
 
 import type { SlideDecoration } from '../converter/types';
+import type { FooterStyle } from '../design/footer';
 import type { TextSizes } from '../design/textSizes';
+import { sanitizeFooterStyle } from '../design/footer';
 import { sanitizeTextSizes } from '../design/designFile';
 import { PANDOC_LAYOUTS, type LayoutAssignments } from '../design/template';
 
@@ -36,6 +38,11 @@ export interface DesignData {
   groups: DecorGroup[];
   /** 文字サイズの上書き（pt）。未指定はテンプレート既定 */
   text?: TextSizes;
+  /**
+   * フッター（出典・注釈）の体裁。**文言は含まない** — 文言は原稿の
+   * front matter `footer:` にある（notes/footer-design.md の三層分離）
+   */
+  footer?: Partial<FooterStyle>;
   /** テンプレート（reference-doc）。.morphodesign には含めない（本体が別ファイル） */
   template?: TemplateMeta;
 }
@@ -63,6 +70,8 @@ export async function loadDesign(docId: string): Promise<DesignData> {
       /* 壊れた・手で編集されたファイルでも NaN 等をプレビューへ流さない */
       const text = sanitizeTextSizes(parsed.text);
       if (text) out.text = text;
+      const footer = sanitizeFooterStyle(parsed.footer);
+      if (footer) out.footer = footer;
       const tpl = sanitizeTemplateMeta(parsed.template);
       if (tpl) out.template = tpl;
       return out;
