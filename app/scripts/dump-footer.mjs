@@ -11,6 +11,9 @@
  *   2. `::: footer` 記法が pptx / docx / html で実際に何になるか
  *   3. デッキ全体フッターの注入（表紙以外の全スライドへ textbox）が
  *      整形式・スキーマ妥当・パーサ往復に耐えるか
+ *   4. Lua から診断（lint）を出す経路
+ *   5. `***`（hr）領域に footer を置いたときの4戦略
+ *   6. `::: footer` の中身に何を書けるか
  *
  * @ooxml-tools/validate があればスキーマ検証まで行う（devDependency ではない。
  * `npm install --no-save @ooxml-tools/validate` で入る）。
@@ -52,8 +55,8 @@ const schemaErrors = async (bytes) => {
   return (Array.isArray(r) ? r : (r.errors ?? [])).length;
 };
 
-const toPptx = (md, opts = {}) =>
-  convert({ from: 'markdown-yaml_metadata_block', to: 'pptx', 'output-file': 'o.pptx', ...opts }, md, {});
+const toPptx = (md, files = {}, opts = {}) =>
+  convert({ from: 'markdown-yaml_metadata_block', to: 'pptx', 'output-file': 'o.pptx', ...opts }, md, files);
 
 /* ---------- 1. pandoc 既定テンプレートのフッター帯 ---------- */
 
@@ -205,7 +208,7 @@ const { metadata, body } = (() => {
   return { metadata: meta, body: DECK.slice(m[0].length) };
 })();
 
-const deckBytes = new Uint8Array(await (await toPptx(body, { metadata })).files['o.pptx'].arrayBuffer());
+const deckBytes = new Uint8Array(await (await toPptx(body, {}, { metadata })).files['o.pptx'].arrayBuffer());
 const before = win.__morphoParsePptx(deckBytes);
 const CITE = 'Smith & Jones <2024> N Engl J Med 2024;390:1234-45';
 const out = injectDeckFooter(deckBytes, CITE);
@@ -242,3 +245,145 @@ if (errs !== null) {
     + ` / フッター注入後 ${errs} 件 / 較正（子要素順を壊した版）${await schemaErrors(bad)} 件`);
   console.log('  ← 較正が 0 件だと検証器が何も見ていないことになる。必ず一緒に測る');
 }
+
+
+/* ---------- 4. Lua から診断（lint）を出す経路 ---------- */
+
+console.log('\n' + '='.repeat(72));
+console.log('4. Lua から診断を出す経路');
+console.log('='.repeat(72));
+
+const FOOTER_MD = '# 見出し\n\n本文。\n\n::: footer\nNEJM 2024\n:::\n';
+const LUA_STDERR = [
+  'function Div(el)',
+  "  if el.classes:includes('footer') then",
+  "    io.stderr:write('MORPHO-FOOTER: via io.stderr\\n')",
+  '    return {}',
+  '  end',
+  'end',
+].join('\n');
+const LUA_LOGWARN = [
+  'function Div(el)',
+  "  if el.classes:includes('footer') then",
+  "    pandoc.log.warn('MORPHO-FOOTER: via pandoc.log.warn')",
+  '    return {}',
+  '  end',
+  'end',
+].join('\n');
+
+for (const [label, lua] of [['io.stderr:write', LUA_STDERR], ['pandoc.log.warn', LUA_LOGWARN]]) {
+  const r = await toPptx(FOOTER_MD, { 'f.lua': lua }, { filters: ['f.lua'] });
+  console.log(`${label.padEnd(16)} res.stderr=${JSON.stringify(r.stderr || '')}`);
+  console.log(`${' '.repeat(16)} res.warnings=${JSON.stringify((r.warnings || []).map((w) => w.message ?? w))}`);
+}
+console.log('  ← io.stderr はホストのコンソールへ出るだけで res.stderr に届かない。');
+console.log('     classify が拾えるのは pandoc.log.warn（ScriptingWarning）だけ');
+
+/* ---------- 5. `***`（hr）領域に footer を置いたときの4戦略 ---------- */
+
+console.log('\n' + '='.repeat(72));
+console.log('5. `***`（hr）領域の footer — 巻き上げ戦略の比較');
+console.log('='.repeat(72));
+
+const STRATEGY = {
+  'その場に Para': `
+function Div(el)
+  if el.classes:includes('footer') then
+    return pandoc.Para(pandoc.utils.blocks_to_inlines(el.content))
+  end
+end`,
+  'hr 直後へ移す': `
+function Pandoc(doc)
+  local out, pending, lastHr = {}, nil, nil
+  for _, b in ipairs(doc.blocks) do
+    if b.t == 'Div' and b.classes:includes('footer') then
+      pending = pandoc.Para(pandoc.utils.blocks_to_inlines(b.content))
+    else
+      out[#out+1] = b
+      if b.t == 'HorizontalRule' then lastHr = #out end
+    end
+  end
+  if pending and lastHr then table.insert(out, lastHr + 1, pending)
+  elseif pending then out[#out+1] = pending end
+  return pandoc.Pandoc(out, doc.meta)
+end`,
+  '見出しへ巻き上げ': `
+function Pandoc(doc)
+  local out, hdr = {}, nil
+  for _, b in ipairs(doc.blocks) do
+    if b.t == 'Header' and b.level <= 1 then out[#out+1] = b; hdr = #out
+    elseif b.t == 'Div' and b.classes:includes('footer') then
+      if hdr then
+        local h = out[hdr]
+        table.insert(h.content, pandoc.Str('\u{E001}'))
+        for _, x in ipairs(pandoc.utils.blocks_to_inlines(b.content)) do
+          table.insert(h.content, x)
+        end
+        table.insert(h.content, pandoc.Str('\u{E002}'))
+        out[hdr] = h
+      end
+    else out[#out+1] = b end
+  end
+  return pandoc.Pandoc(out, doc.meta)
+end`,
+};
+
+/** レイアウト名つきのスライド内訳。枚数だけでは落とし穴 4 型の壊れ方を見逃す */
+async function shape(md, files = {}, opts = {}) {
+  const z = unzipSync(new Uint8Array(await (await toPptx(md, files, opts)).files['o.pptx'].arrayBuffer()));
+  const names = Object.keys(z).filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n));
+  const dist = {};
+  for (const n of names) {
+    const rels = strFromU8(z[n.replace('slides/', 'slides/_rels/') + '.rels']);
+    const lay = /slideLayouts\/(slideLayout\d+\.xml)/.exec(rels)?.[1];
+    const nm = lay ? /<p:cSld name="([^"]*)"/.exec(strFromU8(z['ppt/slideLayouts/' + lay]))?.[1] : '?';
+    dist[nm] = (dist[nm] || 0) + 1;
+  }
+  return `${names.length}枚 ${JSON.stringify(dist)}`;
+}
+
+const HR_BODIES = { '本文のみ': '本文2。\n', 'リスト': '- A\n- B\n', 'コード': '```js\nlet x;\n```\n', '表': '| A | B |\n|---|---|\n| 1 | 2 |\n' };
+for (const [kind, body] of Object.entries(HR_BODIES)) {
+  const ctrl = await shape(`# H1\n\n本文1。\n\n***\n\n${body}`);
+  const line = [`${kind.padEnd(6)} 対照=${ctrl}`];
+  for (const [name, lua] of Object.entries(STRATEGY)) {
+    const got = await shape(`# H1\n\n本文1。\n\n***\n\n${body}\n::: footer\n出典X\n:::\n`,
+      { 'f.lua': lua }, { filters: ['f.lua'] });
+    line.push(`${name.padEnd(16)} ${got === ctrl ? 'OK' : 'NG'} ${got}`);
+  }
+  console.log(line.join('\n         '));
+  console.log();
+}
+console.log('  ← 表があるときだけ壊れる（落とし穴 5）。巻き上げはブロックを増やさないので踏まない');
+
+/* ---------- 6. `::: footer` の中身 ---------- */
+
+console.log('='.repeat(72));
+console.log('6. `::: footer` の中身に何を書けるか');
+console.log('='.repeat(72));
+
+/* 1x1 の透明 PNG */
+const PIX = new Uint8Array([
+  0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,0x0d,0x49,0x48,0x44,0x52,
+  0,0,0,1,0,0,0,1,8,6,0,0,0,0x1f,0x15,0xc4,0x89,0,0,0,0x0a,0x49,0x44,0x41,
+  0x54,0x78,0x9c,0x63,0,1,0,0,5,0,1,0x0d,0x0a,0x2d,0xb4,0,0,0,0,0x49,0x45,
+  0x4e,0x44,0xae,0x42,0x60,0x82,
+]);
+const CONTROL = await shape('# H\n\n本文。\n');
+for (const [name, inner] of Object.entries({
+  'リンク': '[NEJM](https://doi.org/10.1056/x) 2024',
+  '強調': '**NEJM** *2024*',
+  '画像': '![](pix.png) NEJM 2024',
+  '脚注': 'NEJM 2024[^1]\n\n[^1]: 補足。',
+  '複数段落': 'NEJM 2024\n\n追記。',
+  '空': '',
+})) {
+  const md = `# H\n\n本文。\n\n::: footer\n${inner}\n:::\n`;
+  const got = await shape(md, { 'pix.png': new Blob([PIX]) });
+  const z = unzipSync(new Uint8Array(await (await toPptx(md, { 'pix.png': new Blob([PIX]) })).files['o.pptx'].arrayBuffer()));
+  const pics = Object.keys(z).filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+    .reduce((a, n) => a + (strFromU8(z[n]).match(/<p:pic>/g) || []).length, 0);
+  console.log(`${name.padEnd(6)} ${got === CONTROL ? '構成そのまま' : '構成が変わる '} ${got.padEnd(34)} 画像=${pics}`);
+}
+console.log(`対照   ${CONTROL}`);
+console.log('  ← 画像は無警告で消え、脚注はスライドを増やす。どちらも診断が要る');

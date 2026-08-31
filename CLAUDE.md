@@ -223,6 +223,15 @@ pptx ではルビが `Str` / `Strong` に落ちるため再現せず、pptx の�
 inline を保つなら `pandoc.utils.blocks_to_inlines` を使う。
 なお `PANDOC_WRITER_OPTIONS.slide_level` は nil で、Lua から実効スライドレベルは読めない。
 
+### 13. Lua フィルタの診断は `pandoc.log.warn` でしか届かない
+
+`io.stderr:write` はホストのコンソールへ `[WASI stderr] …` として出るだけで、
+**`result.stderr` は空文字列のまま**（実測）。アプリの `classify` には何も渡らない。
+`pandoc.log.warn(...)` なら `result.warnings` に構造化された `ScriptingWarning`
+（`message` / `source` / `line`）として届き、既存の `RULES` で分類できる。
+なお同じ label の警告は畳まれて `count` になり、残る `text` は最初の1件だけなので、
+どこで起きたかはメッセージ自身に埋めること。
+
 ## 警告の重要度分類
 
 | パターン | 重要度 | 意味 |
