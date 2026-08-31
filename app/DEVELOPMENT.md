@@ -177,6 +177,7 @@ src/preview/    ── 原稿とスライドの対応（純関数）
                          （コードフェンス内の # や *** は境界として無視する）
   notesEdit.ts           発表者ノート（::: notes :::）の読み取りと書き戻し
   lineBreakEdit.ts       改行位置編集。正規化・語 / 字分割・オフセット適用・対象特定
+  slideSync.ts           スライド数と原稿の区間数が食い違う原因の推定（Alert の案内用）
 
 src/design/     ── 見た目のデータ（原稿には書かない層）
   presets.ts             装飾プリセット（帯・アクセント線・カード・バッジ・図形）
@@ -194,6 +195,7 @@ src/store/      ── 永続化と共有
   updateCheck.ts         新しい版の通知
 
 src/text/       ── 文字列ユーティリティ（純関数）
+  blockInsert.ts         ブロック（画像等）の挿入位置。行を割らず、柵と区間の末尾を守る
   assetNames.ts          画像ファイル名の正規化・重複回避
   diffLines.ts           行 Diff（競合ダイアログ）
 
@@ -231,7 +233,8 @@ npm run check
 | `check-scene.mjs` | pptx パーサ単体（ブリッジを vm で評価して直接叩く） |
 | `check-cursor.mjs` | カーソル位置 → スライド番号の対応 |
 | `check-notes-edit.mjs` | 発表者ノートの読み取りと書き戻し |
-| `check-linebreak.mjs` | 改行位置編集（正規化・分割・オフセット適用・対象特定） |
+| `check-linebreak.mjs` | 改行位置編集（正規化・分割・オフセット適用・対象特定・柵と禁止区間） |
+| `check-image-insert.mjs` | 画像の挿入位置（行を割らない・独立段落・柵と区間の末尾） |
 | `check-update.mjs` | 版の比較と更新通知 |
 | `check-design.mjs` | 装飾・グループ・文字サイズ・.morphodesign の往復 |
 | `check-diff.mjs` | 行 Diff（競合ダイアログ） |
@@ -301,13 +304,12 @@ flex:1 の兄弟がもう1人いることが算術で確定した。
 
 棚卸しの全体像は `../notes/status-and-plan.md`。ここでは開発者向けの要点だけ。
 
-- **段組み（`::: {.columns}`）が正式対応していない。** pandoc の記法として書けてしまい、
-  書くとプレビューが崩れ、カラム内の段落を長押しすると**原稿が壊れる**。
-  原因 6 件はコードと OOXML の突き合わせで特定済み（status-and-plan.md の A-1〜A-6）。
-  設計は `../notes/columns-and-images.md`
+- **段組みの記法がまだ手打ち。** 0.14.0 で崩れも原稿破壊も直したが、書き手は 8 行の柵を
+  自分で打つ必要がある。打ちやすい `+++`（列区切り）と挿入 UI は次の版。
+  設計は `../notes/column-input.md`
 - 画像の大きさ・位置を指定する手段（pandoc が全部決めている。`{width=}` は pptx で無視される）
 - テーマ層（三層分離の第2層）。**コード上はまだゼロ**
-- 表のプレビュー描画（`<p:graphicFrame>` の解析）。文書プレビューには描けている
+- 表のセルの解析と描画（0.14.0 は枠と行数・列数まで）
 - カーソル同期の `headingSegments` 一般化（文書 / Web プレビューは同期なし）
 - 縦書き。置き場はテーマ層
 - `to: 'pdf'` が wasm で可能かの 1 回の実験（`../notes/preview-formats.md` の宿題）

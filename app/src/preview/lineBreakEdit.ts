@@ -87,12 +87,41 @@ export function segmentChars(text: string): string[] {
 }
 
 /** 指定オフセットに \ 改行を入れて組み立てる。継続行には indent を付ける */
+/**
+ * 改行を置けない区間（インライン記法の内側）。
+ *
+ * ここへ `\\` 改行を入れると記法が 2 行に割れて、画像・リンク・ルビ・傍点・強調が
+ * 無警告で失われる（pandoc は割れた記法をただの文字として出す。実測）。
+ * 記法の外側（境界そのもの）は置けるので、区間は開区間として扱う。
+ */
+const INLINE_ATOMS: RegExp[] = [
+  /!?\[[^\]\n]*\]\([^)\n]*\)/g, /* 画像とリンク */
+  /\{[^{}|\n]+\|[^{}|\n]+\}/g,     /* ルビ */
+  /《《[^》\n]+》》/g,                  /* 傍点 */
+  /`[^`\n]+`/g,                      /* コードスパン */
+  /\*\*[^*\n]+\*\*/g,               /* 太字 */
+];
+
+/** plain 上で「この位置に改行を入れてよいか」。記法の内側なら false */
+export function canBreakAt(plain: string, offset: number): boolean {
+  for (const re of INLINE_ATOMS) {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(plain)) !== null) {
+      if (offset > m.index && offset < m.index + m[0].length) return false;
+    }
+  }
+  return true;
+}
+
 export function applyBreaksAtOffsets(
   plain: string,
   offsets: Set<number>,
   indent: string = '',
 ): string {
-  const sorted = [...offsets].filter((o) => o > 0 && o < plain.length).sort((a, b) => a - b);
+  const sorted = [...offsets]
+    .filter((o) => o > 0 && o < plain.length && canBreakAt(plain, o))
+    .sort((a, b) => a - b);
   let out = '';
   let prev = 0;
   for (const o of sorted) {
@@ -127,6 +156,15 @@ export type LocateResult =
 
 const LIST_ITEM = /^([ \t]*)([-*+]|\d+[.)])([ \t]+)/;
 
+/* fenced div の柵（`::: {.columns}` / `::: notes` / `:::` / `::::::::`）。
+   pandoc 3.10 の実測（属性つき・素の1語・空白なし・3個以上の任意長・
+   末尾コロン・箇条書きの中の字下げ・引用符号つき）をすべて含む上位集合。
+   柵でない `::: 二語 以上` まで拾うが、拾いすぎは「特定できない」で止まるだけ、
+   取りこぼしは原稿の破壊になるので、意図して上位集合を取っている */
+const DIV_FENCE = /^[ \t]*(?:>[ \t]*)*:::+/;
+/* 開き柵のうち notes のもの。中身は専用シートで編集するので候補から外す */
+const NOTES_FENCE = /^[ \t]*(?:>[ \t]*)*:::+[ \t]*(?:\{[^}]*\.notes[^}]*\}|notes\b)/;
+
 /**
  * スライド区間の中から、プレビューの段落に対応する編集対象を探す。
  * 段落（空行区切り）と箇条書きの「1項目」（継続行含む）の両方を扱う。
@@ -147,11 +185,13 @@ export function locateEditable(
   interface Cand {
     startLine: number;
     endLine: number;
-    kind: 'para' | 'item' | 'heading' | 'table' | 'fence';
+    kind: 'para' | 'item' | 'heading' | 'table' | 'fence' | 'div';
     prefix: string;
   }
   const cands: Cand[] = [];
   let inFence = false;
+  /* `::: notes` の入れ子の深さ。0 より大きい間は候補を作らない */
+  let notesDepth = 0;
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
@@ -162,6 +202,24 @@ export function locateEditable(
       continue;
     }
     if (inFence || line.trim() === '') {
+      i++;
+      continue;
+    }
+    /* fenced div の柵は 1 行で独立したブロック境界。中身は通常どおり編集できる。
+       ただし `::: notes` の中は専用シートの持ち物なので候補にしない
+       （本文と同じ文がノートにもあると、本文を長押ししてノートが書き換わる） */
+    if (DIV_FENCE.test(line)) {
+      if (notesDepth > 0) {
+        if (NOTES_FENCE.test(line) || !/^[ \t]*(?:>[ \t]*)*:::+[ \t]*$/.test(line)) notesDepth++;
+        else notesDepth--;
+      } else if (NOTES_FENCE.test(line)) {
+        notesDepth = 1;
+      }
+      cands.push({ startLine: i, endLine: i, kind: 'div', prefix: '' });
+      i++;
+      continue;
+    }
+    if (notesDepth > 0) {
       i++;
       continue;
     }
@@ -202,7 +260,8 @@ export function locateEditable(
       !LIST_ITEM.test(lines[j]) &&
       !/^[ \t]*#/.test(lines[j]) &&
       !/^[ \t]*\|/.test(lines[j]) &&
-      !/^ {0,3}(```|~~~)/.test(lines[j])
+      !/^ {0,3}(```|~~~)/.test(lines[j]) &&
+      !DIV_FENCE.test(lines[j])
     ) {
       j++;
     }
@@ -217,7 +276,7 @@ export function locateEditable(
   };
 
   for (const c of cands) {
-    if (c.kind === 'fence') continue;
+    if (c.kind === 'fence' || c.kind === 'div') continue;
     const raw = lines.slice(c.startLine, c.endLine + 1).join('\n');
     // 箇条書きは接頭辞と継続行の字下げを外してから正規化する
     const deprefixed =

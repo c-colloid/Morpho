@@ -586,4 +586,66 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
   });
 }
 
+
+/* ---------- v0.14: 段組みの実出力（A-1 / A-2 / A-5 / A-6） ---------- */
+{
+  const cmd = `# 見出し
+
+::: {.columns}
+::: {.column}
+左の列。
+
+| a | b |
+|---|---|
+| 1 | 2 |
+:::
+::: {.column}
+右の列。
+:::
+:::
+`;
+  const r = await convert(
+    { from: 'markdown-yaml_metadata_block+east_asian_line_breaks', to: 'pptx', 'output-file': 'c.pptx' },
+    cmd, {},
+  );
+  const nonInfo = r.warnings.filter((w) => w.verbosity !== 'INFO');
+  const sc = win.__morphoParsePptx(new Uint8Array(await r.files['c.pptx'].arrayBuffer()));
+  const s1 = sc.slides[0];
+  const bodies = s1.shapes.filter((x) => x.placeholder === 'body');
+
+  t('段組み: 非 INFO の警告なしで 1 枚に収まる', () => {
+    assert.equal(nonInfo.length, 0, JSON.stringify(nonInfo));
+    assert.equal(sc.slideCount, 1);
+    /* 列に表があると pandoc は Comparison を選ぶ（実測。type="body" が 2 つ） */
+    assert.equal(s1.layout, 'Comparison');
+  });
+  t('段組み: 左右の列が別の x に解決され、右列が縦中央に寄らない（A-1 / A-2）', () => {
+    assert.equal(bodies.length, 2);
+    assert.equal(bodies[0].frame.x, 457200);
+    assert.equal(bodies[1].frame.x, 4645026, '右列が左列と重なっている（A-2）');
+    /* Comparison の見出し枠はレイアウトが anchor="b" を持つ。
+       'ctr' ならマスターの日付枠を拾っている（A-1） */
+    for (const b of bodies) assert.equal(b.anchor, 'b');
+  });
+  t('段組み: 列の中の表が枠として残る（A-5）', () => {
+    const tables = s1.tables ?? [];
+    assert.equal(tables.length, 1);
+    assert.equal(tables[0].x, 457200);
+    assert.equal(tables[0].rowCount, 2);
+    assert.equal(Array.from(tables[0].colWidths).length, 2);
+  });
+  t('段組み: 列の本文にレイアウト固有の字サイズが載る（A-6）', () => {
+    for (const b of bodies) {
+      assert.ok(b.lvlStyle, '列の lvlStyle が null');
+      assert.equal(b.lvlStyle[0].sz, 1800, 'Comparison の lvl1 は 1800（マスターは 2400）');
+    }
+    /* Comparison のタイトルは lvl1pPr を持つが sz が無い → null で DeckInfo（3300）へ落ちる */
+    const title = s1.shapes.find((x) => x.placeholder === 'title');
+    assert.equal(title.lvlStyle, null);
+  });
+  t('段組み: 全図形の frame が解決される（プレビューから消えない）', () => {
+    for (const sl of sc.slides) for (const sh of sl.shapes) assert.ok(sh.frame, JSON.stringify(sh));
+  });
+}
+
 console.log(`\n${n} 件すべて通過`);

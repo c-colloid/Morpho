@@ -329,6 +329,38 @@ function parsePics(slideXml) {
   return out;
 }
 
+/* 表（p:graphicFrame の a:tbl）。枠は自前の <p:xfrm> に必ず入っていて
+   プレースホルダ継承は要らない（実測。reference-doc を与えた場合も
+   レイアウト枠を解決した絶対値がスライドへ書かれる）。
+   v0.14 は枠と行数・列幅だけ。セルの中身は後の版 */
+function parseTables(slideXml) {
+  var out = [];
+  var re = /<p:graphicFrame\\b[^>]*>([\\s\\S]*?)<\\/p:graphicFrame>/g;
+  var m;
+  while ((m = re.exec(slideXml)) !== null) {
+    var gf = m[1];
+    /* 表以外の graphicFrame（グラフ・OLE・図表）は落とす */
+    if (!/<a:tbl\\b/.test(gf)) continue;
+    var xf = /<p:xfrm\\b[^>]*>([\\s\\S]*?)<\\/p:xfrm>/.exec(gf);
+    var frame = xf ? parseXfrm(xf[1]) : null;
+    if (!frame) continue;
+    var cols = [];
+    var cre = /<a:gridCol\\b[^>]*\\sw="(\\d+)"/g;
+    var cm;
+    while ((cm = cre.exec(gf)) !== null) cols.push(Number(cm[1]));
+    out.push({
+      x: frame.x,
+      y: frame.y,
+      w: frame.w,
+      h: frame.h,
+      rowCount: (gf.match(/<a:tr\\b/g) || []).length,
+      colWidths: cols
+    });
+  }
+  return out;
+}
+/* パーサだけ検査できるように外へ出す（scripts/check-scene.mjs が使う） */
+window.__morphoParseTables = parseTables;
 function parseShapes(slideXml) {
   var shapes = [];
   var re = /<p:sp>([\\s\\S]*?)<\\/p:sp>/g;
@@ -362,6 +394,7 @@ function parseShapes(slideXml) {
       phIdx: phIdx,
       frame: parseXfrm(sp),
       anchor: anchor,
+      lvlStyle: parseLvlStyle(sp),
       paragraphs: paragraphs
     });
   }
@@ -377,6 +410,61 @@ function parseXfrm(xml) {
   var ext = /<a:ext\\s+cx="(\\d+)"\\s+cy="(\\d+)"/.exec(xml);
   if (!off || !ext) return null;
   return { x: Number(off[1]), y: Number(off[2]), w: Number(ext[1]), h: Number(ext[2]) };
+}
+
+/* <a:lstStyle> の lvl1..lvl9 を読む。プレースホルダ固有の既定は
+   スライド自身 → レイアウト の順に上書きされる（マスターは DeckInfo が持つ）。
+   ここが読めていないと Two Content の本文を 2400 で描いて実際は 2100、
+   Content with Caption のタイトルを 3300 で描いて実際は 1500 になる（実測）。
+   何も拾えないレイアウト（Title and Content 等）では null を返し、
+   DeckInfo の既定へそのまま落とす。階層ごと・プロパティごとの疎な配列なので、
+   sz だけ持つ階層は marL を DeckInfo から継ぐ。
+   正規表現の後方参照はソースに二重バックスラッシュで書くこと
+   （単一だと八進エスケープ扱いでテンプレートリテラルが構文エラーになる。
+   applyTextSizes の lvlNpPr 置換と同じ作法） */
+function parseLvlStyle(spXml) {
+  var lst = /<a:lstStyle>([\\s\\S]*?)<\\/a:lstStyle>/.exec(spXml);
+  if (!lst) return null;
+  var out = null;
+  /* 対と自己閉じの両方を拾う（PowerPoint 製の reference-doc は
+     <a:lvl1pPr marL="0" indent="0"/> のように自己閉じで書くことがある） */
+  var re = /<a:lvl(\\d)pPr\\b([^>]*?)(\\/>|>([\\s\\S]*?)<\\/a:lvl\\1pPr>)/g;
+  var m;
+  while ((m = re.exec(lst[1])) !== null) {
+    var i = Number(m[1]) - 1;
+    if (i < 0 || i > 8) continue;
+    var attrs = m[2];
+    var body = m[4] || '';
+    var ent = null;
+    var sz = /<a:defRPr[^>]*\\bsz="(\\d+)"/.exec(body);
+    if (sz) { ent = ent || {}; ent.sz = Number(sz[1]); }
+    var ml = /\\bmarL="(-?\\d+)"/.exec(attrs);
+    if (ml) { ent = ent || {}; ent.marL = Number(ml[1]); }
+    var ind = /\\bindent="(-?\\d+)"/.exec(attrs);
+    if (ind) { ent = ent || {}; ent.indent = Number(ind[1]); }
+    var al = /\\balgn="(\\w+)"/.exec(attrs);
+    if (al) { ent = ent || {}; ent.algn = al[1]; }
+    if (/<a:buNone(\\s*\\/>|>[\\s\\S]*?<\\/a:buNone>)/.test(body)) { ent = ent || {}; ent.bullet = 'none'; }
+    if (ent) { out = out || []; out[i] = ent; }
+  }
+  return out;
+}
+window.__morphoParseLvlStyle = parseLvlStyle;
+
+/* 二つの階層既定を重ねる（over が勝つ）。両方 null なら null */
+function mergeLvlStyle(base, over) {
+  if (!base) return over || null;
+  if (!over) return base;
+  var out = [];
+  for (var i = 0; i < 9; i++) {
+    var b = base[i], o = over[i];
+    if (!b && !o) continue;
+    var e = {};
+    if (b) for (var k in b) e[k] = b[k];
+    if (o) for (var k2 in o) e[k2] = o[k2];
+    out[i] = e;
+  }
+  return out.length ? out : null;
 }
 
 /* レイアウト / マスターのプレースホルダ一覧（type, idx, frame）。
@@ -401,37 +489,73 @@ function parsePlaceholderFrames(xml) {
       type: type ? type[1] : null,
       idx: idx ? Number(idx[1]) : null,
       frame: parseXfrm(m[1]),
-      anchor: anchor
+      anchor: anchor,
+      lvlStyle: parseLvlStyle(m[1])
     });
   }
   return out;
 }
 window.__morphoParsePlaceholderFrames = parsePlaceholderFrames;
 
-/* プレースホルダの継承照合。タイトルは type で、本文は type か idx で照合し、
-   ctrTitle（Title Slide）はマスターに無いので title に落とす。
-   key（frame / anchor）が入っている要素だけを候補にする */
-function findInherited(phList, type, idx, key) {
-  var want = type === 'ctrTitle' ? 'title' : type;
-  for (var i = 0; i < phList.length; i++) {
-    if (phList[i][key] && phList[i].type === want) return phList[i][key];
+/* 日付・フッタ・スライド番号・ヘッダ・ノートのスライド画像。
+   本文ではないので「レイアウト内では」body へ落とさない
+   （落とすと Comparison の左見出し枠を拾う）。配列で持つのは
+   オブジェクトだと type="constructor" 等がプロトタイプ由来で真になるため */
+var PH_FURNITURE = ['dt', 'ftr', 'sldNum', 'hdr', 'sldImg'];
+function isFurniture(t) { return PH_FURNITURE.indexOf(t) >= 0; }
+
+/* プレースホルダの継承照合。
+   スライドの <p:ph idx> が指すのは「そのスライドのレイアウト」の枠なので、
+   idx はレイアウト内でだけ意味を持つ（same=true）。マスターは idx の名前空間が
+   別物（実測: レイアウトの dt は idx=10 / マスターの dt は idx=2）なので
+   type だけで照合する。ctrTitle（Title Slide）はレイアウトにしか無いので
+   マスターへ落ちるときだけ title に読み替える。
+   key（frame / anchor / lvlStyle）が入っている要素だけを答えにするが、
+   「枠はあるが値が無い」場合は type 照合へ流さず素通しして次の階層へ渡す */
+function findInherited(phList, type, idx, key, same) {
+  var wants = type === 'ctrTitle' ? ['ctrTitle', 'title'] : [type];
+  var want = wants[wants.length - 1];
+  /* 1. idx 優先。レイアウト内に閉じる */
+  if (same && idx !== null) {
+    var seen = false;
+    for (var i = 0; i < phList.length; i++) {
+      if (phList[i].idx !== idx) continue;
+      seen = true;
+      if (phList[i][key]) return phList[i][key];
+    }
+    /* その idx の枠は在るが値を持たない → 兄弟の枠ではなく上位階層へ */
+    if (seen) return null;
   }
-  if (idx !== null) {
+  /* 2. type 照合 */
+  for (var w = 0; w < wants.length; w++) {
     for (var j = 0; j < phList.length; j++) {
-      if (phList[j][key] && phList[j].idx === idx) return phList[j][key];
+      if (phList[j][key] && phList[j].type === wants[w]) return phList[j][key];
     }
   }
-  /* subTitle 等: type でも idx でも一致しなければ body に落とす */
-  if (want !== 'title') {
+  /* 3. subTitle 等の本文系は body に落とす。レイアウト照合のときだけ
+     日付・フッタ等の装飾枠を除く（マスターでも除くと、日付枠を持たない
+     テンプレートで frame が null になり図形がプレビューから消える。実測） */
+  if (want !== 'title' && !(same && isFurniture(want))) {
     for (var k = 0; k < phList.length; k++) {
       if (phList[k][key] && phList[k].type === 'body') return phList[k][key];
     }
   }
+  /* 4. 最後の手段の idx 照合。type を書かないマスター（<p:ph idx="1"/>）向けの保険。
+     pandoc 既定テンプレートでは一度も通らない（実測）。
+     日付・フッタ等の装飾枠は除く — これを許すとマスターの idx=2（日付枠）を拾う */
+  if (idx !== null && !isFurniture(want)) {
+    for (var m = 0; m < phList.length; m++) {
+      if (phList[m][key] && phList[m].idx === idx && !isFurniture(phList[m].type)) {
+        return phList[m][key];
+      }
+    }
+  }
   return null;
 }
-function findFrame(phList, type, idx) { return findInherited(phList, type, idx, 'frame'); }
-function findAnchor(phList, type, idx) { return findInherited(phList, type, idx, 'anchor'); }
+function findFrame(phList, type, idx, same) { return findInherited(phList, type, idx, 'frame', same); }
+function findAnchor(phList, type, idx, same) { return findInherited(phList, type, idx, 'anchor', same); }
 window.__morphoFindFrame = findFrame;
+window.__morphoFindAnchor = findAnchor;
 
 /* デッキ情報: 寸法・配色・既定の文字サイズ */
 function parseDeck(zip, dec) {
@@ -579,15 +703,37 @@ function parsePptx(u8) {
       if (!sh.frame) {
         /* 自前の座標が無ければ レイアウト → マスター の順で継承（実測どおり） */
         sh.frame =
-          findFrame(layoutPh, sh.placeholder, sh.phIdx) ||
-          findFrame(deck.masterPh, sh.placeholder, sh.phIdx);
+          findFrame(layoutPh, sh.placeholder, sh.phIdx, true) ||
+          findFrame(deck.masterPh, sh.placeholder, sh.phIdx, false);
+      }
+      /* プレースホルダ固有の階層既定: レイアウト → スライド自身の順に重ねる。
+         マスターは DeckInfo（titleSz / bodySz / bodyMarL …）が持つので
+         ここでは混ぜず、null のまま UI 側の既定へ落とす。
+         第 5 引数 true は「この phList はスライドの idx と同じ名前空間」の宣言で、
+         frame / anchor と同じ照合器に乗る（A-1/A-2 の修正がそのまま効く） */
+      sh.lvlStyle = mergeLvlStyle(
+        sh.placeholder
+          ? findInherited(layoutPh, sh.placeholder, sh.phIdx, 'lvlStyle', true)
+          : null,
+        sh.lvlStyle);
+      if (sh.lvlStyle) {
+        /* この図形が実際に使う階層までで切る（シーンは postMessage で
+           RN へ渡るので、使わない 9 階層ぶんを毎回運ばない） */
+        var mx = 0;
+        for (var pi = 0; pi < sh.paragraphs.length; pi++) {
+          if (sh.paragraphs[pi].level > mx) mx = sh.paragraphs[pi].level;
+        }
+        sh.lvlStyle = sh.lvlStyle.slice(0, Math.min(mx, 8) + 1);
+        var any = false;
+        for (var qi = 0; qi < sh.lvlStyle.length; qi++) if (sh.lvlStyle[qi]) any = true;
+        if (!any) sh.lvlStyle = null;
       }
       if (!sh.anchor) {
         /* 垂直アンカーも同じ継承。pandoc 既定ではタイトルがマスターの
            anchor="ctr" を継承する（実測） */
         sh.anchor =
-          findAnchor(layoutPh, sh.placeholder, sh.phIdx) ||
-          findAnchor(deck.masterPh, sh.placeholder, sh.phIdx);
+          findAnchor(layoutPh, sh.placeholder, sh.phIdx, true) ||
+          findAnchor(deck.masterPh, sh.placeholder, sh.phIdx, false);
       }
     }
     return {
@@ -595,6 +741,7 @@ function parsePptx(u8) {
       layout: layoutName(n),
       shapes: shapes,
       images: parsePics(xml),
+      tables: parseTables(xml),
       notes: notesFor(n)
     };
   });
