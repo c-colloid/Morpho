@@ -178,17 +178,36 @@ src/preview/    ── 原稿とスライドの対応（純関数）
   notesEdit.ts           発表者ノート（::: notes :::）の読み取りと書き戻し
   lineBreakEdit.ts       改行位置編集。正規化・語 / 字分割・オフセット適用・対象特定
 
+src/design/     ── デザインデータ（三層分離の第3層。Markdown には書かない）
+  designFile.ts          .morphodesign の直列化と検証つき読み込み
+  presets.ts             装飾プリセット（帯・アクセント線・カード・番号バッジ）
+  shapeGeometry.ts       図形の当たり判定とリサイズの幾何
+  groups.ts              装飾のグループ化
+  textSizes.ts           文字サイズ（表紙タイトル / 見出し / 本文 / 表紙サブタイトル）
+  template.ts            テンプレート配線盤。cSld name の英語化を複製へ適用する
+
 src/store/      ── 永続化と共有
-  documents.ts           複数文書のアプリ内保存（一覧・作成・保存・削除）
+  documents.ts           複数文書のアプリ内保存と外部ファイル連携（bookmark 再接続）
+  designs.ts             文書ごとのデザインデータの保存・読み込み
+  assets.ts              画像アセットの保存庫（フラット名・base64）
   exportShare.ts         書き出しファイルを iOS 共有シートへ渡す
+  updateCheck.ts         新しい版の確認
+
+src/text/       ── 文字列の道具（純関数）
+  assetNames.ts          原稿が参照している画像名の抽出
+  diffLines.ts           行 Diff（競合ダイアログ用）
 
 src/ui/
   EditorScreen.tsx       メイン画面。原稿とプレビューの二画面、全体の配線
   SlideSurface.tsx       EMU 座標・配色・字サイズ・字下げを使った実寸スライド描画
+  DocumentSurface.tsx    docx の解析結果をリーダー風のフローで描く文書プレビュー
   SlideShow.tsx          全画面スライドショーと発表者ビュー
+  DecorSheet.tsx         装飾パネル（プリセット・文字サイズ・テンプレート・ファイル入出力）
+  DecorEditLayer.tsx     プレビュー上での装飾の直接ドラッグ・リサイズ
   BreakEditSheet.tsx     改行位置の編集シート（語 / 字の粒度切り替え）
   NotesEditSheet.tsx     発表者ノートの編集シート
-  DocumentsModal.tsx     文書一覧（切替・新規・読み込み・削除）
+  DocumentsModal.tsx     文書一覧（切替・新規・読み込み・その場で開く・削除）
+  ConflictSheet.tsx      外部ファイルとの内容の食い違いを行 Diff で見せて選ばせる
   ExportMenu.tsx         書き出し形式の選択（pptx / docx / md / Obsidian）
 ```
 
@@ -261,12 +280,18 @@ flex:1 の兄弟がもう1人いることが算術で確定した。
 
 ## まだやっていないこと
 
-- テンプレート取り込みとレイアウト名の書き換え（配線盤 UI）
-- 文書（docx）プレビュー — 設計と実出力調査は済み
-  （`../notes/preview-formats.md`、`scripts/dump-docx.mjs`）。飾る力（v0.6）の後
-- 表のプレビュー描画（`<p:graphicFrame>` の解析）
-- iCloud Drive の .md を開いて上書き保存する経路（→「外部アプリ連携」の
-  open in place。development build と Developer Program の課金判断が要る）
+現在地・課題・残計画の全体は **`../notes/status.md`** にまとめてある（版ごとに更新する）。
+主なものだけ挙げると:
+
+- 表のプレビュー描画（`<p:graphicFrame>` の解析）。解析器が知っているのは
+  `<p:sp>` と `<p:pic>` の2つだけ
+- 多段組と画像の配置デザイン → 設計は `../notes/columns-and-images.md`
+- テーマ層（三層分離の第2層）。共有・Git 可能なスタイル定義ファイル
+- 装飾のアンカー（今はスライドの序数に結んでいるので、分割・挿入・並べ替えで迷子になる）
+- カーソル同期の「見出し区間」への一般化（文書・Web プレビューは同期なし）
+- epub / Web の書き出し（プレビューはあるのに書き出し経路が無い。
+  `to: 'epub'` が pandoc.wasm でそのまま通ることは実測済み）
+- `npm run check` を CI で回す（今の CI は ipa のビルドだけ）
 - pandoc.wasm の同梱（今は unpkg から取得。バージョンは 1.1.0 に固定済み。
   同梱化はライセンス判断とセット — CLAUDE.md「制約とリスク」）
 

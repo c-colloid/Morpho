@@ -13,7 +13,7 @@ docx は `app/scripts/dump-docx.mjs`、詳細は本文中に記載）。
 | 実装順 | **① 切り替え土台 + Web → ② 飾る力（v0.6 に改番） → ③ 文書（docx）プレビュー** | 土台は今なら1バージョンで通る。後回しにするとスライド前提コードが増えて高くつく。文書プレビューは docx 三層パーサ（pptx と同規模）が要るので装飾モデル確定後 |
 | Web プレビューの方式 | pandoc の `to: html`（standalone）を**可視 WebView にそのまま表示** | 「実際の出力そのもの」原則に合致。reveal.js 案の却下理由（別ライターが嘘をつく）は、Web という形式自体を見るときには当たらない |
 | 文書プレビューの方式（将来） | **フロー表示（リーダー風）**。ページ組はしない | document.xml にページ境界情報は存在しない（`w:pgSz` すら無いことを実測）。ページ組は Word の組版エンジンの再発明＝嘘になる |
-| PDF | **対象外**。着手前に `to: 'pdf'` が wasm で原理的に可能かを1回の実験で確定させる | pandoc の PDF は外部エンジン（pdflatex / typst）のサブプロセス起動が通常経路。CLAUDE.md 未検証項目のまま席だけ用意しない |
+| PDF | **対象外で確定**（2026-08-31 実測） | `to: 'pdf'` は出力ファイルを1つも生成せず、`stderr` に `createDirectory: does not exist` だけを返す（`warnings` は空なので呼び出し側からは無言の失敗に見える）。仮に一時ディレクトリを用意しても、その先に「PDF エンジンを別プロセスで起動する」原理的な壁がある。**なお `to: 'epub'` はそのまま通り、画像も同梱される** |
 | 切り替え UI | プレビューペインのヘッダ行に**セグメント**（スライド / Web、将来 + 文書） | 2〜5個・常時可視・排他選択は HIG のセグメント適用ケース。既存の paneLabelRow がそのまま置き場になる |
 | 変換の走らせ方 | **アクティブな形式だけ**変換。切り替え時はその形式を即時変換 | ブリッジは単一 FIFO 直列（中断不可）。全形式を毎回投げると、見ていない形式の変換の後ろに見ている形式が並ぶ |
 | 編集系（ノート・改行編集） | **スライド形式のみ**。他形式にはハンドラ自体を渡さない | 対応表がスライド区間前提。将来は見出し区間に一般化して文書/Web にも拡張可能（下記） |
@@ -24,7 +24,7 @@ docx は `app/scripts/dump-docx.mjs`、詳細は本文中に記載）。
 pandoc 固有の語彙を漏らさない原則は維持。既存のスライド型は一切変えない。
 
 ```ts
-export type PreviewFormat = 'slides' | 'web';   // 文書プレビュー実装時に 'doc' を足す
+export type PreviewFormat = 'slides' | 'doc' | 'web';   // 'doc' は 0.10.0 で追加済み
 
 interface ConvertResultBase { diagnostics; ms; bytes; }
 export interface SlideResult extends ConvertResultBase {
