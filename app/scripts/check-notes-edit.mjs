@@ -123,4 +123,79 @@ t('上書きを繰り返しても空行が増えない（LF / CRLF）', () => {
   }
 });
 
+/* ---------- ノートの中の入れ子 div（0.16.1 の段組み修正と同じ族） ----------
+   遅延一致の正規表現は最初のコロンだけの行で止まるので、読むと続きが欠け、
+   書き戻すと続きと外側の閉じ柵が本文に取り残されていた（実測）。
+   範囲は columns.ts の scanFences（柵の深さ追跡）で決める */
+
+const nested = `# H
+
+本文
+
+::: notes
+ノート
+
+::: warning
+注意
+:::
+
+続き
+:::
+`;
+
+t('入れ子の div を含むノートは外側の閉じ柵まで丸ごと読む', () => {
+  assert.equal(getNotes(nested, 1), 'ノート\n\n::: warning\n注意\n:::\n\n続き');
+});
+t('入れ子の div を含むノートの書き戻しは外側の閉じ柵までを 1 ブロックとして置き換える', () => {
+  assert.equal(setNotes(nested, 1, '書き換え'), '# H\n\n本文\n\n::: notes\n書き換え\n:::\n');
+});
+t('入れ子の div を含むノートを空保存すると、続きも外側の柵も本文に残らない', () => {
+  const next = setNotes(nested, 1, '');
+  assert.equal(next, '# H\n\n本文\n\n');
+  assert.equal(getNotes(next, 1), null);
+});
+t('ノートの中の +++ はノートの一部として読み、本文へ漏れない', () => {
+  const d = nested.replace('続き', '+++\n続き');
+  assert.equal(getNotes(d, 1), 'ノート\n\n::: warning\n注意\n:::\n\n+++\n続き');
+  const next = setNotes(d, 1, 'X');
+  assert.equal(next, '# H\n\n本文\n\n::: notes\nX\n:::\n');
+  assert.equal(getNotes(next, 1), 'X');
+});
+t('入れ子ありのノートと 2 つ目のノートが並んでいても両方読み、上書きで 1 つに統合される', () => {
+  const d = nested + '\n::: notes\n二つ目。\n:::\n';
+  assert.equal(getNotes(d, 1), 'ノート\n\n::: warning\n注意\n:::\n\n続き\n二つ目。');
+  const next = setNotes(d, 1, '統合後');
+  assert.equal(getNotes(next, 1), '統合後');
+  assert.equal((next.match(/:::/g) || []).length, 2);
+  assert.ok(!next.includes('続き') && !next.includes('二つ目。') && !next.includes('warning'));
+});
+t('属性形（::: {.notes}）も NOTES_OPEN と同じ規則で読み書きする', () => {
+  const d = doc.replace('::: notes', '::: {.notes}');
+  assert.equal(getNotes(d, 1), '最初のノート。');
+  const next = setNotes(d, 1, '書き換え');
+  assert.equal(getNotes(next, 1), '書き換え');
+  assert.ok(!next.includes('最初のノート。'));
+  assert.equal((next.match(/:::/g) || []).length, 2);
+});
+t('閉じていないノートは対象にしない（読むと null。scanFences の notesBlocks と同じ）', () => {
+  const d = '# H\n\n本文\n\n::: notes\n::: warning\n注意\n:::\n続き\n';
+  assert.equal(getNotes(d, 1), null);
+});
+t('保存を繰り返しても空行が増えない', () => {
+  const once = setNotes(doc, 1, 'A');
+  const twice = setNotes(once, 1, 'A');
+  assert.equal(twice, once);
+  assert.ok(once.includes(':::\n\n***'), '閉じ柵の後ろの空行は元のまま 1 つ');
+});
+t('CRLF 原稿でも入れ子を含むノートを読み書きできる（判定は \\r を外し、書き戻しは改行コードを保つ）', () => {
+  const d = nested.replace(/\n/g, '\r\n');
+  assert.equal(getNotes(d, 1), 'ノート\n\n::: warning\n注意\n:::\n\n続き');
+  const next = setNotes(d, 1, '書き換え');
+  assert.equal(getNotes(next, 1), '書き換え');
+  assert.ok(!next.includes('続き') && !next.includes('warning'));
+  /* 書き戻しは原稿の改行コードを保つ（0.16.3 の規約）: LF 版の結果を CRLF にしたものと一致 */
+  assert.equal(next, crlf(setNotes(nested, 1, '書き換え')));
+  assert.ok(noLoneLf(next));
+});
+
 console.log(`\n${n} 件すべて通過`);
