@@ -935,9 +935,10 @@ v2 の監査（「多視点監査と仕様の改訂」）でさらに 4 件増�
    `app/src/text/lineEnding.ts` に置き、`expandColumns`（派生 md は丸ごと落とす）/ `columns.ts` /
    `cursorSlide.ts` / `slideSync.ts` を揃えた。検査は check-columns / check-cursor / check-deck の
    CRLF 8 件（CRLF 原稿が LF 版と同じシーンになることを本物の pandoc で見る）。
-   残り: `lineBreakEdit.ts` の判定（notes の閉じ柵が読めずノート後の段落が見つからない・
-   空行なしで直結した `+++` が段落へ溶ける・実測）と、ノート編集・改行編集の書き戻しが
-   LF で書いて改行コードが混在する件（`app/CHANGELOG.md` 0.16.1）
+   `lineBreakEdit.ts` も 0.16.2 で同じ規約に揃えた（notes の閉じ柵・直結した `+++` の判定と、
+   書き戻しで `\r\n` を保つこと。check-linebreak の CRLF 8 件）。
+   残り: ノート編集（`notesEdit.ts`）の書き戻しが LF で書いて改行コードが混在する件のみ
+   （読み取りは正しい・実測。`app/CHANGELOG.md` 0.16.2）
 6. **`expandColumns` の tail 検出（`bridgeHtml.ts` の末尾閉じ柵から遡る方式）が
    `::: notes` 内の入れ子 div で破れる。** `# H / 左 / +++ / 右 / ::: notes 内に入れ子 div` で
    notes ブロックが最終列に包まれ、1 枚 → 2 枚 + ノート本文の汚染（非 INFO 警告 0・実測）。
