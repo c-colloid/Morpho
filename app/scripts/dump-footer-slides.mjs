@@ -11,6 +11,12 @@
  *   `::: footer` を外す → その直前にある「文字の行」の末尾へ ␁文言␂ を付ける
  *   → 既存の expandColumns → pandoc → 出力から ␁…␂ を切り出す
  * 「どのスライドか」は数えずに pandoc に決めさせる。
+ *
+ * 注意（v2 監査で判明）: この試作は 0.17.0 v2 仕様より古い。既知の差分 —
+ * `出典\b` は JS の \b が CJK で不成立のため `::: 出典` に一致しない・
+ * 強制クローズ未実装（閉じ忘れで EOF まで飲む）・目印が「ブロック末尾」でなく行末・
+ * CRLF 非対応・複数行の join(' ')。仕様は notes/footer-design.md の
+ * 「多視点監査と仕様の改訂（0.17.0 v2）」が正。
  */
 import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';

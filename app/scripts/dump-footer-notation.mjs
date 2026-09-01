@@ -18,9 +18,11 @@ import { convert } from '../node_modules/pandoc-wasm/src/index.node.js';
 
 const CITE = '出典: N Engl J Med 2024;390:1234-45';
 
+/* アプリの実 READER に揃える（EALB あり・なしで本スクリプトの全出力が一致することは
+   v2 監査 T01 で実測済み — 61 変換 × 2 READER で本体 md5 一致） */
 const toPptx = async (md) => {
   const r = await convert(
-    { from: 'markdown-yaml_metadata_block', to: 'pptx', 'output-file': 'o.pptx' },
+    { from: 'markdown-yaml_metadata_block+east_asian_line_breaks', to: 'pptx', 'output-file': 'o.pptx' },
     md,
     {},
   );
