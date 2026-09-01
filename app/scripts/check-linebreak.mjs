@@ -248,6 +248,14 @@ t('CRLF: 段落の直後に空行なしで置いた +++ を段落へ飲み込ま
   assert.ok(loc.ok);
   assert.equal(loc.block.raw, '左の文');
 });
+t('スライドごとのフッター（///）は段落へ飲み込まず、その行自体も編集対象にしない', () => {
+  for (const d of ['# 一\n\n本文の文\n/// 出典: NEJM\n次の文\n', crlf('# 一\n\n本文の文\n/// 出典: NEJM\n次の文\n')]) {
+    const loc = locateEditable(d, 1, '本文の文');
+    assert.ok(loc.ok);
+    assert.equal(loc.block.raw, '本文の文');
+    assert.equal(locateEditable(d, 1, '出典: NEJM').ok, false);
+  }
+});
 t('CRLF: ::: notes の閉じ柵が読め、ノートの後ろの段落が見つかる', () => {
   const d = crlf('# t\n\n::: notes\n本文の段落です。についての補足。\n:::\n\n本文の段落です。\n');
   const loc = locateEditable(d, 1, '本文の段落です。');

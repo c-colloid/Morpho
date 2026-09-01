@@ -201,6 +201,7 @@ src/store/      ── 永続化と共有
 
 src/text/       ── 文字列ユーティリティ（純関数）
   columns.ts             段組みの記法（+++ の列区切り）。内容層の語彙で pandoc を知らない
+  footerBlocks.ts        スライドごとのフッターの記法（/// 文言・::: footer）。同上
   blockInsert.ts         ブロック（画像等）の挿入位置。行を割らず、柵と区間の末尾を守る
   assetNames.ts          画像ファイル名の正規化・重複回避
   diffLines.ts           行 Diff（競合ダイアログ）

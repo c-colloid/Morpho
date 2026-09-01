@@ -157,6 +157,14 @@ export interface SlideOutline {
   tables: SlideTable[];
   /** 発表者ノート（::: notes ::: 由来）。無ければ空配列 */
   notes: Paragraph[];
+  /**
+   * このスライドのフッター（原稿の `/// 文言` / `::: footer` 由来。0.17.0）。
+   * 変換器が実出力から取り出した文言で、デッキ全体のフッターを置き換える。
+   * 無ければ undefined（デッキ既定が出る）
+   */
+  footer?: { text: string; runs: TextRun[] } | null;
+  /** 空の `///` があった: このスライドだけデッキ全体のフッターを出さない */
+  suppressFooter?: boolean;
 }
 
 /** テンプレート由来のデッキ情報。字サイズは 1/100 pt（3300 = 33pt） */
@@ -368,9 +376,11 @@ export interface ConvertOptions {
    */
   textSizes?: { titleSz?: number; coverTitleSz?: number; coverSubSz?: number; bodySz?: number[] };
   /**
-   * デッキ全体のフッター（出典・注釈）。pptx のみ。他形式では無視される。
+   * フッター（出典・注釈）の帯と体裁。pptx のみ。他形式では無視される。
    * 座標は解決済みの EMU で渡す（装飾と同じ流儀 — テンプレートの帯を読むのも
    * 比率の既定値へ落とすのもアプリ側の仕事で、変換器は書くだけ）。
+   * text はデッキ全体の文言（空文字なら既定は出さない）。スライドごとのフッター
+   * （原稿の `///`）は変換器が実出力から取り出し、同じ帯・体裁で置き換える。
    * 表紙（ctrTitle を持つスライド）は onCover が真のときだけ載せる
    */
   footer?: {

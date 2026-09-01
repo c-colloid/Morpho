@@ -281,7 +281,7 @@ t('原稿 → front matter → 解決 の一巡が通る（アプリと同じ経
 
 /* ---------- docx / Web のデッキ全体フッター（0.16.1） ---------- */
 
-const { toDocFooter } = await import('../src/design/footer.ts');
+const { toDocFooter, toFooterSpec } = await import('../src/design/footer.ts');
 const READER = 'markdown-yaml_metadata_block+east_asian_line_breaks';
 const toDocx = (md, meta) => convert(
   { from: READER, to: 'docx', 'output-file': 'o.docx', ...(meta ? { metadata: meta } : {}) },
@@ -372,6 +372,286 @@ t('Web: .footer の CSS と、本文末尾に 1 回だけのデッキフッタ�
   /* 文言が無ければ CSS だけ入れて div は足さない */
   const bare = win.__morphoDecorateWebHtml(html, undefined);
   assert.ok(bare.includes('.footer{') && !bare.includes('class="footer morpho-deck-footer"'));
+});
+
+/* ---------- スライドごとのフッター（0.17.0） ---------- */
+
+const { FOOTER_LINE, FOOTER_FENCE_OPEN, FOOTER_LINE_TEXT, isFooterLine, isFooterFenceOpen } =
+  await import('../src/text/footerBlocks.ts');
+const OPEN = '';
+const CLOSE = '';
+const extract = (md, fmt = 'pptx', o = { hasDeckFooter: true }) => win.__morphoExtractFooters(md, fmt, o);
+const PNG = Uint8Array.from(Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64'));
+/* アプリと同じ経路: フッター抽出 → 段組み展開 → pandoc（実 READER）→ 取り出し（再 zip しない） */
+const full = async (md, meta, files) => {
+  const e = extract(md);
+  const c = win.__morphoExpandColumns(e.md);
+  const r = await convert(
+    { from: READER, to: 'pptx', 'output-file': 'o.pptx', ...(meta ? { metadata: meta } : {}) }, c.md, files ?? {});
+  const bytes = new Uint8Array(await r.files['o.pptx'].arrayBuffer());
+  const zip = unzipSync(bytes);
+  const hv = win.__morphoHarvestFooters(zip);
+  const names = Object.keys(zip).filter((k) => /^ppt\/slides\/slide\d+\.xml$/.test(k))
+    .sort((x, y) => Number(/(\d+)/.exec(x)[1]) - Number(/(\d+)/.exec(y)[1]));
+  const texts = names.map((k) => [...strFromU8(zip[k]).matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)].map((m) => m[1]).join('␣'));
+  /* vm 由来の配列は prototype が違い deepEqual に落ちるので、素の値へ写す */
+  const landed = JSON.parse(JSON.stringify(Object.fromEntries(Object.entries(hv.slides).map(([k, v]) =>
+    [k, v.suppress ? null : v.parts.map((p) => win.__morphoFooterJoin([p.frag.replace(/<[^>]*>/g, '')]))]))));
+  return { e, c, bytes, zip, hv, names, texts, landed, warns: (r.warnings ?? []).filter((w) => w.verbosity !== 'INFO') };
+};
+const control = async (md, meta, files) => full(md.replace(/^ {0,3}[/／]{3,}.*\n?/gm, ''), meta, files);
+
+t('記法の正規表現が footerBlocks.ts とブリッジで一致する', () => {
+  const grab = (name) => {
+    const m = new RegExp('var ' + name + ' = (/.*/[a-z]*);').exec(mod);
+    assert.ok(m, name + ' がブリッジに無い');
+    return new Function('return ' + m[1])();
+  };
+  assert.equal(grab('FT_LINE').source, FOOTER_LINE.source);
+  assert.equal(grab('FT_FENCE').source, FOOTER_FENCE_OPEN.source);
+  assert.equal(grab('FT_FENCE').flags, FOOTER_FENCE_OPEN.flags);
+});
+
+t('1 行形: 3 個以上・全角・空白なし。空白入り・字下げ 4・タブは記法にしない', () => {
+  assert.ok(isFooterLine('/// 出典'));
+  assert.ok(isFooterLine('///出典'));
+  assert.ok(isFooterLine('／／／ 出典'));
+  assert.ok(isFooterLine('//// 出典'));
+  assert.ok(isFooterLine('   /// 出典'));
+  assert.ok(isFooterLine('/// 出典\r'), 'CRLF');
+  assert.ok(!isFooterLine('/ / / 出典'), '空白入りは pandoc で見える失敗なので救わない');
+  assert.ok(!isFooterLine('    /// コード'), '4 スペースはインデントコード');
+  assert.ok(!isFooterLine('\t/// コード'));
+  assert.ok(!isFooterLine('// 2 個'));
+  for (const l of ['https://example.com', '//example.com/a', '日付は 2024/03/01', '分数は 1/2/3', 'and/or の話', '出典：厚労省']) {
+    assert.ok(!isFooterLine(l), '一般文を踏まない: ' + l);
+  }
+  assert.equal(FOOTER_LINE_TEXT, '/// ');
+});
+
+t('柵形: 別名と正規化。JS の \\b では死ぬ「::: 出典」が一致し、「::: 出典追記」は一致しない', () => {
+  for (const l of ['::: footer', ':::footer', '::: {.footer}', '::: {.footer .small}', '::: 出典', '::: 注釈',
+    '::: Footer', '：：： footer', '::: {footer}', '::: ｛.footer｝', ':::: footer', '::: footer 文言']) {
+    assert.ok(isFooterFenceOpen(l), l);
+  }
+  for (const l of ['::: footers', '::: 出典追記', '::: notes', ':: footer', '::: fotter']) {
+    assert.ok(!isFooterFenceOpen(l), '一致しない: ' + l);
+  }
+});
+
+t('抽出: 直前の文字の行の末尾に目印が付き、記法の行は消える', () => {
+  const e = extract('# 結果\n\n本文。\n\n/// 出典: NEJM 2024\n');
+  assert.equal(e.count, 1);
+  assert.equal(e.md, '# 結果\n\n本文。' + OPEN + '出典: NEJM 2024' + CLOSE + '\n\n');
+  assert.equal(extract('# 結果\n\n本文。\n\n/ / / 出典\n').count, 0);
+  assert.equal(extract('# 結果\n\n    /// コード\n\n続き。\n').count, 0, 'インデントコードを吸わない');
+  /* CRLF は LF と同じ派生テキストになる */
+  assert.equal(extract('# 結果\r\n\r\n本文。\r\n\r\n/// 出典\r\n').md, extract('# 結果\n\n本文。\n\n/// 出典\n').md);
+});
+
+t('抽出: 空の /// は抑止の目印（空）になり、デッキ既定があるときだけ情報診断', () => {
+  const e = extract('# 結果\n\n本文。\n\n///\n');
+  assert.equal(e.md, '# 結果\n\n本文。' + OPEN + CLOSE + '\n\n');
+  assert.ok(e.diags.some((d) => d.kind === 'info' && /空のフッター/.test(d.label)));
+  assert.ok(!extract('# 結果\n\n本文。\n\n///\n', 'pptx', { hasDeckFooter: false }).diags.length);
+});
+
+t('抽出: 柵形の正規化・別名・開き柵 1 行書き・複数行の EAW 連結', () => {
+  const e = extract('# 結果\n\n本文。\n\n：：： 出典\nこれは長い出典で\n複数行に書いた\n：：：\n');
+  assert.ok(e.md.includes(OPEN + 'これは長い出典で複数行に書いた' + CLOSE), '和文の継ぎ目に空白を入れない');
+  assert.ok(e.diags.some((d) => /正規化/.test(d.label)));
+  const e2 = extract('# 結果\n\n本文。\n\n::: footer 出典X\n:::\n');
+  assert.ok(e2.md.includes(OPEN + '出典X' + CLOSE), '開き柵と同じ行の文言を捨てない');
+  assert.ok(e2.diags.some((d) => d.kind === 'info' && /開き柵/.test(d.label)));
+  assert.equal(win.__morphoFooterJoin(['詳細は NEJM', '2023 を参照']), '詳細は NEJM 2023 を参照');
+  assert.equal(win.__morphoFooterJoin(['重要な', '**追記**あり']), '重要な**追記**あり', '装飾を透過して幅を見る');
+  assert.equal(win.__morphoFooterJoin(['出典は', '[医学書院](u)の本']), '出典は[医学書院](u)の本');
+});
+
+t('抽出: 閉じ忘れは境界（任意レベルの見出し・水平線・+++・柵・EOF）で閉じて要対応診断', () => {
+  const cases = [
+    ['# A\n\n本文A。\n\n::: footer\n出典A\n\n# B\n\n本文B。\n', /閉じていません/, '# B'],
+    ['# 章\n\n## 節1\n\n本文1\n\n::: footer\n出典A\n\n## 節2\n\n本文2\n', /閉じていません/, '## 節2'],
+    ['# A\n\n本文。\n\n::: footer\n出典A\n\n***\n\n本文B。\n', /水平線/, '***'],
+    ['# A\n\n左\n\n::: footer\n出典A\n\n+++\n\n右\n', /\+\+\+/, '+++'],
+    ['# A\n\n本文。\n\n::: footer\n出典A\n\n| a |\n|---|\n| 1 |\n', /表/, '| a |'],
+    ['# A\n\n本文。\n\n::: footer\n出典A\n\n::: notes\nメモ\n:::\n', /閉じていません/, '::: notes'],
+    ['# A\n\n本文。\n\n::: footer\n出典A\n', /閉じていません/, null],
+  ];
+  for (const [md, re, rest] of cases) {
+    const e = extract(md);
+    assert.ok(e.diags.some((d) => d.kind === 'design' && re.test(d.label)), md);
+    assert.ok(e.md.includes(OPEN + '出典A' + CLOSE), '文言は取り出す: ' + md);
+    if (rest) assert.ok(e.md.includes(rest), '後続は本文に残る: ' + rest);
+    assert.ok(!/:::/.test(e.md.replace(/::: notes[\s\S]*?:::/, '')) || rest === '::: notes', '柵の残骸を出さない');
+  }
+});
+
+t('抽出: ノートの中（入れ子 div の後ろでも）は触らない', () => {
+  const e = extract('# 結果\n\n本文。\n\n::: notes\n::: 重要\nx\n:::\n/// 非公開\n:::\n');
+  assert.equal(e.count, 0);
+  assert.ok(e.md.includes('/// 非公開'));
+});
+
+await ta('付け先: 段落の途中に書いても和文に半角スペースが混入しない（ブロック末尾へ進める）', async () => {
+  const r = await full('# 結果\n\n本文一。\n/// 出典\n本文二。\n');
+  const c = await full('# 結果\n\n本文一。\n本文二。\n');
+  assert.deepEqual(r.landed, { 1: ['出典'] });
+  assert.deepEqual(r.texts, c.texts, '本文が対照とバイト一致（EALB が効いたまま）');
+  assert.equal(r.texts[0], '結果␣本文一。本文二。');
+});
+
+await ta('付け先: 行末の \\ の前に入れる（<a:br/> が消えない）・{#id} は属性のまま・$$ 数式は避ける', async () => {
+  const r = await full('# 結果\n\n本文一。\\\n本文二。\n\n/// 出典\n');
+  assert.ok(strFromU8(r.zip[r.names[0]]).includes('<a:br'), 'ハードブレイクが残る');
+  assert.deepEqual(r.landed, { 1: ['出典'] });
+  const h = await full('# 結果 {#sec1}\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n/// 出典\n');
+  assert.equal(h.texts[0], '結果␣a␣b␣1␣2', '属性が生で出ない');
+  assert.deepEqual(h.landed, { 1: ['出典'] });
+  const m = await full('# 結果\n\n$$\nx^2\n$$\n\n/// 出典\n');
+  assert.deepEqual(m.landed, { 1: ['出典'] });
+  /* 文言の末尾の \\ は閉じ目印をエスケープして飲むので、リテラルへ逃がす */
+  const bs = await full('# 結果\n\n本文。\n\n/// 末尾 \\\n');
+  assert.deepEqual(bs.landed, { 1: ['末尾 \\'] });
+});
+
+await ta('付け先: リンク参照定義・脚注定義・コメント行には付けない（rels への漏れ・幽霊スライドを作らない）', async () => {
+  const a = await full('# 結果\n\n[1]: https://doi.org/x\n\n/// 出典\n');
+  assert.deepEqual(a.landed, { 1: ['出典'] });
+  assert.ok(!Object.keys(a.zip).some((k) => /\.rels$/.test(k) && strFromU8(a.zip[k]).includes('出典')), 'rels に文言が漏れない');
+  const b = await full('# 結果\n\n| a |\n|---|\n| 1 |\n\n<!-- メモ -->\n\n/// 出典\n');
+  const c = await control('# 結果\n\n| a |\n|---|\n| 1 |\n\n<!-- メモ -->\n\n/// 出典\n');
+  assert.equal(b.names.length, c.names.length, 'コメント行を段落化してスライドを割らない');
+  assert.deepEqual(b.landed, { 1: ['出典'] });
+});
+
+await ta('フォールバック: 表のセル（| をエスケープ）・コード行・画像の title（奇数個の " と Barrett\'s）', async () => {
+  /* 文字の行が 1 つも無いスライド（*** だけで作る）でだけフォールバックへ落ちる */
+  const TB = '# 前\n\n本文。\n\n***\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n/// PMID 111 | DOI x\n';
+  assert.ok(extract(TB).md.includes('| 2\u{E001}PMID 111 \\| DOI x\u{E002} |'), '最後のセルへ | をエスケープして埋める: ' + extract(TB).md);
+  const tb = await full(TB);
+  assert.deepEqual(tb.landed, { 2: ['PMID 111 | DOI x'] });
+  const tc = await control(TB);
+  assert.equal((strFromU8(tb.zip[tb.names[1]]).match(/<a:gridCol/g) || []).length,
+    (strFromU8(tc.zip[tc.names[1]]).match(/<a:gridCol/g) || []).length, '列数が変わらない');
+  assert.deepEqual(tb.texts, tc.texts);
+  const CD = '# 前\n\n本文。\n\n***\n\n```\ncode1\ncode2\n```\n\n/// 出典\n';
+  assert.ok(extract(CD).md.includes('code2\u{E001}出典\u{E002}\n```'), 'コードの最後の行へ');
+  const cd = await full(CD);
+  assert.deepEqual(cd.landed, { 2: ['出典'] });
+  assert.equal(cd.texts[1], 'code1\ncode2');
+  const files = { 'pix.png': new Blob([PNG]) };
+  for (const text of ['出典 "X 2014', "Barrett's esophagus 2014", '末尾 \\']) {
+    const IM = '# 前\n\n本文。\n\n***\n\n![](pix.png)\n\n/// ' + text + '\n';
+    assert.ok(extract(IM).md.includes('![](pix.png "\u{E001}'), '画像の title へ: ' + extract(IM).md);
+    const im = await full(IM, null, files);
+    const xml = strFromU8(im.zip[im.names[1]]);
+    assert.equal((xml.match(/<p:pic>/g) || []).length, 1, '画像が消えない: ' + text);
+    assert.ok(/descr="pix\.png"/.test(xml), 'descr が元のファイル名へ戻る: ' + /descr="[^"]*"/.exec(xml));
+    assert.equal(im.landed[2].length, 1);
+    /* pandoc の smart typography が " と ' を曲げる（本文と同じ挙動）ので、そこは戻して比べる */
+    const plain = im.landed[2][0].replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
+    assert.equal(plain, text, '文言が往復する');
+  }
+});
+
+await ta('取り出し: 書式で始まり素で終わる断片・リンク・別の行の複数、いずれも整形式で移送できる', async () => {
+  const md = '# 一枚目\n\n本文。\n\n/// **NEJM 2024** より引用\n\n次の段落。\n\n/// [NEJM](https://doi.org/10.1056/x) 2024\n\n# 二枚目\n\n本文2。\n';
+  const r = await full(md, { title: '抄読会' });
+  assert.deepEqual(r.landed, { 2: ['NEJM 2024 より引用', 'NEJM 2024'] });
+  const spec = toFooterSpec('デッキ既定', undefined, win.__morphoParsePptxZip(r.zip).deck);
+  const out = zipSync(win.__morphoApplyFootersZip(r.zip, spec, r.hv.slides));
+  const xs = slideXmls(out);
+  const sp = /<p:sp><p:nvSpPr><p:cNvPr id="\d+" name="MorphoFooter"\/>[\s\S]*?<\/p:sp>/.exec(xs[1])[0];
+  assert.equal((sp.match(/<a:p>/g) || []).length, 1, '複数のフッターは 1 段落に並ぶ');
+  assert.ok(sp.includes('<a:t> / </a:t>'), '区切りのラン');
+  assert.ok(/b="1"[^>]*sz="900"/.test(sp) || /sz="900"[^>]*b="1"/.test(sp), '太字が残り、字サイズが帯のもの');
+  assert.ok(/<a:hlinkClick r:id="rId\d+"/.test(sp), 'リンクが生 XML のまま移る');
+  assert.ok(!xs[1].includes(OPEN) && !xs[1].includes(CLOSE));
+  /* solidFill は latin / hlinkClick より前（ECMA-376 の順） */
+  for (const rPr of sp.match(/<a:rPr\b[^>]*>[\s\S]*?<\/a:rPr>/g) || []) {
+    const fill = rPr.indexOf('<a:solidFill>');
+    const latin = rPr.indexOf('<a:latin');
+    const link = rPr.indexOf('<a:hlinkClick');
+    assert.ok(fill >= 0 && (latin < 0 || fill < latin) && (link < 0 || fill < link), rPr);
+  }
+  /* デッキ既定は個別フッターの無いスライドだけ（表紙は除外） */
+  assert.ok(!xs[0].includes('MorphoFooter'), '表紙');
+  assert.ok(xs[2].includes('デッキ既定'));
+  assert.ok(!xs[1].includes('デッキ既定'));
+  if (validate) {
+    const errs2 = async (b) => (await validate(b, 'pptx', 'Microsoft365')).length;
+    assert.equal(await errs2(out), 0, '移送後の妥当性');
+  }
+});
+
+await ta('抑止: 空の /// のスライドにはデッキ既定も出ない。取り出せなかった目印は出力から掃除する', async () => {
+  const r = await full('# 一枚目\n\n本文。\n\n///\n\n# 二枚目\n\n本文2。\n');
+  assert.deepEqual(r.landed, { 1: null });
+  const spec = toFooterSpec('デッキ既定', undefined, win.__morphoParsePptxZip(r.zip).deck);
+  const xs = slideXmls(zipSync(win.__morphoApplyFootersZip(r.zip, spec, r.hv.slides)));
+  assert.ok(!xs[0].includes('MorphoFooter') && xs[1].includes('デッキ既定'));
+  /* 目印の片割れが残る XML を作って掃除を確かめる */
+  const z = unzipSync(r.bytes);
+  z['ppt/slides/_rels/slide1.xml.rels'] = strToU8(strFromU8(z['ppt/slides/_rels/slide1.xml.rels']).replace('Target="', 'Target="' + OPEN));
+  const hv2 = win.__morphoHarvestFooters(z);
+  assert.ok(hv2.diags.length >= 1, '漏れを診断する');
+  assert.ok(!Object.keys(z).some((k) => strFromU8(z[k]).includes(OPEN)), '出荷物に目印が残らない');
+});
+
+await ta('プレビュー: 取り出した断片がシーンのラン（太字つき）として載る', async () => {
+  const r = await full('# 結果\n\n本文。\n\n/// **NEJM** 2024\n\n///\n');
+  const parsed = win.__morphoParsePptxZip(r.zip);
+  win.__morphoAttachSlideFooters(parsed.slides, r.hv.slides);
+  const f = parsed.slides[0].footer;
+  assert.ok(f && f.runs.some((x) => x.bold && x.text === 'NEJM'));
+  assert.equal(f.text, 'NEJM 2024');
+  assert.ok(!parsed.slides[0].suppressFooter, '文言ありと空が同居したら文言が勝つ');
+});
+
+await ta('docx / html: 目印を埋めず、元の位置に小さい段落 / div.footer として実現する', async () => {
+  const md = '# 見出し\n\n本文。\n\n/// 出典: NEJM 2024\n\n次の段落。\n';
+  const d = extract(md, 'docx');
+  assert.ok(!d.md.includes(OPEN) && d.md.includes('::: {custom-style="Abstract"}'));
+  const rd = await convert({ from: READER, to: 'docx', 'output-file': 'o.docx' }, d.md, {});
+  const docXml = partOf(new Uint8Array(await rd.files['o.docx'].arrayBuffer()), 'word/document.xml');
+  assert.equal((docXml.match(/w:pStyle w:val="Abstract"/g) || []).length, 1);
+  /* 段落ごとの文字列（ランは分かれうる）で順序を見る */
+  const paras = [...docXml.matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)]
+    .map((m) => [...m[0].matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)].map((x) => x[1]).join(''));
+  const at = (s) => paras.findIndex((p) => p.includes(s));
+  assert.ok(at('本文。') >= 0 && at('本文。') < at('出典: NEJM 2024') && at('出典: NEJM 2024') < at('次の段落。'), '元の位置: ' + JSON.stringify(paras));
+  assert.ok(!docXml.includes(OPEN) && !docXml.includes(CLOSE));
+  const h = extract(md, 'html');
+  assert.ok(h.md.includes('::: {.footer}'));
+  const rh = await convert({ from: READER, to: 'html', standalone: true }, h.md, {});
+  assert.ok(/<div class="footer">/.test(rh.stdout), 'div.footer');
+  assert.ok(!rh.stdout.includes(OPEN));
+});
+
+await ta('benchmark 64 枚に /// を 7 か所差しても構成が一致し、7/7 着地・残留ゼロ・本文の XML がバイト一致', async () => {
+  const bench = readFileSync(new URL('../../fixtures/pptx-benchmark.md', import.meta.url), 'utf8');
+  const { metadata, body } = splitFrontMatter(bench);
+  const lines = body.split('\n');
+  const withF = [];
+  let put = 0;
+  for (const line of lines) {
+    withF.push(line);
+    if (/^##[ \t]/.test(line) && put < 7) withF.push('', '/// 出典F' + (++put));
+  }
+  const r = await full(withF.join('\n'), metadata);
+  const c = await full(body, metadata);
+  assert.equal(r.names.length, c.names.length, '枚数');
+  assert.equal(r.names.length, 64);
+  const layouts = (z, names) => names.map((k) => /slideLayout\d+\.xml/.exec(strFromU8(z[k.replace('slides/', 'slides/_rels/') + '.rels']))[0]);
+  assert.deepEqual(layouts(r.zip, r.names), layouts(c.zip, c.names), 'レイアウト列');
+  assert.equal(Object.keys(r.landed).length, 7, '7/7 着地');
+  assert.ok(!Object.keys(r.zip).some((k) => /\.(xml|rels)$/.test(k) && strFromU8(r.zip[k]).includes(OPEN)), '残留ゼロ');
+  let same = 0;
+  for (const k of r.names) if (strFromU8(r.zip[k]) === strFromU8(c.zip[k])) same++;
+  assert.equal(same, 64, '取り出し後の slideN.xml が対照とバイト一致');
+  assert.equal(r.warns.length, c.warns.length);
 });
 
 console.log('\n' + n + ' 件すべて通過');

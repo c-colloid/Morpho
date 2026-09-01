@@ -8,6 +8,7 @@
  */
 import { slideSegments } from './cursorSlide.ts';
 import { COLUMN_SEPARATOR } from '../text/columns.ts';
+import { FOOTER_LINE } from '../text/footerBlocks.ts';
 import { stripCr, detectNewline } from '../text/lineEnding.ts';
 
 /* 改行を外して繋ぐとき、両側が ASCII の語なら空白を挟む。
@@ -199,7 +200,7 @@ export function locateEditable(
   interface Cand {
     startLine: number;
     endLine: number;
-    kind: 'para' | 'item' | 'heading' | 'table' | 'fence' | 'div' | 'colsep';
+    kind: 'para' | 'item' | 'heading' | 'table' | 'fence' | 'div' | 'colsep' | 'footer';
     prefix: string;
   }
   const cands: Cand[] = [];
@@ -245,6 +246,12 @@ export function locateEditable(
       i++;
       continue;
     }
+    /* スライドごとのフッター（`/// 文言`）も 1 行で独立した記法（0.17.0） */
+    if (FOOTER_LINE.test(line)) {
+      cands.push({ startLine: i, endLine: i, kind: 'footer', prefix: '' });
+      i++;
+      continue;
+    }
     if (/^[ \t]*#/.test(line)) {
       cands.push({ startLine: i, endLine: i, kind: 'heading', prefix: '' });
       i++;
@@ -284,7 +291,8 @@ export function locateEditable(
       !/^[ \t]*\|/.test(judge[j]) &&
       !/^ {0,3}(```|~~~)/.test(judge[j]) &&
       !DIV_FENCE.test(judge[j]) &&
-      !COLUMN_SEPARATOR.test(judge[j])
+      !COLUMN_SEPARATOR.test(judge[j]) &&
+      !FOOTER_LINE.test(judge[j])
     ) {
       j++;
     }
@@ -299,7 +307,7 @@ export function locateEditable(
   };
 
   for (const c of cands) {
-    if (c.kind === 'fence' || c.kind === 'div' || c.kind === 'colsep') continue;
+    if (c.kind === 'fence' || c.kind === 'div' || c.kind === 'colsep' || c.kind === 'footer') continue;
     /* 末尾行の \r はブロックの外に置く（\r\n を壊さず、plain に \r を混ぜない） */
     const raw = lines.slice(c.startLine, c.endLine + 1).join('\n').replace(/\r$/, '');
     // 箇条書きは接頭辞と継続行の字下げを外してから正規化する

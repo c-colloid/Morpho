@@ -659,8 +659,7 @@ function findFtrBand(phList) {
 }
 
 /* 出力そのものを読む。reveal.js に逃げると嘘をつくので pptx を直接開く */
-function parsePptx(u8) {
-  var zip = unzipSync(u8);
+function parsePptxZip(zip) {
   var dec = new TextDecoder();
   var names = Object.keys(zip).filter(function (n) {
     return /^ppt\\/slides\\/slide\\d+\\.xml$/.test(n);
@@ -772,7 +771,9 @@ function parsePptx(u8) {
     deck: { w: deck.w, h: deck.h, colors: deck.colors, ftrBand: deck.ftrBand, titleSz: deck.titleSz, bodySz: deck.bodySz, bodyMarL: deck.bodyMarL, bodyIndent: deck.bodyIndent, titleAlgn: deck.titleAlgn, bodyAlgn: deck.bodyAlgn, bodySpcBef: deck.bodySpcBef, bodySpcBefPts: deck.bodySpcBefPts, bodyBuChar: deck.bodyBuChar }
   };
 }
+function parsePptx(u8) { return parsePptxZip(unzipSync(u8)); }
 window.__morphoParsePptx = parsePptx;
+window.__morphoParsePptxZip = parsePptxZip;
 
 function warnText(w) {
   if (typeof w === 'string') return w;
@@ -975,7 +976,16 @@ function footerColorXml(color) {
 /* ECMA-376 の子要素順は nvSpPr(cNvPr → cNvSpPr → nvPr) → spPr → txBody。
    順を崩すと Open XML SDK の検証が鳴る（較正で確認済み）。
    <a:buNone/> を省くとパーサが「箇条書き」と読んで行頭記号を描く（実測） */
-function buildFooterSp(f, cNvPrId) {
+function footerParaXml(f, runsXml) {
+  return '<a:p><a:pPr marL="0" indent="0" algn="' + (f.algn || 'r') + '"><a:buNone/></a:pPr>' +
+    runsXml + '</a:p>';
+}
+function footerPlainRun(f, text) {
+  return '<a:r><a:rPr lang="ja-JP" sz="' + Math.round(f.sz) + '">' + footerColorXml(f.color) +
+    '</a:rPr><a:t>' + escapeXmlText(text) + '</a:t></a:r>';
+}
+function buildFooterSp(f, cNvPrId, parasXml) {
+  if (!parasXml) parasXml = footerParaXml(f, footerPlainRun(f, f.text));
   return '<p:sp><p:nvSpPr>' +
     '<p:cNvPr id="' + cNvPrId + '" name="MorphoFooter"/>' +
     '<p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>' +
@@ -983,26 +993,40 @@ function buildFooterSp(f, cNvPrId) {
     '<a:off x="' + Math.round(f.x) + '" y="' + Math.round(f.y) + '"/>' +
     '<a:ext cx="' + Math.round(f.w) + '" cy="' + Math.round(f.h) + '"/>' +
     '</a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>' +
-    '<p:txBody><a:bodyPr anchor="ctr" wrap="square"/><a:lstStyle/>' +
-    '<a:p><a:pPr marL="0" indent="0" algn="' + (f.algn || 'r') + '"><a:buNone/></a:pPr>' +
-    '<a:r><a:rPr lang="ja-JP" sz="' + Math.round(f.sz) + '">' + footerColorXml(f.color) +
-    '</a:rPr><a:t>' + escapeXmlText(f.text) + '</a:t></a:r>' +
-    '</a:p></p:txBody></p:sp>';
+    '<p:txBody><a:bodyPr anchor="ctr" wrap="square"/><a:lstStyle/>' + parasXml +
+    '</p:txBody></p:sp>';
 }
 window.__morphoBuildFooterSp = buildFooterSp;
 
-function applyFooters(bytes, footer) {
-  if (!footer || !footer.text) return bytes;
-  var zip = unzipSync(bytes);
+/* 展開済み zip に対して注入する。perSlide は harvestFooters の slides
+   （スライド番号 → { parts, suppress }）。個別フッターがあるスライドはそれを、
+   抑止（空の ///）のスライドは何も出さず、残りにデッキ既定を出す。
+   個別フッターの断片は正規化したラン列にして 1 段落へ並べる（区切りは " / "）。
+   生の断片同士を文字列で連結すると整形式が壊れる（実測） */
+function applyFootersZip(zip, footer, perSlide) {
+  if (!footer) return zip;
   var dec2 = new TextDecoder();
   var names = Object.keys(zip).filter(function (n) {
     return /^ppt\\/slides\\/slide\\d+\\.xml$/.test(n);
   });
   names.forEach(function (name) {
     var xml = dec2.decode(zip[name]);
-    /* 表紙は ctrTitle の有無で判定する。レイアウト名は配線盤（applyAssignments）が
-       書き換えるので名前では判定できない */
-    if (!footer.onCover && xml.indexOf('type="ctrTitle"') >= 0) return;
+    var ps = perSlide && perSlide[slideNum(name)];
+    if (ps && ps.suppress) return;
+    var parasXml = null;
+    if (ps && ps.parts && ps.parts.length) {
+      var runs = [];
+      for (var i = 0; i < ps.parts.length; i++) {
+        if (i) runs.push(footerPlainRun(footer, ' / '));
+        runs.push(ftStyleRuns(ftFragToRuns(ps.parts[i]).xml, footer));
+      }
+      parasXml = footerParaXml(footer, runs.join(''));
+    } else {
+      if (!footer.text) return;
+      /* 表紙は ctrTitle の有無で判定する。レイアウト名は配線盤（applyAssignments）が
+         書き換えるので名前では判定できない */
+      if (!footer.onCover && xml.indexOf('type="ctrTitle"') >= 0) return;
+    }
     /* 二重注入の防止。同じ sp が 2 つ並んでも検証器は 0 件で通す（実測）ので、
        冪等性は注入側で担保するしかない */
     if (xml.indexOf('name="MorphoFooter"') >= 0) return;
@@ -1014,9 +1038,16 @@ function applyFooters(bytes, footer) {
     while ((im = idRe.exec(xml)) !== null) {
       if (Number(im[1]) > maxId) maxId = Number(im[1]);
     }
-    zip[name] = strToU8(xml.slice(0, at) + buildFooterSp(footer, maxId + 1) + xml.slice(at));
+    zip[name] = strToU8(xml.slice(0, at) + buildFooterSp(footer, maxId + 1, parasXml) + xml.slice(at));
   });
-  return zipSync(zip);
+  return zip;
+}
+window.__morphoApplyFootersZip = applyFootersZip;
+
+function applyFooters(bytes, footer, perSlide) {
+  if (!footer) return bytes;
+  if (!footer.text && !(perSlide && Object.keys(perSlide).length)) return bytes;
+  return zipSync(applyFootersZip(unzipSync(bytes), footer, perSlide));
 }
 window.__morphoApplyFooters = applyFooters;
 
@@ -1130,7 +1161,8 @@ window.__morphoDropNotesLua = DROP_NOTES_LUA;
 
 async function doConvertWeb(id, md, opts) {
   /* 内容層の記法を pandoc の語彙へ実現する（原稿は書き換えない） */
-  var col = expandColumns(md);
+  var ft = extractFooters(md, 'html');
+  var col = expandColumns(ft.md);
   md = col.md;
   var options = {
     from: READER,
@@ -1159,7 +1191,7 @@ async function doConvertWeb(id, md, opts) {
     result: {
       kind: 'web',
       html: decorateWebHtml(html, opts.docFooter),
-      diagnostics: classify(res.warnings, res.stderr, col.diags),
+      diagnostics: classify(res.warnings, res.stderr, ft.diags.concat(col.diags)),
       ms: ms,
       bytes: new Blob([html]).size
     }
@@ -1545,7 +1577,8 @@ window.__morphoApplyDocxFooter = applyDocxFooter;
    Lua フィルタで除去してから解析する — プレビューと書き出しを一致させる */
 async function doConvertDoc(id, md, opts) {
   /* 内容層の記法を pandoc の語彙へ実現する（原稿は書き換えない） */
-  var col = expandColumns(md);
+  var ft = extractFooters(md, 'docx');
+  var col = expandColumns(ft.md);
   md = col.md;
   var options = { from: READER, to: 'docx', 'output-file': 'out.docx' };
   if (opts.metadata && Object.keys(opts.metadata).length) options.metadata = opts.metadata;
@@ -1580,7 +1613,7 @@ async function doConvertDoc(id, md, opts) {
       kind: 'doc',
       blocks: parsed.blocks,
       styles: parsed.styles,
-      diagnostics: classify(res.warnings, res.stderr, col.diags),
+      diagnostics: classify(res.warnings, res.stderr, ft.diags.concat(col.diags)),
       ms: ms,
       bytes: buf.length
     }
@@ -1811,6 +1844,469 @@ function expandColumns(md) {
 }
 window.__morphoExpandColumns = expandColumns;
 
+/* ---------- スライドごとのフッター（notes/footer-design.md 0.17.0 v2） ----------
+   内容層の記法（\`/// 文言\` と \`::: footer\` 柵）を走査し、形式ごとに実現する。
+     pptx : 直前の「文字が乗るブロック」の末尾へ 目印 U+E001 文言 U+E002 を埋め、
+            pandoc の実出力（slideN.xml）から切り出して原状復帰する。
+            どのスライドに載るかは数えずに pandoc に決めさせる
+     docx : 元の位置に ::: {custom-style="Abstract"}（既定 reference.docx で 10pt・実測）
+     html : 元の位置に ::: {.footer}（WEB_CSS の .footer が小さくする）
+   目印は pptx 経路でしか埋めない — docx / html へは 10/10 素通りし、見出し由来の目印は
+   ブックマーク名 / 見出し id に文言ごと焼き込まれるため後で剥がせない（実測）。
+   判定式は src/text/footerBlocks.ts と同じもの（ブリッジは import できない。
+   scripts/check-footer.mjs が一致を常時検証する）。 */
+
+var FT_OPEN = '\\uE001';
+var FT_CLOSE = '\\uE002';
+/* 1 行形。3 個以上・全角可・間の空白は不可・行頭タブ不可・字下げは半角 3 まで
+   （4 以上はインデントコードブロック。空白入りは pandoc で見える失敗なので救わない） */
+var FT_LINE = /^ {0,3}[/／]{3,}[ \\t]*(.*)$/;
+/* 柵形（正規化後に照合）。\`::: footer\` / \`::: {.footer …}\` / \`::: 出典\` / \`::: 注釈\`。
+   JS の \\b は CJK 直後で成立しないので明示の境界を使う（\`::: 出典追記\` は一致しない） */
+var FT_FENCE = /^ {0,3}:::+[ \\t]*(?:\\{[ \\t]*\\.?(?:footer|出典|注釈)(?:[ \\t][^}]*)?\\}|(?:footer|出典|注釈)(?=[ \\t]|$))[ \\t]*(.*)$/i;
+var FT_CODE = /^ {0,3}(\`\`\`|~~~)/;
+var FT_HEADING = /^ {0,3}#{1,6}[ \\t]/;
+var FT_HR = /^ {0,3}([*_-])(?:[ \\t]*\\1){2,}[ \\t]*$/;
+var FT_COL_SEP = /^[ \\t]*[+＋]([ \\t]*[+＋]){2,}[ \\t]*$/;
+var FT_DIV_OPEN = /^ {0,3}:::+[ \\t]*\\S/;
+var FT_DIV_CLOSE = /^ {0,3}:::+[ \\t]*$/;
+var FT_NOTES = /^ {0,3}:::+[ \\t]*(?:\\{[^}]*\\.notes[^}]*\\}|notes(?=[ \\t]|$))/;
+var FT_TABLE = /^ {0,3}\\|/;
+var FT_IMAGE_ONLY = /^ {0,3}!\\[[^\\]]*\\]\\(([^)]*)\\)[ \\t]*$/;
+var FT_MATH = /^ {0,3}\\$\\$/;
+/* 文字に見えて出力に文字を作らない（別の場所に作る）行。目印を置くと出典が消える・
+   rels に漏れる・スライドが割れる（実測） */
+var FT_NOT_TARGET = /^ {0,3}(?:\\[[^\\]]+\\]:[ \\t]|\\[\\^[^\\]]+\\]:|<|(?:=+|-+)[ \\t]*$)/;
+var FT_LIST = /^[ \\t]*(?:[-*+]|\\d+[.)])[ \\t]/;
+
+function ftNormalizeFence(line) {
+  return line.replace(/：/g, ':').replace(/　/g, ' ').replace(/｛/g, '{').replace(/｝/g, '}');
+}
+
+/* East Asian Width が W / F か（かな・漢字・全角約物・全角英数）。半角カナは含めない */
+var FT_WIDE = /[\\u1100-\\u115F\\u2E80-\\u303E\\u3041-\\u33FF\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uA000-\\uA4CF\\uAC00-\\uD7A3\\uF900-\\uFAFF\\uFE30-\\uFE4F\\uFF00-\\uFF60\\uFFE0-\\uFFE6]/;
+/* 複数行の連結。pandoc の east_asian_line_breaks と同じく「両側が全角なら区切りなし」。
+   pandoc は装飾の中身の文字で幅を判定する（stringify）ので、境界の記号を剥がして見る */
+function ftEdgeChar(s, tail) {
+  var t = s;
+  if (tail) {
+    t = t.replace(/\\]\\([^)]*\\)$/, '').replace(/[*_\`\\]]+$/, '');
+    return t.slice(-1);
+  }
+  t = t.replace(/^!?\\[/, '').replace(/^[*_\`]+/, '');
+  return t.charAt(0);
+}
+function ftJoin(lines) {
+  var out = '';
+  for (var i = 0; i < lines.length; i++) {
+    var l = lines[i].trim();
+    if (!l) continue;
+    if (!out) { out = l; continue; }
+    var a = ftEdgeChar(out, true);
+    var b = ftEdgeChar(l, false);
+    out += (FT_WIDE.test(a) && FT_WIDE.test(b) ? '' : ' ') + l;
+  }
+  return out;
+}
+
+function ftDiag(kind, label, hint, text) {
+  return { kind: kind, label: label, hint: hint, text: text, count: 1 };
+}
+
+/* 走査。原稿は書き換えず、行の列と「ここにフッターがあった」を返す。
+   tokens[i] は { line: string } か { footer: { text, empty, from } } */
+function scanFooters(md) {
+  var lines = String(md).split('\\n');
+  var tokens = [];
+  var diags = [];
+  var inCode = false;
+  var divs = [];          // 開いている div。true = notes
+  var footer = null;      // 開いている柵 { buf: [], line }
+  var inNotes = function () {
+    for (var i = 0; i < divs.length; i++) if (divs[i]) return true;
+    return false;
+  };
+  var finish = function () {
+    var text = ftJoin(footer.buf);
+    tokens.push({ footer: { text: text, empty: !text, from: footer.line } });
+    footer = null;
+  };
+  for (var i = 0; i < lines.length; i++) {
+    /* CRLF 原稿: 判定も出力も \\r を落とす（派生テキストなので長さを変えてよい） */
+    var raw = lines[i].slice(-1) === '\\r' ? lines[i].slice(0, -1) : lines[i];
+    if (FT_CODE.test(raw)) {
+      if (footer) {
+        diags.push(ftDiag('design', 'フッターの柵が閉じていません',
+          '::: で閉じてください。コードの手前で閉じたものとして扱いました', (i + 1) + ' 行目'));
+        finish();
+      }
+      inCode = !inCode; tokens.push({ line: raw }); continue;
+    }
+    if (inCode) { tokens.push({ line: raw }); continue; }
+    var norm = ftNormalizeFence(raw);
+    if (footer) {
+      if (FT_DIV_CLOSE.test(norm)) { finish(); continue; }
+      var boundary = null;
+      if (FT_HEADING.test(raw) || FT_DIV_OPEN.test(norm) || FT_LINE.test(raw)) boundary = 'close';
+      else if (FT_HR.test(raw)) boundary = '水平線';
+      else if (FT_COL_SEP.test(raw)) boundary = '+++';
+      else if (FT_TABLE.test(raw)) boundary = '表';
+      if (boundary) {
+        if (boundary === 'close') {
+          diags.push(ftDiag('design', 'フッターの柵が閉じていません',
+            '::: で閉じてください。次の見出し（または柵）の手前で閉じたものとして扱いました',
+            (footer.line + 1) + ' 行目から'));
+        } else {
+          diags.push(ftDiag('design', 'フッターの中に' + boundary + 'は書けません',
+            'その手前でフッターを閉じたものとして扱いました。続きは本文になります',
+            (i + 1) + ' 行目'));
+        }
+        finish();
+        /* この行自体は通常どおり処理する */
+      } else { footer.buf.push(raw); continue; }
+    }
+    /* div の追跡（入れ子対応）。ノートの中はフッター記法を見ない */
+    if (FT_DIV_CLOSE.test(norm)) { divs.pop(); tokens.push({ line: raw }); continue; }
+    if (inNotes()) {
+      if (FT_DIV_OPEN.test(norm)) divs.push(FT_NOTES.test(norm));
+      tokens.push({ line: raw }); continue;
+    }
+    var fm = FT_FENCE.exec(norm);
+    if (fm) {
+      if (norm !== raw) {
+        diags.push(ftDiag('info', 'フッターの記法を正規化しました',
+          '全角の記号を半角として扱いました', raw.trim()));
+      }
+      footer = { buf: [], line: i };
+      var rest = fm[1].trim();
+      if (rest) {
+        footer.buf.push(rest);
+        diags.push(ftDiag('info', '開き柵と同じ行の文言をフッターにしました',
+          '他のツールでは柵ごと本文に見えます。次の行に書くと可搬性が上がります', raw.trim()));
+      }
+      continue;
+    }
+    var lm = FT_LINE.exec(raw);
+    if (lm) {
+      var t = lm[1].trim();
+      tokens.push({ footer: { text: t, empty: !t, from: i } });
+      continue;
+    }
+    if (FT_DIV_OPEN.test(norm)) divs.push(FT_NOTES.test(norm));
+    tokens.push({ line: raw });
+  }
+  if (footer) {
+    diags.push(ftDiag('design', 'フッターの柵が閉じていません',
+      '::: で閉じてください。文書の終わりで閉じたものとして扱いました', (footer.line + 1) + ' 行目から'));
+    finish();
+  }
+  return { tokens: tokens, diags: diags };
+}
+
+/* ---- 実現: docx / html は元の位置に fenced div ---- */
+function realizeFooterDivs(tokens, format) {
+  var out = [];
+  var open = format === 'docx' ? '::: {custom-style="Abstract"}' : '::: {.footer}';
+  for (var i = 0; i < tokens.length; i++) {
+    var tk = tokens[i];
+    if (tk.line !== undefined) { out.push(tk.line); continue; }
+    if (tk.footer.empty) continue;   /* 抑止は docx / html に意味が無い */
+    if (out.length && out[out.length - 1] !== '') out.push('');
+    out.push(open, tk.footer.text, ':::', '');
+  }
+  return out.join('\\n');
+}
+
+/* ---- 実現: pptx は目印を埋める ---- */
+
+/* 行末のハードブレイク記号（\`\\\` / 空白 2 個以上）・ATX 閉じ \`#\`・末尾属性 \`{#id}\` の前に入れる */
+function ftInsertAtLineEnd(line, mark, isHeading) {
+  var m = /([ \\t]*\\\\|[ \\t]{2,}|[ \\t]+)$/.exec(line);
+  var tail = m ? m[0] : '';
+  var head = m ? line.slice(0, line.length - tail.length) : line;
+  if (isHeading) {
+    var attr = /[ \\t]+\\{[^{}]*\\}[ \\t]*$/.exec(head);
+    if (attr) { tail = attr[0] + tail; head = head.slice(0, head.length - attr[0].length); }
+    var closeH = /[ \\t]+#+[ \\t]*$/.exec(head);
+    if (closeH) { tail = closeH[0] + tail; head = head.slice(0, head.length - closeH[0].length); }
+  }
+  return head + mark + tail;
+}
+
+/* 表の最後のセルへ。\`|\` はセルを割るのでエスケープ（コード行には使わない） */
+function ftInsertIntoTableRow(line, text) {
+  var mark = FT_OPEN + text.replace(/\\|/g, '\\\\|') + FT_CLOSE;
+  var m = /[ \\t]*\\|[ \\t]*$/.exec(line);
+  if (m) return line.slice(0, line.length - m[0].length) + mark + m[0];
+  return line + mark;
+}
+
+/* 画像の title 属性へ。\`"\` \`\\\` はエスケープ、デリミタは二重引用符に固定
+   （奇数個の \`"\` や単引用符 + アポストロフィは画像ごと無警告で消える。実測） */
+function ftInsertIntoImage(line, text) {
+  var esc = text.replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
+  var mark = FT_OPEN + esc + FT_CLOSE;
+  var m = /^( {0,3}!\\[[^\\]]*\\]\\()([^)]*)(\\)[ \\t]*)$/.exec(line);
+  if (!m) return line + mark;
+  var inner = m[2];
+  var tm = /^(.*?)[ \\t]+"((?:[^"\\\\]|\\\\.)*)"[ \\t]*$/.exec(inner);
+  if (tm) return m[1] + tm[1] + ' "' + tm[2] + mark + '"' + m[3];
+  return m[1] + inner.replace(/[ \\t]+$/, '') + ' "' + mark + '"' + m[3];
+}
+
+/**
+ * 直前の「文字が乗るブロック」の末尾行を探す。返すのは { at, how }。
+ * how: 'text'（段落・箇条書き・見出し・引用）/ 'table' / 'code' / 'image'。
+ * 優先順は 文字 → 表 → コード → 画像。水平線で区間が切れる。
+ * 手前に無ければ、同じ区間の直後（見出し・水平線に当たるまで）を前向きに探す。
+ */
+function ftFindTarget(lines, pos) {
+  var fallback = null;      /* 表・コード・画像の候補（優先順で最良のもの） */
+  var rank = { table: 1, code: 2, image: 3 };
+  var consider = function (how, at) {
+    if (!fallback || rank[how] < rank[fallback.how]) fallback = { at: at, how: how };
+  };
+  var scanDir = function (from, step) {
+    var inCode = false;
+    var codeLast = -1;
+    var inMath = false;
+    for (var i = from; i >= 0 && i < lines.length; i += step) {
+      var l = lines[i];
+      if (FT_CODE.test(l)) {
+        if (step < 0) {
+          /* 後ろ向き: 閉じ柵に当たったら中の最後の行を候補に */
+          if (!inCode) { inCode = true; codeLast = -1; continue; }
+          if (codeLast >= 0) consider('code', codeLast);
+          inCode = false; continue;
+        }
+        inCode = !inCode; continue;
+      }
+      if (inCode) { if (step < 0 && codeLast < 0 && l.trim() !== '') codeLast = i; continue; }
+      if (FT_MATH.test(l)) {
+        /* \`$$\` だけの行は状態を反転、\`$$…$$\` の 1 行は丸ごと除外 */
+        if (!/^ {0,3}\\$\\$.*\\$\\$[ \\t]*$/.test(l)) inMath = !inMath;
+        continue;
+      }
+      if (inMath) continue;
+      if (l.trim() === '') continue;
+      if (FT_HR.test(l)) return null;
+      if (FT_HEADING.test(l)) {
+        if (step > 0) return null;          /* 前向きに次の見出しへは越えない */
+        return { at: i, how: 'heading' };
+      }
+      if (FT_COL_SEP.test(l) || FT_DIV_OPEN.test(l) || FT_DIV_CLOSE.test(l) || FT_LINE.test(l)) continue;
+      if (FT_NOT_TARGET.test(l)) {
+        /* setext の下線なら、その上の行が見出しの本文 */
+        if (step < 0 && /^ {0,3}(=+|-+)[ \\t]*$/.test(l) && i > 0 && lines[i - 1].trim() !== '' &&
+            !FT_NOT_TARGET.test(lines[i - 1]) && !FT_TABLE.test(lines[i - 1])) {
+          return { at: i - 1, how: 'heading' };
+        }
+        continue;
+      }
+      if (FT_TABLE.test(l)) {
+        if (step < 0) { consider('table', i); while (i - 1 >= 0 && FT_TABLE.test(lines[i - 1])) i--; }
+        else { var j = i; while (j + 1 < lines.length && FT_TABLE.test(lines[j + 1])) j++; consider('table', j); i = j; }
+        continue;
+      }
+      if (FT_IMAGE_ONLY.test(l)) { consider('image', i); continue; }
+      /* 文字の行。どちら向きでも**ブロックの末尾行**まで進める — 段落の途中に付けると
+         east_asian_line_breaks の行結合が阻まれて和文に半角スペースが混入する（実測 T05） */
+      return { at: ftBlockEnd(lines, i), how: 'text' };
+    }
+    return null;
+  };
+  var hit = scanDir(pos - 1, -1);
+  if (hit) return hit;
+  var fb = fallback;
+  hit = scanDir(pos, 1);
+  if (hit) return hit;
+  return fb || fallback;
+}
+
+/* 文字の行 i が属するブロックの末尾行（空行・別種のブロックの手前まで） */
+function ftBlockEnd(lines, i) {
+  var k = i;
+  while (k + 1 < lines.length) {
+    var n = lines[k + 1];
+    if (n.trim() === '' || FT_HEADING.test(n) || FT_HR.test(n) || FT_TABLE.test(n) || FT_CODE.test(n) ||
+        FT_COL_SEP.test(n) || FT_DIV_OPEN.test(n) || FT_DIV_CLOSE.test(n) || FT_LINE.test(n) ||
+        FT_NOT_TARGET.test(n) || FT_IMAGE_ONLY.test(n) || FT_MATH.test(n)) break;
+    k++;
+  }
+  return k;
+}
+
+function realizeFooterMarks(tokens, diags) {
+  var lines = [];
+  var marks = [];             /* { pos: 直前の行数, text, empty } */
+  for (var i = 0; i < tokens.length; i++) {
+    if (tokens[i].line !== undefined) lines.push(tokens[i].line);
+    else marks.push({ pos: lines.length, text: tokens[i].footer.text, empty: tokens[i].footer.empty, from: tokens[i].footer.from });
+  }
+  var count = 0;
+  for (var m = 0; m < marks.length; m++) {
+    var mk = marks[m];
+    var tg = ftFindTarget(lines, mk.pos);
+    if (!tg) {
+      diags.push(ftDiag('design', 'このフッターは載せられません',
+        '同じスライドに本文が無いので置き場所がありません。表紙に出すには文書全体設定の「デッキ全体の出典」と「表紙に出す」を使ってください',
+        (mk.from + 1) + ' 行目'));
+      continue;
+    }
+    var l = lines[tg.at];
+    /* 文言の末尾の \`\\\` は閉じ目印をエスケープして飲む（\`\\\` + 目印は pandoc の escape。実測）。
+       コード行以外では \`\\\\\`（リテラルの \\）に逃がす */
+    var text = tg.how === 'code' ? mk.text : mk.text.replace(/\\\\$/, '\\\\\\\\');
+    if (tg.how === 'table') lines[tg.at] = ftInsertIntoTableRow(l, text);
+    else if (tg.how === 'image') lines[tg.at] = ftInsertIntoImage(l, mk.text);
+    else {
+      /* 段落・見出し・コード行。未閉じの書式記号で終わる行は目印を書式に飲まれる */
+      if (tg.how === 'text' && /(?:^|[^\\\\])(?:\\*\\*?|__?|\`+|\\]\\()$/.test(l.replace(/[ \\t]+$/, ''))) {
+        diags.push(ftDiag('design', 'フッターの直前の行が書式記号で終わっています',
+          '* や ** やバッククォート、リンクの途中で終わる行の直後にフッターを置くと本文の書式が崩れます。空行を挟んでください',
+          (tg.at + 1) + ' 行目'));
+      }
+      lines[tg.at] = ftInsertAtLineEnd(l, FT_OPEN + text + FT_CLOSE, tg.how === 'heading');
+    }
+    count++;
+  }
+  return { md: lines.join('\\n'), count: count };
+}
+
+/**
+ * 入口。format は 'pptx' | 'docx' | 'html'。opts.hasDeckFooter は空フッターの診断用。
+ * 返り値 { md, diags, count }。原稿は書き換えず、変換へ渡す派生テキストだけ作る。
+ */
+function extractFooters(md, format, opts) {
+  opts = opts || {};
+  var sc = scanFooters(md);
+  var diags = sc.diags;
+  var empties = 0;
+  var any = false;
+  for (var i = 0; i < sc.tokens.length; i++) {
+    if (sc.tokens[i].footer) { any = true; if (sc.tokens[i].footer.empty) empties++; }
+  }
+  if (!any) return { md: md.split('\\n').map(function (l) { return l.slice(-1) === '\\r' ? l.slice(0, -1) : l; }).join('\\n'), diags: diags, count: 0 };
+  if (empties && opts.hasDeckFooter && format === 'pptx') {
+    diags.push(ftDiag('info', '空のフッターがデッキ全体の出典を消しています',
+      '文言の無い /// は、そのスライドだけデッキ全体の出典を出しません。出したいなら行ごと消してください',
+      empties + ' か所'));
+  }
+  if (format === 'pptx') {
+    var r = realizeFooterMarks(sc.tokens, diags);
+    return { md: r.md, diags: diags, count: r.count };
+  }
+  return { md: realizeFooterDivs(sc.tokens, format), diags: diags, count: 0 };
+}
+
+/* ---- 取り出し（pptx）: slideN.xml から目印区間を切り出して原状復帰する ---- */
+
+/* 目印を含む <a:r> の rPr を拾う（断片は <a:t> の途中から始まるため、両端を補うのに要る） */
+function ftRunPrBefore(xml, at) {
+  var start = xml.lastIndexOf('<a:r>', at);
+  if (start < 0) return '<a:rPr lang="ja-JP"/>';
+  var seg = xml.slice(start, at);
+  var m = /<a:rPr\\b[^>]*\\/>|<a:rPr\\b[^>]*>[\\s\\S]*?<\\/a:rPr>/.exec(seg);
+  return m ? m[0] : '<a:rPr lang="ja-JP"/>';
+}
+
+function harvestFooters(zip) {
+  var dec = new TextDecoder();
+  var slides = {};
+  var diags = [];
+  var mismatch = 0;
+  var names = Object.keys(zip);
+  for (var n = 0; n < names.length; n++) {
+    var name = names[n];
+    var sm = /^ppt\\/slides\\/slide(\\d+)\\.xml$/.exec(name);
+    if (!sm) continue;
+    var xml = dec.decode(zip[name]);
+    if (xml.indexOf(FT_OPEN) < 0 && xml.indexOf(FT_CLOSE) < 0) continue;
+    var parts = [];
+    var suppress = false;
+    for (;;) {
+      var o = xml.indexOf(FT_OPEN);
+      if (o < 0) break;
+      var c = xml.indexOf(FT_CLOSE, o + 1);
+      if (c < 0) { mismatch++; xml = xml.slice(0, o) + xml.slice(o + 1); continue; }
+      var frag = xml.slice(o + 1, c);
+      if (frag.indexOf(FT_OPEN) >= 0) { mismatch++; }
+      if (frag === '') suppress = true;
+      else parts.push({ frag: frag, rPr: ftRunPrBefore(xml, o) });
+      xml = xml.slice(0, o) + xml.slice(c + 1);
+    }
+    if (xml.indexOf(FT_CLOSE) >= 0) { mismatch++; xml = xml.split(FT_CLOSE).join(''); }
+    /* 画像 title に埋めた場合、descr の先頭に改行 2 個が残る（実測: title + LF LF + ファイル名） */
+    xml = xml.replace(/descr="(?:\\n\\n|&#10;&#10;|&#xA;&#xA;)/g, 'descr="');
+    zip[name] = strToU8(xml);
+    slides[Number(sm[1])] = { parts: parts, suppress: suppress && !parts.length };
+  }
+  /* 漏れの掃除: スライド以外（rels・notesSlide 等）に残った目印は出荷しない */
+  var leaked = 0;
+  for (var k = 0; k < names.length; k++) {
+    if (/^ppt\\/slides\\/slide\\d+\\.xml$/.test(names[k])) continue;
+    if (!/\\.(xml|rels)$/.test(names[k])) continue;
+    var x = dec.decode(zip[names[k]]);
+    if (x.indexOf(FT_OPEN) < 0 && x.indexOf(FT_CLOSE) < 0) continue;
+    leaked++;
+    zip[names[k]] = strToU8(x.split(FT_OPEN).join('').split(FT_CLOSE).join(''));
+  }
+  if (mismatch || leaked) {
+    diags.push(ftDiag('design', 'フッターの文言を取り出せませんでした',
+      '直前の行の書式やリンクに文言が巻き込まれています。フッターの前に空行を入れてください',
+      (mismatch + leaked) + ' か所'));
+  }
+  return { slides: slides, diags: diags };
+}
+
+/* 断片 → 1 段落ぶんのラン XML。両端を補い、平衡しなければ文字列へ落とす */
+function ftFragToRuns(part) {
+  var xml = '<a:r>' + part.rPr + '<a:t>' + part.frag + '</a:t></a:r>';
+  /* 空のラン（目印が run の端にあった名残）は落とす */
+  xml = xml.replace(/<a:r>(?:<a:rPr\\b[^>]*\\/>|<a:rPr\\b[^>]*>[\\s\\S]*?<\\/a:rPr>)?<a:t><\\/a:t><\\/a:r>/g, '');
+  var opens = (xml.match(/<a:r>/g) || []).length;
+  var closes = (xml.match(/<\\/a:r>/g) || []).length;
+  var tOpen = (xml.match(/<a:t>/g) || []).length;
+  var tClose = (xml.match(/<\\/a:t>/g) || []).length;
+  if (opens !== closes || tOpen !== tClose || /<\\/?a:p\\b|<\\/?p:/.test(xml)) {
+    var text = part.frag.replace(/<[^>]*>/g, '');
+    return { xml: '<a:r><a:rPr lang="ja-JP"/><a:t>' + text + '</a:t></a:r>', ok: false, text: text };
+  }
+  return { xml: xml, ok: true, text: part.frag.replace(/<[^>]*>/g, '') };
+}
+
+/* 帯の体裁を各ランへ。sz は属性、色は solidFill を rPr の先頭（latin / hlinkClick より前） */
+function ftStyleRuns(runsXml, f) {
+  return runsXml.replace(/<a:rPr\\b([^>]*?)(\\/?)>/g, function (_m, attrs, selfClose) {
+    var a = attrs.replace(/\\ssz="\\d+"/, '') + ' sz="' + Math.round(f.sz) + '"';
+    if (!/\\blang=/.test(a)) a = ' lang="ja-JP"' + a;
+    return '<a:rPr' + a + '>' + footerColorXml(f.color) + (selfClose ? '</a:rPr>' : '');
+  }).replace(/(<a:rPr\\b[^>]*>(?:<a:solidFill>[\\s\\S]*?<\\/a:solidFill>))(<a:solidFill>[\\s\\S]*?<\\/a:solidFill>)/g, '$1');
+}
+
+/* 取り出した断片をプレビューのシーンへ載せる（再 zip しない） */
+function attachSlideFooters(slides, hv) {
+  for (var i = 0; i < slides.length; i++) {
+    var h = hv[slides[i].index];
+    if (!h) continue;
+    if (h.suppress) { slides[i].suppressFooter = true; continue; }
+    var runs = [];
+    var text = '';
+    for (var p = 0; p < h.parts.length; p++) {
+      var fr = ftFragToRuns(h.parts[p]);
+      if (p) { runs.push({ text: ' / ' }); text += ' / '; }
+      var rs = parseRuns('<a:p>' + fr.xml + '</a:p>');
+      for (var r = 0; r < rs.length; r++) { runs.push(rs[r]); text += rs[r].text; }
+    }
+    slides[i].footer = { text: text, runs: runs };
+  }
+}
+window.__morphoExtractFooters = extractFooters;
+window.__morphoHarvestFooters = harvestFooters;
+window.__morphoScanFooters = scanFooters;
+window.__morphoFooterJoin = ftJoin;
+window.__morphoAttachSlideFooters = attachSlideFooters;
+
 /* ルビ・傍点フィルタを配線する（全形式で常時有効。出し分けはフィルタ内の FORMAT） */
 function wireRuby(options, files) {
   files['ruby.lua'] = RUBY_LUA;
@@ -1897,7 +2393,8 @@ async function doConvert(id, md, opts, format) {
     if (format === 'web') { await doConvertWeb(id, md, opts); return; }
     if (format === 'doc') { await doConvertDoc(id, md, opts); return; }
     /* 内容層の記法を pandoc の語彙へ実現する（原稿は書き換えない） */
-    var col = expandColumns(md);
+    var ft = extractFooters(md, 'pptx', { hasDeckFooter: !!(opts.docFooter && opts.docFooter.text) });
+    var col = expandColumns(ft.md);
     md = col.md;
     var options = {
       from: READER,
@@ -1921,7 +2418,11 @@ async function doConvert(id, md, opts, format) {
     var out = res.files && res.files['out.pptx'];
     if (!out) throw new Error('pandoc produced no out.pptx');
     var buf = new Uint8Array(await out.arrayBuffer());
-    var parsed = parsePptx(buf);
+    /* スライドごとのフッター: 目印を実出力から取り出し（再 zip しない）、シーンへ載せる */
+    var zip = unzipSync(buf);
+    var hv = harvestFooters(zip);
+    var parsed = parsePptxZip(zip);
+    attachSlideFooters(parsed.slides, hv.slides);
 
     RN({
       id: id,
@@ -1931,7 +2432,7 @@ async function doConvert(id, md, opts, format) {
         slideCount: parsed.slideCount,
         slides: parsed.slides,
         deck: parsed.deck,
-        diagnostics: classify(res.warnings, res.stderr, col.diags),
+        diagnostics: classify(res.warnings, res.stderr, ft.diags.concat(col.diags, hv.diags)),
         ms: ms,
         bytes: buf.length
       }
@@ -1954,8 +2455,11 @@ async function doExport(id, md, opts, format) {
     if (!pandoc) throw new Error('converter is not ready yet');
     opts = opts || {};
     /* 内容層の記法を pandoc の語彙へ実現する（原稿は書き換えない） */
-    var col = expandColumns(md);
+    var ft = extractFooters(md, format === 'pptx' ? 'pptx' : format === 'docx' ? 'docx' : 'html',
+      { hasDeckFooter: !!(opts.docFooter && opts.docFooter.text) });
+    var col = expandColumns(ft.md);
     md = col.md;
+    var extraDiags = ft.diags.concat(col.diags);
     var name = 'out.' + format;
     var options = {
       from: READER,
@@ -2000,9 +2504,18 @@ async function doExport(id, md, opts, format) {
       out = new Blob([processed]);
     }
 
-    /* フッターは装飾より後 = 最前面。帯の上に置いた装飾に隠されないようにする */
-    if (format === 'pptx' && opts.footer) {
-      out = new Blob([applyFooters(new Uint8Array(await out.arrayBuffer()), opts.footer)]);
+    /* フッターは装飾より後 = 最前面。帯の上に置いた装飾に隠されないようにする。
+       スライドごとのフッターは目印を取り出してから、デッキ既定と一緒に注入する */
+    if (format === 'pptx' && (ft.count > 0 || (opts.footer && opts.footer.text))) {
+      var zipX = unzipSync(new Uint8Array(await out.arrayBuffer()));
+      var hvX = harvestFooters(zipX);
+      extraDiags = extraDiags.concat(hvX.diags);
+      if (opts.footer) applyFootersZip(zipX, opts.footer, hvX.slides);
+      else if (Object.keys(hvX.slides).length) {
+        extraDiags.push(ftDiag('design', 'スライドごとのフッターを書き出せませんでした',
+          '帯の位置を決めるのにスライドのプレビューが要ります。一度スライドを表示してから書き出してください', ''));
+      }
+      out = new Blob([zipSync(zipX)]);
     }
     /* docx はページフッター、html は本文末尾に 1 回（0.16.4） */
     if (format === 'docx' && opts.docFooter) {
@@ -2030,7 +2543,7 @@ async function doExport(id, md, opts, format) {
         base64: base64,
         bytes: out.size,
         ms: ms,
-        diagnostics: classify(res.warnings, res.stderr, col.diags)
+        diagnostics: classify(res.warnings, res.stderr, extraDiags)
       }
     });
   } catch (e) {

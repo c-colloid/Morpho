@@ -126,8 +126,22 @@ export function toExportFooter(
   style: Partial<FooterStyle> | undefined,
   deck: DeckInfo | null | undefined,
 ): ConvertOptions['footer'] | undefined {
+  const spec = toFooterSpec(text, style, deck);
+  return spec && spec.text ? spec : undefined;
+}
+
+/**
+ * 帯と体裁の解決（文言が空でも返す）。スライドごとのフッター（0.17.0）は
+ * デッキ全体の文言が無くても帯と体裁が要るので、書き出しと個別フッターの
+ * プレビューはこちらを使う。デッキが無ければ undefined
+ */
+export function toFooterSpec(
+  text: string | undefined,
+  style: Partial<FooterStyle> | undefined,
+  deck: DeckInfo | null | undefined,
+): ConvertOptions['footer'] | undefined {
+  if (!deck) return undefined;
   const t = sanitizeFooterText(text ?? '').trim();
-  if (!t || !deck) return undefined;
   const st = withFooterDefaults(style);
   const band = resolveFooterBand(st, deck);
   return {
