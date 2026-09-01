@@ -201,6 +201,7 @@ src/store/      ── 永続化と共有
 
 src/text/       ── 文字列ユーティリティ（純関数）
   columns.ts             段組みの記法（+++ の列区切り）。内容層の語彙で pandoc を知らない
+  footerBlocks.ts        スライドごとのフッターの記法（/// 文言・::: footer）。同上
   blockInsert.ts         ブロック（画像等）の挿入位置。行を割らず、柵と区間の末尾を守る
   assetNames.ts          画像ファイル名の正規化・重複回避
   diffLines.ts           行 Diff（競合ダイアログ）
@@ -238,22 +239,24 @@ npm run check
 | `check-frontmatter.mjs` | front matter の切り出し |
 | `check-scene.mjs` | pptx パーサ単体（ブリッジを vm で評価して直接叩く） |
 | `check-cursor.mjs` | カーソル位置 → スライド番号の対応 |
-| `check-notes-edit.mjs` | 発表者ノートの読み取りと書き戻し |
+| `check-notes-edit.mjs` | 発表者ノートの読み取りと書き戻し（入れ子の div を含むノートの範囲は `scanFences` に従う。繰り返し保存・CRLF も） |
 | `check-linebreak.mjs` | 改行位置編集（正規化・分割・オフセット適用・対象特定・柵と禁止区間） |
 | `check-image-insert.mjs` | 画像の挿入位置（行を割らない・独立段落・柵と区間の末尾） |
-| `check-columns.mjs` | 段組みの記法（`+++`）。判定・展開・診断と、**アプリと変換器で規則が食い違っていないこと** |
+| `check-columns.mjs` | 段組みの記法（`+++`）。判定・展開・診断と、**アプリと変換器で規則が食い違っていないこと**（区切りと柵の正規表現、および柵の深さ追跡 `scanFences` の**関数本文**が `columns.ts` とブリッジで一致すること） |
 | `check-update.mjs` | 版の比較と更新通知 |
 | `check-design.mjs` | 装飾・グループ・文字サイズ・.morphodesign の往復 |
 | `check-diff.mjs` | 行 Diff（競合ダイアログ） |
 | `check-template.mjs` | テンプレート（reference-doc のテーマ色引き継ぎと和名 → 英語名の書き換え） |
-| `check-footer.mjs` | フッター（帯の解決・色・浄化・注入・Open XML 妥当性と較正） |
+| `check-footer.mjs` | フッター（帯の解決・色・浄化・注入・docx ページフッター・Web の CSS・Open XML 妥当性と較正） |
 | `check-deck.mjs` | **統合検査**: 本物の pandoc.wasm で pptx / html / docx を作り、座標・配色・字サイズ・字下げ・改行・ノート・Web の CSS 注入・docx のノート除去までを確認 |
 
 ### pandoc の実出力を見る
 
 ```bash
 node scripts/dump-pptx.mjs [file.md]     # pandoc が吐く pptx の中身
-node scripts/dump-footer.mjs             # フッター帯・記法・注入の実測（未実装機能の設計根拠）
+node scripts/dump-footer.mjs             # フッター帯・記法・注入の実測
+node scripts/dump-footer-slides.mjs      # スライドごとのフッターの実測（未実装機能の設計根拠）
+node scripts/dump-footer-notation.mjs    # フッター記法の選定の実測
 ```
 
 **パーサを推測で書かないこと。** 実際に pandoc を回して XML を見る。

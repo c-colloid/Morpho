@@ -219,4 +219,78 @@ t('意図した縮退: 行頭 ::: を含む段落は編集できない（壊さ�
   assert.equal(loc.reason, 'not-found');
 });
 
+/* ---------- CRLF（Windows 由来の原稿） ----------
+   判定のときだけ行末の \r を外す（src/text/lineEnding.ts）。外さないと +++\r が
+   段落へ溶け、:::\r の閉じ柵が読めずノートの後ろの段落が見つからない（修正前に実測）。
+   書き戻しは末尾行の \r\n を壊さず、\ 改行も \r\n で入れる（改行コードを混在させない） */
+const crlf = (s) => s.replace(/\n/g, '\r\n');
+
+t('CRLF: 段落が見つかり、末尾行の \\r はブロックの外に置かれる', () => {
+  const d = crlf(doc);
+  const loc = locateEditable(d, 1, 'これは太字を含む段落です。');
+  assert.ok(loc.ok);
+  assert.equal(loc.block.raw, 'これは**太字**を含む段落です。');
+  assert.equal(d.slice(loc.block.start, loc.block.end), loc.block.raw);
+  assert.equal(d[loc.block.end], '\r');
+  assert.equal(loc.block.newline, '\r\n');
+});
+t('CRLF: 継続行を含む項目は plain に \\r が混ざらず、明示改行と prefix が LF 版と同じ', () => {
+  const lf = locateEditable(doc, 1, '長い項目は');
+  const cr = locateEditable(crlf(doc), 1, '長い項目は');
+  assert.ok(lf.ok && cr.ok);
+  assert.equal(cr.block.plain, lf.block.plain);
+  assert.deepEqual([...cr.block.breakOffsets], [...lf.block.breakOffsets]);
+  assert.equal(cr.block.prefix, lf.block.prefix);
+});
+t('CRLF: 段落の直後に空行なしで置いた +++ を段落へ飲み込まない', () => {
+  const d = crlf('# 一\n\n左の文\n+++\n右の文\n');
+  const loc = locateEditable(d, 1, '左の文');
+  assert.ok(loc.ok);
+  assert.equal(loc.block.raw, '左の文');
+});
+t('スライドごとのフッター（///）は段落へ飲み込まず、その行自体も編集対象にしない', () => {
+  for (const d of ['# 一\n\n本文の文\n/// 出典: NEJM\n次の文\n', crlf('# 一\n\n本文の文\n/// 出典: NEJM\n次の文\n')]) {
+    const loc = locateEditable(d, 1, '本文の文');
+    assert.ok(loc.ok);
+    assert.equal(loc.block.raw, '本文の文');
+    assert.equal(locateEditable(d, 1, '出典: NEJM').ok, false);
+  }
+});
+t('CRLF: ::: notes の閉じ柵が読め、ノートの後ろの段落が見つかる', () => {
+  const d = crlf('# t\n\n::: notes\n本文の段落です。についての補足。\n:::\n\n本文の段落です。\n');
+  const loc = locateEditable(d, 1, '本文の段落です。');
+  assert.ok(loc.ok);
+  assert.equal(loc.block.raw, '本文の段落です。');
+  assert.ok(loc.block.start > d.indexOf(':::\r\n\r\n'), 'ノートの中を掴んでいる');
+});
+t('CRLF: 柵の行そのものは編集対象にしない', () => {
+  assert.equal(locateEditable(crlf(COLS), 1, '::: {.columns}').ok, false);
+});
+t('CRLF: 書き戻しは \\ 改行を \\r\\n で入れ、原稿の改行コードを混在させない', () => {
+  const d = crlf(doc);
+  const loc = locateEditable(d, 1, '箇条書きの項目');
+  assert.ok(loc.ok);
+  const rebuilt = rebuildBlock(loc.block, new Set([5]));
+  assert.equal(rebuilt, '- 箇条書きの\\\r\n  項目');
+  const next = d.slice(0, loc.block.start) + rebuilt + d.slice(loc.block.end);
+  assert.ok(!/(^|[^\r])\n/.test(next), 'LF 単独の改行が混ざった');
+  /* LF 版で同じ編集をした結果と、改行コード以外で一致する */
+  const lfLoc = locateEditable(doc, 1, '箇条書きの項目');
+  const lfNext = doc.slice(0, lfLoc.block.start) + rebuildBlock(lfLoc.block, new Set([5])) + doc.slice(lfLoc.block.end);
+  assert.equal(next, crlf(lfNext));
+});
+t('CRLF: 改行の解除も \\r\\n を保つ', () => {
+  const d = crlf('# t\n\n- 長い項目は\\\n  ここに続く\n');
+  const loc = locateEditable(d, 1, '長い項目は');
+  assert.ok(loc.ok);
+  const next = d.slice(0, loc.block.start) + rebuildBlock(loc.block, new Set()) + d.slice(loc.block.end);
+  assert.equal(next, crlf('# t\n\n- 長い項目はここに続く\n'));
+});
+t('LF 原稿の書き戻しは従来どおり \\n', () => {
+  const loc = locateEditable(doc, 1, '箇条書きの項目');
+  assert.ok(loc.ok);
+  assert.equal(loc.block.newline, '\n');
+  assert.equal(rebuildBlock(loc.block, new Set([5])), '- 箇条書きの\\\n  項目');
+});
+
 console.log(`\n${n} 件すべて通過`);

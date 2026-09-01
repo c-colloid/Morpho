@@ -29,6 +29,7 @@ import {
 } from '../converter/frontMatter';
 import { insertBlock } from '../text/blockInsert.ts';
 import { COLUMN_SEPARATOR_TEXT } from '../text/columns.ts';
+import { FOOTER_LINE_TEXT } from '../text/footerBlocks.ts';
 import { findSplitSuspects } from '../preview/slideSync.ts';
 import { usePandocConverter } from '../converter/usePandocConverter';
 import { WebView } from 'react-native-webview';
@@ -92,7 +93,7 @@ import {
   pruneGroups,
 } from '../design/groups';
 import { parseDesignFile, serializeDesign } from '../design/designFile';
-import { toExportFooter, type FooterStyle } from '../design/footer';
+import { toDocFooter, toExportFooter, toFooterSpec, type FooterStyle } from '../design/footer';
 import { adjustDeck, toExportSizes, type TextSizes } from '../design/textSizes';
 import {
   applyAssignments,
@@ -556,6 +557,16 @@ export default function EditorScreen() {
     patchBody(r.body, fmLen + r.cursor);
   }, [patchBody]);
 
+  /* スライドごとのフッター（`/// 文言`）を入れる。1 行なので `+++` と同じ位置決め。
+     キャレットは `/// ` の後ろ（文言を続けて打てる）。記法は notes/footer-design.md */
+  const handleInsertFooter = useCallback(() => {
+    const src = sourceRef.current;
+    const { body } = splitFrontMatter(src);
+    const fmLen = src.length - body.length;
+    const r = insertBlock(body, cursorRef.current - fmLen, FOOTER_LINE_TEXT);
+    patchBody(r.body, fmLen + r.cursor);
+  }, [patchBody]);
+
   /* ---------- 更新チェック（起動時に1回・失敗は黙って無視） ---------- */
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   useEffect(() => {
@@ -942,6 +953,8 @@ export default function EditorScreen() {
             stripHtmlComments: true,
             format: job.format,
             useTemplate: designRef.current.template !== undefined,
+            /* docx / Web のデッキ全体フッター。pptx は帯をアプリ側で描くので不要 */
+            docFooter: toDocFooter(metadata.footer, designRef.current.footer),
           });
         },
         (r, e) => {
@@ -1496,6 +1509,11 @@ export default function EditorScreen() {
     () => toExportFooter(deckFooterText, design.footer, previewDeck ?? result?.deck),
     [deckFooterText, design.footer, previewDeck, result],
   );
+  /* スライドごとのフッター用: デッキ全体の文言が無くても帯と体裁は要る */
+  const footerBand = useMemo(
+    () => toFooterSpec(deckFooterText, design.footer, previewDeck ?? result?.deck),
+    [deckFooterText, design.footer, previewDeck, result],
+  );
 
   const handleUpdateFooterText = useCallback(
     (text: string) => {
@@ -1513,6 +1531,11 @@ export default function EditorScreen() {
         else delete next.footer;
         return next;
       });
+      /* スライドは帯をアプリ側で描くので即時反映される。docx / Web は実出力を
+         解析しているので、体裁が変わったら変換し直す */
+      if (previewFormatRef.current !== 'slides' && statusRef.current === 'ready') {
+        runnerRef.current?.submit({ md: sourceRef.current, format: previewFormatRef.current });
+      }
     },
     [mutateDesign],
   );
@@ -1585,12 +1608,14 @@ export default function EditorScreen() {
               design.text,
               resultRef.current?.deck?.bodySz ?? [2400, 2100, 1800, 1500, 1500],
             ),
-            /* プレビューと同じ 1 つの解決結果を渡す */
-            footer: toExportFooter(
+            /* プレビューと同じ 1 つの解決結果を渡す。文言が空でも帯と体裁は渡す
+               （スライドごとのフッターが同じ帯に載る） */
+            footer: toFooterSpec(
               splitFrontMatter(src).metadata.footer,
               design.footer,
               resultRef.current?.deck,
             ),
+            docFooter: toDocFooter(splitFrontMatter(src).metadata.footer, design.footer),
             useTemplate: design.template !== undefined,
           });
           await shareExport(fileName, choice, { base64: out.base64 });
@@ -1662,6 +1687,9 @@ export default function EditorScreen() {
             </Pressable>
             <Pressable hitSlop={8} onPress={handleInsertColumn}>
               <Text style={styles.imageInsert}>段組み</Text>
+            </Pressable>
+            <Pressable hitSlop={8} onPress={handleInsertFooter}>
+              <Text style={styles.imageInsert}>出典</Text>
             </Pressable>
             <Text style={styles.paneMeta}>
               {source.length}字 · {saveLabel}
@@ -1807,13 +1835,19 @@ export default function EditorScreen() {
                     width={Math.max(0, previewW - 40 - 26)}
                     decorations={decorBySlide.get(s.index)}
                     footer={
-                      /* 表紙は ctrTitle の有無で判定する — 書き出し側（applyFooters）と
-                         同じ規則。レイアウト名は配線盤が書き換えるので使えない */
-                      footerSpec &&
-                      (footerSpec.onCover ||
-                        !s.shapes.some((sh) => sh.placeholder === 'ctrTitle'))
-                        ? footerSpec
-                        : null
+                      /* スライドごとのフッター（原稿の ///）はデッキ既定を置き換え、
+                         空の /// はそのスライドだけ抑止する（applyFootersZip と同じ規則）。
+                         表紙は ctrTitle の有無で判定する — 書き出し側と同じ規則。
+                         レイアウト名は配線盤が書き換えるので使えない */
+                      s.suppressFooter
+                        ? null
+                        : s.footer && footerBand
+                          ? { ...footerBand, text: s.footer.text, runs: s.footer.runs }
+                          : footerSpec &&
+                              (footerSpec.onCover ||
+                                !s.shapes.some((sh) => sh.placeholder === 'ctrTitle'))
+                            ? footerSpec
+                            : null
                     }
                     editingDecor={s.index === editingSlideIndex}
                     selectedDecorId={selectedDecorId}
@@ -2033,7 +2067,7 @@ function SlideCard({
   width: number;
   decorations?: SlideDecoration[];
   /** 解決済みのフッター。このスライドに出さないなら null */
-  footer?: ConvertOptions['footer'] | null;
+  footer?: (ConvertOptions['footer'] & { runs?: TextRun[] }) | null;
   imageUriOf?: (name: string) => string;
   /** 装飾パネルを開いているスライド。直接操作レイヤーを重ねる */
   editingDecor: boolean;

@@ -157,6 +157,14 @@ export interface SlideOutline {
   tables: SlideTable[];
   /** 発表者ノート（::: notes ::: 由来）。無ければ空配列 */
   notes: Paragraph[];
+  /**
+   * このスライドのフッター（原稿の `/// 文言` / `::: footer` 由来。0.17.0）。
+   * 変換器が実出力から取り出した文言で、デッキ全体のフッターを置き換える。
+   * 無ければ undefined（デッキ既定が出る）
+   */
+  footer?: { text: string; runs: TextRun[] } | null;
+  /** 空の `///` があった: このスライドだけデッキ全体のフッターを出さない */
+  suppressFooter?: boolean;
 }
 
 /** テンプレート由来のデッキ情報。字サイズは 1/100 pt（3300 = 33pt） */
@@ -220,9 +228,12 @@ export interface DocBlock {
   level?: number;
   /**
    * para の段落スタイル。title/author/date は front matter 由来、
-   * quote は引用（BlockText）、footnote は文末に並べる脚注本文
+   * quote は引用（BlockText）、footnote は文末に並べる脚注本文、
+   * footer はページフッター（word/footer1.xml。フロー表示にページは無いので末尾に 1 回）
    */
-  style?: 'title' | 'author' | 'date' | 'body' | 'quote' | 'footnote';
+  style?: 'title' | 'author' | 'date' | 'body' | 'quote' | 'footnote' | 'footer';
+  /** para: 段落の揃え（w:jc）。footer で使う */
+  align?: 'l' | 'ctr' | 'r';
   /** heading / para / listItem の中身。行内改行は text 中の \n */
   runs?: TextRun[];
   /** listItem: 番号付きか（numbering.xml の numFmt で判定） */
@@ -365,9 +376,11 @@ export interface ConvertOptions {
    */
   textSizes?: { titleSz?: number; coverTitleSz?: number; coverSubSz?: number; bodySz?: number[] };
   /**
-   * デッキ全体のフッター（出典・注釈）。pptx のみ。他形式では無視される。
+   * フッター（出典・注釈）の帯と体裁。pptx のみ。他形式では無視される。
    * 座標は解決済みの EMU で渡す（装飾と同じ流儀 — テンプレートの帯を読むのも
    * 比率の既定値へ落とすのもアプリ側の仕事で、変換器は書くだけ）。
+   * text はデッキ全体の文言（空文字なら既定は出さない）。スライドごとのフッター
+   * （原稿の `///`）は変換器が実出力から取り出し、同じ帯・体裁で置き換える。
    * 表紙（ctrTitle を持つスライド）は onCover が真のときだけ載せる
    */
   footer?: {
@@ -381,6 +394,17 @@ export interface ConvertOptions {
     algn: 'l' | 'ctr' | 'r';
     color: ThemeColor;
     onCover?: boolean;
+  };
+  /**
+   * デッキ全体のフッターの docx / Web 向け（0.16.4）。pptx では無視される。
+   * docx はページフッター（word/footer1.xml）として全ページに、
+   * Web は本文末尾に 1 回だけ出す（HTML は「1 枚ごとに同じ出典を刷る」媒体ではない）。
+   * 座標は持たない。文言・揃え・字サイズは pptx の footer と同じ解決結果から作る
+   */
+  docFooter?: {
+    text: string;
+    algn: 'l' | 'ctr' | 'r';
+    sizePt: number;
   };
   /**
    * setReferenceDoc で預けたテンプレートを reference-doc として使う。

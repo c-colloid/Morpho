@@ -7,7 +7,12 @@
  *   - 水平線（* - _ のいずれかが3つ以上の行。pandoc は hr をスライド区切りにする）
  * `##` 以下は「スライド内のコンテンツ見出し」として扱う（実機の実測と一致）。
  * 外れても害は強調位置がずれるだけなので、正確さより単純さを取る。
+ *
+ * CRLF 原稿では行末の `\r` を外してから判定する（lineEnding.ts の規約）。
+ * `***\r` が水平線に一致せず境界が消えていた（実測: scripts/check-cursor.mjs）。
+ * オフセットは元の行の長さ（`\r` 込み）で数えるので、本文の対応は変わらない。
  */
+import { stripCr } from '../text/lineEnding.ts';
 
 const H1 = /^#[ \t]/;
 const HR = /^ {0,3}([*_-])(?:[ \t]*\1){2,}[ \t]*$/;
@@ -30,9 +35,10 @@ export function slideSegments(body: string): SlideSegment[] {
   let hasContent = false;
   let inFence = false;
   let offset = 0;
-  for (const line of body.split('\n')) {
+  for (const raw of body.split('\n')) {
     const lineStart = offset;
-    offset += line.length + 1;
+    offset += raw.length + 1;
+    const line = stripCr(raw);
     if (FENCE.test(line)) {
       inFence = !inFence;
       hasContent = true;
@@ -82,7 +88,8 @@ export function slideIndexAtCursor(
   let slide = 1;
   let hasContent = false;
   let inFence = false;
-  for (const line of upto.split('\n')) {
+  for (const raw of upto.split('\n')) {
+    const line = stripCr(raw);
     // コードフェンス内の # や *** は境界ではない
     if (FENCE.test(line)) {
       inFence = !inFence;

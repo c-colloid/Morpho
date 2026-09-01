@@ -182,7 +182,7 @@ export function SlideSurface({
    * （src/design/footer.ts の toExportFooter）。これでプレビューと出力が
    * 構造的に一致する。表紙かどうかの判定も同じ規則で親が済ませてある
    */
-  footer?: ConvertOptions['footer'] | null;
+  footer?: (ConvertOptions['footer'] & { runs?: TextRun[] }) | null;
   /** 画像名 → 描画用 URI（アセット保存庫）。未指定なら画像は枠だけ描く */
   imageUriOf?: (name: string) => string;
   /** 段落のタップ。段落は Pressable がタップを吸うので、親のタップ処理へ流すために使う */
@@ -265,7 +265,21 @@ export function SlideSurface({
                 footer.algn === 'ctr' ? 'center' : footer.algn === 'l' ? 'left' : 'right',
             }}
           >
-            {footer.text}
+            {footer.runs && footer.runs.length
+              ? footer.runs.map((r, i) => (
+                  <Text
+                    key={i}
+                    style={{
+                      fontWeight: r.bold ? '700' : undefined,
+                      fontStyle: r.italic ? 'italic' : undefined,
+                      textDecorationLine: r.underline ? 'underline' : undefined,
+                      fontFamily: r.mono ? 'Menlo' : undefined,
+                    }}
+                  >
+                    {r.text}
+                  </Text>
+                ))
+              : footer.text}
           </Text>
         </View>
       )}
