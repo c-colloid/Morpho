@@ -79,4 +79,48 @@ t('2ブロックあるとき上書きで1つに統合される', () => {
   assert.equal((next.match(/::: notes/g) || []).length, 1);
 });
 
+/* ---------- CRLF（Windows 由来の原稿） ----------
+   読み取りは閉じ柵の $ が \r の手前にも一致するので元から動く。壊れていたのは書き戻しで、
+   LF で書くので改行コードが混在し、ブロック直後の改行の畳み込みも \r\n を 1 つとして
+   見ていなかった（修正前に実測）。原稿の改行コードは detectNewline（src/text/lineEnding.ts）。
+   不変条件: CRLF 原稿への操作の結果 = LF 原稿への同じ操作の結果を CRLF にしたもの */
+const crlf = (s) => s.replace(/\n/g, '\r\n');
+const noLoneLf = (s) => !/(^|[^\r])\n/.test(s);
+
+t('CRLF: 複数行のノートも LF に揃えて読める', () => {
+  const multi = doc.replace('最初のノート。', '1 行目\n2 行目');
+  assert.equal(getNotes(crlf(multi), 1), '1 行目\n2 行目');
+  assert.equal(getNotes(crlf(doc), 1), '最初のノート。');
+});
+t('CRLF: 上書き・新規作成・削除・統合の結果が LF 版と改行コード以外で一致する', () => {
+  const two = doc.replace('本文1。', '本文1。\n\n::: notes\n二つ目。\n:::');
+  const cases = [
+    [doc, 1, '書き換えた。\n二行目。'],
+    [doc, 2, '新しいノート'],
+    [doc, 1, ''],
+    [two, 1, '統合後'],
+    [two, 1, ''],
+  ];
+  for (const [d, i, text] of cases) {
+    const next = setNotes(crlf(d), i, text);
+    assert.equal(next, crlf(setNotes(d, i, text)), JSON.stringify([i, text]));
+    assert.ok(noLoneLf(next), 'LF 単独の改行が混ざった: ' + JSON.stringify([i, text]));
+  }
+});
+t('CRLF: 書いてから読むと一致する（往復）', () => {
+  let d = crlf(doc);
+  d = setNotes(d, 1, 'A\nB');
+  d = setNotes(d, 2, 'C');
+  assert.equal(getNotes(d, 1), 'A\nB');
+  assert.equal(getNotes(d, 2), 'C');
+  assert.ok(noLoneLf(d));
+});
+t('上書きを繰り返しても空行が増えない（LF / CRLF）', () => {
+  for (const d of [doc, crlf(doc)]) {
+    const once = setNotes(d, 1, 'X');
+    assert.equal(setNotes(once, 1, 'X'), once);
+    assert.equal(once.length, d.length - '最初のノート。'.length + 'X'.length, '文言以外の長さが変わった');
+  }
+});
+
 console.log(`\n${n} 件すべて通過`);
