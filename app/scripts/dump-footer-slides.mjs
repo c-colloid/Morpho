@@ -51,32 +51,54 @@ const FOOTER_OPEN = /^[ \t]*:::+[ \t]*(?:\{[^}]*\.footer[^}]*\}|footer\b|出典\
 const DIV_CLOSE = /^[ \t]*:::+[ \t]*$/;
 /* ATX の閉じ `#` だけを外す。`/[ \t]*#*[ \t]*$/` だと `# C#` が `# C` になる */
 const ATX_CLOSE = /[ \t]+#+[ \t]*$/;
+const COL_SEP = /^[ \t]*[+＋]([ \t]*[+＋]){2,}[ \t]*$/;
+const DIV_ANY = /^[ \t]*:::+/;
+const TABLE = /^[ \t]*\|/;
+const IMAGE_ONLY = /^[ \t]*!\[[^\]]*\]\([^)]*\)[ \t]*$/;
+
+/**
+ * 印を置ける「文字の行」か。
+ * 表の行はセルの中身が変わり、画像だけの行は段落が画像に置き換わり、
+ * コードフェンス・`+++`・`:::` は記法そのものなので、いずれも避ける。
+ */
+function isTextLine(line) {
+  const t = line.trim();
+  if (!t) return false;
+  if (HR.test(line) || COL_SEP.test(line) || DIV_ANY.test(line) || CODE.test(line)) return false;
+  if (TABLE.test(line) || IMAGE_ONLY.test(line)) return false;
+  return true;
+}
 
 /**
  * `::: footer` を取り出して、**その直前にある「文字の行」**の末尾へ目印つきで付ける。
- * 段落・箇条書きの項目・見出しのどれでもよい。表の行・画像だけの行・コードフェンス・
- * `+++`・`:::` は避ける（印を入れると内容が変わる）。水平線でリセットする。
- * lastMode='segment' は「区間の最後の見出しへ付ける」誤った版（対照用）。
- * lastMode='headingOnly' は「見出しにしか付けない」版（対照用）。
+ * 段落・箇条書きの項目・見出しのどれでもよい。無ければその区間の見出しへ落とす。
+ * 水平線で両方をリセットする（`***` は新しいスライドを開くため）。
+ *
+ * mode（対照用）:
+ *   'text'        既定。直近の文字の行 → 無ければ見出し
+ *   'headingOnly' 見出しにしか付けない（`***` のスライドに置けなくなる）
+ *   'segment'     区間の最後の見出しへまとめて付ける（slide level 2 で壊れる）
  */
-function extractFooters(md, lastMode) {
+function extractFooters(md, mode = 'text') {
   const lines = md.split('\n');
   const diags = [];
   const kept = [];
   const pending = new Map();
-  let lastHeading = -1;
+  let textAt = -1;
+  let headingAt = -1;
   let code = false;
   let notes = 0;
   let inFooter = false;
   let buf = [];
   const attach = (text) => {
-    if (lastHeading < 0) {
-      diags.push({ kind: 'design', label: '見出しの無いスライドにはフッターを置けません', count: 1 });
+    const at = mode === 'text' && textAt >= 0 ? textAt : headingAt;
+    if (at < 0) {
+      diags.push({ kind: 'design', label: 'このスライドには文字の行が無いので出典を置けません', count: 1 });
       return;
     }
-    const arr = pending.get(lastHeading) ?? [];
+    const arr = pending.get(at) ?? [];
     arr.push(text);
-    pending.set(lastHeading, arr);
+    pending.set(at, arr);
   };
   for (const line of lines) {
     if (CODE.test(line)) { code = !code; kept.push(line); continue; }
@@ -90,12 +112,12 @@ function extractFooters(md, lastMode) {
       continue;
     }
     if (FOOTER_OPEN.test(line)) { inFooter = true; continue; }
-    if (HR.test(line)) lastHeading = -1;
-    else if (H_ANY.test(line)) lastHeading = kept.length;
+    if (HR.test(line)) { textAt = -1; headingAt = -1; }
+    else if (H_ANY.test(line)) { headingAt = kept.length; textAt = -1; }
+    else if (isTextLine(line)) textAt = kept.length;
     kept.push(line);
   }
-  if (lastMode === 'segment') {
-    /* 対照: 区間の最後の見出しへまとめて付ける（slide level 2 で壊れる） */
+  if (mode === 'segment') {
     const all = [...pending.values()].flat();
     pending.clear();
     let last = -1;
@@ -104,7 +126,9 @@ function extractFooters(md, lastMode) {
   }
   for (const [i, arr] of pending) {
     const joined = arr.filter((x) => x !== '').join(' / ');
-    kept[i] = kept[i].replace(ATX_CLOSE, '') + OPEN + joined + CLOSE;
+    kept[i] = H_ANY.test(kept[i])
+      ? kept[i].replace(ATX_CLOSE, '') + OPEN + joined + CLOSE
+      : kept[i] + OPEN + joined + CLOSE;
   }
   return { md: kept.join('\n'), diags };
 }
@@ -150,8 +174,8 @@ function shape(bytes) {
 }
 
 /** アプリと同じ順: フッター抽出 → 段組み展開 → 変換 → 目印の取り出し */
-async function run(md, { meta, files, lastMode } = {}) {
-  const f = extractFooters(md, lastMode);
+async function run(md, { meta, files, mode } = {}) {
+  const f = extractFooters(md, mode);
   const c = win.__morphoExpandColumns(f.md);
   const bytes = await toPptx(c.md, meta, files);
   const zip = unzipSync(bytes);
@@ -173,13 +197,13 @@ const L2 = '# 章\n\n## 節1\n\n本文1。\n\n::: footer\n出典A\n:::\n\n## 節
 for (const [name, md] of [['slide level 1（# の下は本文）', L1], ['slide level 2（# の下に ##）', L2]]) {
   const ctrl = shape(await toPptx(win.__morphoExpandColumns(stripFooters(md)).md));
   const ok = await run(md);
-  const ng = await run(md, { lastMode: 'segment' });
+  const ng = await run(md, { mode: 'segment' });
   console.log(`${name}`);
   console.log(`  対照            ${ctrl}`);
-  console.log(`  直前の見出しへ    ${shape(ok.bytes).padEnd(46)} 着地 ${JSON.stringify(ok.found)}`);
+  console.log(`  直前の文字の行へ    ${shape(ok.bytes).padEnd(46)} 着地 ${JSON.stringify(ok.found)}`);
   console.log(`  区間の最後の見出しへ ${shape(ng.bytes).padEnd(46)} 着地 ${JSON.stringify(ng.found)}`);
 }
-console.log('  ← 「区間の最後」だと slide level 2 で 1 枚に寄る。だから「直前の見出し」に付ける');
+console.log('  ← 「区間の最後」だと slide level 2 で 1 枚に寄る。だから「直前」でなければならない');
 
 /* ---------- 2. 他の記法との相互作用 ---------- */
 
@@ -198,13 +222,18 @@ for (const [name, md] of Object.entries({
   '段組みと同じ区間': '# 三つの案\n\n案A\n\n+++\n\n案B\n\n::: footer\n出典C\n:::\n',
   'フッターが段組みより前': '# 三つの案\n\n::: footer\n出典C\n:::\n\n案A\n\n+++\n\n案B\n',
   'ノートの中の footer': '# 見出し\n\n本文。\n\n::: notes\n発表者メモ\n::: footer\nノート内の出典\n:::\n:::\n',
-  '*** で作ったスライド': '# H\n\n本文1。\n\n***\n\n本文2。\n\n::: footer\n出典D\n:::\n',
+  '*** + 本文': '# H\n\n本文1。\n\n***\n\n本文2。\n\n::: footer\n出典D\n:::\n',
+  '*** + 箇条書き': '# H\n\n本文1。\n\n***\n\n- 項目A\n- 項目B\n\n::: footer\n出典D\n:::\n',
+  '*** + 表だけ': '# H\n\n本文1。\n\n***\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n::: footer\n出典D\n:::\n',
+  '見出し + 表だけ': '# 表のスライド\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n::: footer\n出典T\n:::\n',
+  '表の後ろの段落で割れる': '# 結果\n\n導入。\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n表の下の注釈。\n\n::: footer\n出典S\n:::\n',
   '最初の見出しより前': '::: footer\n出典E\n:::\n\n# H\n\n本文。\n',
   '表のあるスライド': '# 表\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n::: footer\n出典F\n:::\n',
   'フッターに画像': '# H\n\n本文。\n\n::: footer\n![](pix.png) 出典\n:::\n',
 })) {
   const ctrl = shape(await toPptx(win.__morphoExpandColumns(stripFooters(md)).md, null, files));
   const r = await run(md, { files });
+  const h = await run(md, { files, mode: 'headingOnly' });
   const got = shape(r.bytes);
   const pics = Object.keys(r.zip).filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
     .reduce((a, n) => a + (strFromU8(r.zip[n]).match(/<p:pic>/g) || []).length, 0);
@@ -212,8 +241,13 @@ for (const [name, md] of Object.entries({
   console.log(`${' '.repeat(20)} 着地 ${JSON.stringify(r.found)}`
     + ` 画像 ${pics}`
     + (r.diags.length ? ` 診断「${r.diags[0].label}」` : ''));
+  if (JSON.stringify(h.found) !== JSON.stringify(r.found)) {
+    console.log(`${' '.repeat(20)} （見出しだけ版なら ${JSON.stringify(h.found)}`
+      + (h.diags.length ? ` 診断「${h.diags[0].label}」` : '') + '）');
+  }
 }
 console.log('  ← ノートの中の footer はスライド本体に出ない（発表者にだけ見せる内容が漏れない）');
+console.log('  ← 見出しだけに付ける版だと *** のスライドに置けない。文字の行に付ければ置ける');
 
 /* ---------- 3. benchmark で端から端まで ---------- */
 
