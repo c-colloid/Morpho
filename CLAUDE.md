@@ -84,6 +84,9 @@ const result = await pandoc.convert(options, stdin, files);
 - `warnings` は構造化された JSON 配列
 - `core.js` は `@bjorn3/browser_wasi_shim` を bare specifier で import するので、importmap かバンドラが必要
 - **インスタンスは公開されない**。メモリ観測には `WebAssembly.instantiate` を一時的に横取りする（`docs/index.html` の `instantiateWithCapture` 参照）
+- **`convert()` は reader の拡張名が不正でも throw しない**。`files` が空になり stderr に
+  メッセージが入るだけ（実測: `+bogus_extension` で「The extension … is not supported」）。
+  検証スクリプトは `files` / `stderr` を確認しないと無警告の失敗を作る
 
 ---
 
@@ -313,6 +316,24 @@ inline を保つなら `pandoc.utils.blocks_to_inlines` を使う。
 （`message` / `source` / `line`）として届き、既存の `RULES` で分類できる。
 なお同じ label の警告は畳まれて `count` になり、残る `text` は最初の1件だけなので、
 どこで起きたかはメッセージ自身に埋めること。
+
+### 18. `a:rPr` の子要素順を崩すと PowerPoint 向けの検証が鳴る
+
+ランに色とリンクを両方付けるとき、`<a:solidFill>` は `<a:hlinkClick>` より
+**前**に置く（ECMA-376 の順は fill → … → hlinkClick）。逆順にすると
+`@ooxml-tools/validate` が 1 件出す（実測。整形式性チェックでは捕まらない）。
+既存のランへ後から色を足す後処理を書くときに踏む。
+
+### 19. 画像の title 属性の引用符が不均衡だと画像ごと無警告で消える
+
+`![](x.png "…")` の title に `"` が**奇数個**入ると、画像記法のパースが失敗して
+pptx の `p:pic` が 0 個になる（**非 INFO 警告 0**）。生の記法が本文へ漏れ、しかも
+smart typography で引用符が曲がった形（“ ”）になる。単引用符デリミタ
+`'…'` はアポストロフィ（Barrett's 等）で同じ壊れ方をする。
+**偶数個（均衡した）`"` は安全**（descr 内で `&quot;` になり往復する）。
+title へ機械的に文字列を注入する処理は `\` と `"` のエスケープが必須。
+なお descr の実書式は `title + 改行 2 個 + 元ファイル名`（改行は生の LF×2）。
+
 
 ## 警告の重要度分類
 

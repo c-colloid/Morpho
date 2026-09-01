@@ -86,6 +86,23 @@ export function DocumentSurface({
             />
           </View>
         );
+      } else if (style === 'footer') {
+        /* ページフッター。フロー表示にページは無いので末尾に 1 回だけ、
+           「ページごとに付く」ことをラベルで示す */
+        node = (
+          <View style={styles.footer}>
+            <Text style={styles.footerLabel}>ページフッター</Text>
+            <Runs
+              runs={b.runs ?? []}
+              base={{
+                fontSize: bodyPx * 0.75,
+                lineHeight: bodyPx * 1.3,
+                color: '#595959',
+                textAlign: b.align === 'ctr' ? 'center' : b.align === 'r' ? 'right' : 'left',
+              }}
+            />
+          </View>
+        );
       } else if (style === 'quote') {
         node = (
           <View style={styles.quote}>
@@ -230,6 +247,8 @@ const styles = StyleSheet.create({
   td: { flex: 1, paddingHorizontal: 8, paddingVertical: 6 },
   hr: { height: 1, backgroundColor: '#C6CBD4', marginVertical: 14 },
   footnote: { marginVertical: 2, paddingLeft: 4 },
+  footer: { marginTop: 24, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#D9DCE2' },
+  footerLabel: { fontSize: 10, color: '#9AA0AC', marginBottom: 2 },
   image: { marginVertical: 8, maxWidth: '100%' },
   imageFallback: { backgroundColor: '#E7EAEF', borderWidth: 1, borderColor: '#C6CBD4' },
 });

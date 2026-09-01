@@ -246,14 +246,16 @@ npm run check
 | `check-design.mjs` | 装飾・グループ・文字サイズ・.morphodesign の往復 |
 | `check-diff.mjs` | 行 Diff（競合ダイアログ） |
 | `check-template.mjs` | テンプレート（reference-doc のテーマ色引き継ぎと和名 → 英語名の書き換え） |
-| `check-footer.mjs` | フッター（帯の解決・色・浄化・注入・Open XML 妥当性と較正） |
+| `check-footer.mjs` | フッター（帯の解決・色・浄化・注入・docx ページフッター・Web の CSS・Open XML 妥当性と較正） |
 | `check-deck.mjs` | **統合検査**: 本物の pandoc.wasm で pptx / html / docx を作り、座標・配色・字サイズ・字下げ・改行・ノート・Web の CSS 注入・docx のノート除去までを確認 |
 
 ### pandoc の実出力を見る
 
 ```bash
 node scripts/dump-pptx.mjs [file.md]     # pandoc が吐く pptx の中身
-node scripts/dump-footer.mjs             # フッター帯・記法・注入の実測（未実装機能の設計根拠）
+node scripts/dump-footer.mjs             # フッター帯・記法・注入の実測
+node scripts/dump-footer-slides.mjs      # スライドごとのフッターの実測（未実装機能の設計根拠）
+node scripts/dump-footer-notation.mjs    # フッター記法の選定の実測
 ```
 
 **パーサを推測で書かないこと。** 実際に pandoc を回して XML を見る。

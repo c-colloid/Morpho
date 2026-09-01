@@ -19,7 +19,11 @@
  * **この正規表現は bridgeHtml.ts にも同じものがある**（ブリッジは WebView 用の
  * 文字列なので import できない）。食い違うと原稿とプレビューで列の切れ目が
  * ずれるので、scripts/check-columns.mjs が両者の一致を常時検証している。
+ *
+ * CRLF 原稿では行末の `\r` を落としてから判定する（lineEnding.ts の規約。
+ * 本文とオフセットは触らない）。ブリッジ側も同じ規約を自前で持つ。
  */
+import { stripCr } from './lineEnding.ts';
 
 /** 列区切りの行。`+` か `＋` が 3 個以上、間の空白は許す */
 export const COLUMN_SEPARATOR = /^[ \t]*[+＋]([ \t]*[+＋]){2,}[ \t]*$/;
@@ -28,7 +32,7 @@ export const COLUMN_SEPARATOR = /^[ \t]*[+＋]([ \t]*[+＋]){2,}[ \t]*$/;
 export const COLUMN_SEPARATOR_TEXT = '+++';
 
 export function isColumnSeparator(line: string): boolean {
-  return COLUMN_SEPARATOR.test(line);
+  return COLUMN_SEPARATOR.test(stripCr(line));
 }
 
 /* ---- 柵の追跡（規則の原本はここ。bridgeHtml.ts は同じ本文を写している） ----
@@ -41,7 +45,7 @@ export function isColumnSeparator(line: string): boolean {
  * 「`::: notes` で +1・任意の `:::` で -1」という浅い追跡は、入れ子の最初の
  * 閉じでノートを終わらせ、ノートの中身（観客に見せない情報）を本文側の処理へ
  * 渡してしまう。実測では notes 内の `+++` が列区切りとして拾われ、ノートの
- * 続きがスライド本体へ漏れた（notes/footer-design.md の多視点監査で見つかった既存の不具合）。
+ * 続きがスライド本体へ漏れた（notes/footer-design.md の既存の不具合 6・7）。
  *
  * 開き柵は lineBreakEdit.ts と同じ上位集合を取る（`::: 二語` も柵として拾う）。
  * 拾いすぎは「区切りを見逃す」側に倒れて本文に `+++` が見えるだけだが、
@@ -73,6 +77,8 @@ export interface FenceScan {
 /**
  * 行ごとに柵の深さを追い、コードフェンスの中・`::: notes` の中を印す。
  * 入れ子の div を含むノートでも、閉じ柵は開いた柵と対で数える。
+ * lines は行末の `\r` を落としたもの（stripCr 済み）を渡す。CRLF のままだと
+ * `[ \t]*$` で終わる柵の判定が一致しない（lineEnding.ts の規約）。
  */
 export function scanFences(lines: string[]): FenceScan {
   const code = [];
@@ -120,7 +126,8 @@ export function scanFences(lines: string[]): FenceScan {
  * コードフェンスの中と `::: notes` の中（入れ子の div を含む）は数えない。
  */
 export function separatorLines(body: string): number[] {
-  const lines = body.split('\n');
+  /* 判定のときだけ行末の \r を落とす（CRLF 原稿）。行番号とオフセットは raw のまま */
+  const lines = body.split('\n').map(stripCr);
   const scan = scanFences(lines);
   const out: number[] = [];
   lines.forEach((line, i) => {

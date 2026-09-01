@@ -8,6 +8,7 @@
  */
 import { slideSegments } from './cursorSlide.ts';
 import { COLUMN_SEPARATOR } from '../text/columns.ts';
+import { stripCr, detectNewline } from '../text/lineEnding.ts';
 
 /* 改行を外して繋ぐとき、両側が ASCII の語なら空白を挟む。
    和文は east_asian_line_breaks と同じく直結する */
@@ -119,6 +120,7 @@ export function applyBreaksAtOffsets(
   plain: string,
   offsets: Set<number>,
   indent: string = '',
+  newline: string = '\n',
 ): string {
   const sorted = [...offsets]
     .filter((o) => o > 0 && o < plain.length && canBreakAt(plain, o))
@@ -126,7 +128,7 @@ export function applyBreaksAtOffsets(
   let out = '';
   let prev = 0;
   for (const o of sorted) {
-    out += plain.slice(prev, o).replace(/[ \t]+$/, '') + '\\\n' + indent;
+    out += plain.slice(prev, o).replace(/[ \t]+$/, '') + '\\' + newline + indent;
     // 行頭に軟結合用の空白が来ないよう食う
     prev = o;
     while (plain[prev] === ' ') prev++;
@@ -149,6 +151,9 @@ export interface EditableBlock {
   plain: string;
   /** 既存の明示改行のオフセット */
   breakOffsets: Set<number>;
+  /** ブロックの改行コード。書き戻しで入れる `\` 改行に使う（CRLF 原稿では \r\n。
+      LF で書くと原稿の中で改行コードが混在する） */
+  newline: '\n' | '\r\n';
 }
 
 export type LocateResult =
@@ -169,6 +174,11 @@ const NOTES_FENCE = /^[ \t]*(?:>[ \t]*)*:::+[ \t]*(?:\{[^}]*\.notes[^}]*\}|notes
 /**
  * スライド区間の中から、プレビューの段落に対応する編集対象を探す。
  * 段落（空行区切り）と箇条書きの「1項目」（継続行含む）の両方を扱う。
+ *
+ * CRLF 原稿では判定のときだけ行末の `\r` を外す（lineEnding.ts の規約）。
+ * 外さないと `+++\r` が段落へ溶け、`:::\r` の閉じ柵が読めずノートの後ろの段落が
+ * 見つからなくなる（実測）。オフセットと原文は元の行で数え、末尾行の `\r` は
+ * ブロックの外に置く（書き戻しが `\r\n` を壊さないように）。
  */
 export function locateEditable(
   body: string,
@@ -182,6 +192,9 @@ export function locateEditable(
 
   const segment = body.slice(seg.start, seg.end);
   const lines = segment.split('\n');
+  /* 判定用（行末の \r なし）。オフセットと原文は lines（元の行）で数える */
+  const judge = lines.map(stripCr);
+  const newline = detectNewline(body);
 
   interface Cand {
     startLine: number;
@@ -195,7 +208,7 @@ export function locateEditable(
   let notesDepth = 0;
   let i = 0;
   while (i < lines.length) {
-    const line = lines[i];
+    const line = judge[i];
     if (/^ {0,3}(```|~~~)/.test(line)) {
       inFence = !inFence;
       cands.push({ startLine: i, endLine: i, kind: 'fence', prefix: '' });
@@ -239,7 +252,7 @@ export function locateEditable(
     }
     if (/^[ \t]*\|/.test(line)) {
       let j = i;
-      while (j < lines.length && /^[ \t]*\|/.test(lines[j])) j++;
+      while (j < lines.length && /^[ \t]*\|/.test(judge[j])) j++;
       cands.push({ startLine: i, endLine: j - 1, kind: 'table', prefix: '' });
       i = j;
       continue;
@@ -251,9 +264,9 @@ export function locateEditable(
       let j = i + 1;
       while (
         j < lines.length &&
-        lines[j].trim() !== '' &&
-        !LIST_ITEM.test(lines[j]) &&
-        /^[ \t]/.test(lines[j])
+        judge[j].trim() !== '' &&
+        !LIST_ITEM.test(judge[j]) &&
+        /^[ \t]/.test(judge[j])
       ) {
         j++;
       }
@@ -265,13 +278,13 @@ export function locateEditable(
     let j = i + 1;
     while (
       j < lines.length &&
-      lines[j].trim() !== '' &&
-      !LIST_ITEM.test(lines[j]) &&
-      !/^[ \t]*#/.test(lines[j]) &&
-      !/^[ \t]*\|/.test(lines[j]) &&
-      !/^ {0,3}(```|~~~)/.test(lines[j]) &&
-      !DIV_FENCE.test(lines[j]) &&
-      !COLUMN_SEPARATOR.test(lines[j])
+      judge[j].trim() !== '' &&
+      !LIST_ITEM.test(judge[j]) &&
+      !/^[ \t]*#/.test(judge[j]) &&
+      !/^[ \t]*\|/.test(judge[j]) &&
+      !/^ {0,3}(```|~~~)/.test(judge[j]) &&
+      !DIV_FENCE.test(judge[j]) &&
+      !COLUMN_SEPARATOR.test(judge[j])
     ) {
       j++;
     }
@@ -287,7 +300,8 @@ export function locateEditable(
 
   for (const c of cands) {
     if (c.kind === 'fence' || c.kind === 'div' || c.kind === 'colsep') continue;
-    const raw = lines.slice(c.startLine, c.endLine + 1).join('\n');
+    /* 末尾行の \r はブロックの外に置く（\r\n を壊さず、plain に \r を混ぜない） */
+    const raw = lines.slice(c.startLine, c.endLine + 1).join('\n').replace(/\r$/, '');
     // 箇条書きは接頭辞と継続行の字下げを外してから正規化する
     const deprefixed =
       c.kind === 'item'
@@ -302,7 +316,7 @@ export function locateEditable(
     const end = start + raw.length;
     return {
       ok: true,
-      block: { start, end, raw, prefix: c.prefix, plain, breakOffsets },
+      block: { start, end, raw, prefix: c.prefix, plain, breakOffsets, newline },
     };
   }
   return { ok: false, reason: 'not-found' };
@@ -311,6 +325,6 @@ export function locateEditable(
 /** 編集結果からブロック原文を組み立て直す */
 export function rebuildBlock(block: EditableBlock, offsets: Set<number>): string {
   const indent = ' '.repeat(block.prefix.length);
-  const text = applyBreaksAtOffsets(block.plain, offsets, block.prefix ? indent : '');
+  const text = applyBreaksAtOffsets(block.plain, offsets, block.prefix ? indent : '', block.newline);
   return block.prefix + text;
 }

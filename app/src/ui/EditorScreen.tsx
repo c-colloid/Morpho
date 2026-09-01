@@ -92,7 +92,7 @@ import {
   pruneGroups,
 } from '../design/groups';
 import { parseDesignFile, serializeDesign } from '../design/designFile';
-import { toExportFooter, type FooterStyle } from '../design/footer';
+import { toDocFooter, toExportFooter, type FooterStyle } from '../design/footer';
 import { adjustDeck, toExportSizes, type TextSizes } from '../design/textSizes';
 import {
   applyAssignments,
@@ -942,6 +942,8 @@ export default function EditorScreen() {
             stripHtmlComments: true,
             format: job.format,
             useTemplate: designRef.current.template !== undefined,
+            /* docx / Web のデッキ全体フッター。pptx は帯をアプリ側で描くので不要 */
+            docFooter: toDocFooter(metadata.footer, designRef.current.footer),
           });
         },
         (r, e) => {
@@ -1513,6 +1515,11 @@ export default function EditorScreen() {
         else delete next.footer;
         return next;
       });
+      /* スライドは帯をアプリ側で描くので即時反映される。docx / Web は実出力を
+         解析しているので、体裁が変わったら変換し直す */
+      if (previewFormatRef.current !== 'slides' && statusRef.current === 'ready') {
+        runnerRef.current?.submit({ md: sourceRef.current, format: previewFormatRef.current });
+      }
     },
     [mutateDesign],
   );
@@ -1591,6 +1598,7 @@ export default function EditorScreen() {
               design.footer,
               resultRef.current?.deck,
             ),
+            docFooter: toDocFooter(splitFrontMatter(src).metadata.footer, design.footer),
             useTemplate: design.template !== undefined,
           });
           await shareExport(fileName, choice, { base64: out.base64 });

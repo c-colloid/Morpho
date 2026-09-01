@@ -1098,11 +1098,32 @@ async function convert(id, md, opts, format) {
 var WEB_CSS = '<style>' +
   'body{font-family:-apple-system,"Hiragino Sans","Hiragino Kaku Gothic ProN",sans-serif;}' +
   '.notes{display:none}' +
+  /* フッター（出典・注釈）。pandoc 既定 CSS に .footer 規則は無い（実測）ので衝突しない */
+  '.footer{font-size:.8em;color:#595959}' +
+  '.morpho-deck-footer{margin-top:2em;padding-top:.5em;border-top:1px solid #D9DCE2}' +
   '</style>';
-function decorateWebHtml(html) {
+function escapeHtmlText(s) {
+  return escapeXmlText(s).replace(/"/g, '&quot;');
+}
+/* デッキ全体のフッターは本文末尾に 1 回だけ（0.16.4・notes/footer-design.md 実測 6）。
+   HTML は「1 枚ごとに同じ出典を刷る」媒体ではない。metadata 経由は HTML エスケープされ、
+   Lua で末尾に足す案は section-divs 下で最後の section に閉じ込められるため、後処理で置く */
+function deckFooterHtml(f) {
+  if (!f || !f.text) return '';
+  var align = f.algn === 'l' ? 'left' : f.algn === 'ctr' ? 'center' : 'right';
+  var size = f.sizePt ? ';font-size:' + (Math.round(f.sizePt * 100) / 100) + 'pt' : '';
+  return '<div class="footer morpho-deck-footer" style="text-align:' + align + size + '">' +
+    escapeHtmlText(f.text) + '</div>';
+}
+function decorateWebHtml(html, docFooter) {
   var i = html.indexOf('</head>');
-  if (i < 0) return WEB_CSS + html;
-  return html.slice(0, i) + WEB_CSS + html.slice(i);
+  var out = i < 0 ? WEB_CSS + html : html.slice(0, i) + WEB_CSS + html.slice(i);
+  var f = deckFooterHtml(docFooter);
+  if (f) {
+    var j = out.lastIndexOf('</body>');
+    out = j < 0 ? out + f : out.slice(0, j) + f + out.slice(j);
+  }
+  return out;
 }
 window.__morphoDecorateWebHtml = decorateWebHtml;
 window.__morphoDropNotesLua = DROP_NOTES_LUA;
@@ -1137,7 +1158,7 @@ async function doConvertWeb(id, md, opts) {
     type: 'ok',
     result: {
       kind: 'web',
-      html: decorateWebHtml(html),
+      html: decorateWebHtml(html, opts.docFooter),
       diagnostics: classify(res.warnings, res.stderr, col.diags),
       ms: ms,
       bytes: new Blob([html]).size
@@ -1428,9 +1449,96 @@ function parseDocx(u8) {
       blocks.push({ kind: 'para', style: 'footnote', runs: fruns });
     }
   }
+  /* ページフッター（0.16.4 で後付けした word/footer1.xml、または reference-doc 由来）。
+     フロー表示にページは無いので末尾に 1 回だけ出す — 毎ページ繰り返すのは嘘になる */
+  var docXml = dec.decode(zip['word/document.xml'] || empty);
+  var fref = /<w:footerReference [^>]*r:id="([^"]+)"/.exec(docXml);
+  if (fref) {
+    var relsXml = dec.decode(zip['word/_rels/document.xml.rels'] || empty);
+    var rel = new RegExp('<Relationship [^>]*Id="' + fref[1] + '"[^>]*Target="([^"]+)"').exec(relsXml) ||
+      new RegExp('<Relationship [^>]*Target="([^"]+)"[^>]*Id="' + fref[1] + '"').exec(relsXml);
+    var part = rel && zip['word/' + rel[1].replace(/^\\/?(?:word\\/)?/, '')];
+    if (part) {
+      var pm = /<w:p[ >][\\s\\S]*?<\\/w:p>/.exec(dec.decode(part));
+      if (pm) {
+        var jcm = /<w:jc w:val="([^"]+)"/.exec(pm[0]);
+        var jc = jcm ? jcm[1] : 'left';
+        var fr = parseDocxRuns(pm[0], styles, null);
+        if (fr.length) {
+          blocks.push({
+            kind: 'para', style: 'footer', runs: fr,
+            align: jc === 'center' ? 'ctr' : (jc === 'right' || jc === 'end') ? 'r' : 'l'
+          });
+        }
+      }
+    }
+  }
   return { blocks: blocks, styles: docStyleInfo(styles) };
 }
 window.__morphoParseDocx = parseDocx;
+
+/* ---- docx のページフッター（0.16.4・notes/footer-design.md 実測 5） ----
+   pandoc の docx には footer パートも Footer スタイルも無く、w:sectPr は文末に 1 個で
+   中身は footnotePr だけ。footer1.xml + rels + [Content_Types] + footerReference を
+   後付けする。footerReference は sectPr の**先頭**（ECMA-376 の子要素順:
+   headerReference / footerReference → footnotePr → …）。
+   意味論: デッキ全体の出典 = ページフッター（紙で配るハンドアウトのどのページを
+   切り取っても出典が付く）。スライド個別の注釈は 0.17.0 で「その場の小さい段落」になる */
+var DOCX_FOOTER_PART = 'word/footer1.xml';
+function buildDocxFooterXml(f) {
+  var jc = f.algn === 'l' ? 'left' : f.algn === 'ctr' ? 'center' : 'right';
+  var half = Math.round(f.sizePt * 2);
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+    '<w:p><w:pPr><w:jc w:val="' + jc + '"/></w:pPr>' +
+    /* rPr の子要素順は color → sz → szCs。逆順は検証が鳴る（較正で確認） */
+    '<w:r><w:rPr><w:color w:val="595959"/><w:sz w:val="' + half + '"/><w:szCs w:val="' + half + '"/></w:rPr>' +
+    '<w:t xml:space="preserve">' + escapeXmlText(f.text) + '</w:t></w:r></w:p></w:ftr>';
+}
+window.__morphoBuildDocxFooterXml = buildDocxFooterXml;
+
+function applyDocxFooter(bytes, f) {
+  if (!f || !f.text) return bytes;
+  var zip = unzipSync(bytes);
+  var dec = new TextDecoder();
+  var empty = new Uint8Array();
+  /* 冪等。reference-doc が自前のフッターを運んできた場合もそれを尊重する */
+  if (zip[DOCX_FOOTER_PART]) return bytes;
+  var doc = dec.decode(zip['word/document.xml'] || empty);
+  var rels = dec.decode(zip['word/_rels/document.xml.rels'] || empty);
+  var ct = dec.decode(zip['[Content_Types].xml'] || empty);
+  var sect = /<w:sectPr(?=[\\s/>])/.exec(doc);
+  var relEnd = rels.lastIndexOf('</Relationships>');
+  var ctEnd = ct.lastIndexOf('</Types>');
+  if (!sect || relEnd < 0 || ctEnd < 0 || doc.indexOf('<w:footerReference') >= 0) return bytes;
+  var close = doc.indexOf('>', sect.index);
+  var maxId = 0;
+  var idRe = /Id="rId(\\d+)"/g;
+  var m;
+  while ((m = idRe.exec(rels)) !== null) {
+    if (Number(m[1]) > maxId) maxId = Number(m[1]);
+  }
+  var rId = 'rId' + (maxId + 1);
+  var ref = '<w:footerReference w:type="default" r:id="' + rId + '"/>';
+  if (doc.charAt(close - 1) === '/') {
+    /* <w:sectPr/> の形。pandoc は出さないが、reference-doc 由来ならありうる */
+    doc = doc.slice(0, close - 1) + '>' + ref + '</w:sectPr>' + doc.slice(close + 1);
+  } else {
+    doc = doc.slice(0, close + 1) + ref + doc.slice(close + 1);
+  }
+  zip['word/document.xml'] = strToU8(doc);
+  zip['word/_rels/document.xml.rels'] = strToU8(rels.slice(0, relEnd) +
+    '<Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" ' +
+    'Id="' + rId + '" Target="footer1.xml"/>' + rels.slice(relEnd));
+  zip['[Content_Types].xml'] = strToU8(ct.slice(0, ctEnd) +
+    '<Override PartName="/word/footer1.xml" ' +
+    'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>' +
+    ct.slice(ctEnd));
+  zip[DOCX_FOOTER_PART] = strToU8(buildDocxFooterXml(f));
+  return zipSync(zip);
+}
+window.__morphoApplyDocxFooter = applyDocxFooter;
 
 /* 文書プレビュー: 実際の docx を作って解析する（「実際の出力そのもの」原則）。
    CLAUDE.md 落とし穴 8: notes は docx へ無警告で溶けるため、書き出しと同じ
@@ -1460,6 +1568,9 @@ async function doConvertDoc(id, md, opts) {
   var out = res.files && res.files['out.docx'];
   if (!out) throw new Error('pandoc produced no out.docx');
   var buf = new Uint8Array(await out.arrayBuffer());
+  /* デッキ全体の出典はページフッターとして後付けし、その実出力を解析する
+     （プレビューと書き出しを同じ 1 つの関数から導く） */
+  if (opts.docFooter) buf = applyDocxFooter(buf, opts.docFooter);
   var parsed = parseDocx(buf);
 
   RN({
@@ -1587,7 +1698,17 @@ function colHead(colLines) {
 }
 
 function expandColumns(md) {
+  /* CRLF 原稿（Windows 由来の .md）では各行末に \\r が残り、COL_SEP / COL_HR /
+     COL_DIV_CLOSE が一致せず、段組みが無警告で 1 段のまま出ていた（実測:
+     scripts/check-deck.mjs）。ここは変換器へ渡す派生テキストしか作らないので、
+     行末の \\r を丸ごと落として LF に正規化する。pandoc は CRLF でも LF と同じ
+     出力を返す（実測）ので結果は変わらない。原稿側のオフセット系
+     （splitFrontMatter / cursorSlide.ts）には適用しない — 長さが変わる。
+     src/text/lineEnding.ts と同じ規約（ブリッジは import できないので自前） */
   var lines = md.split('\\n');
+  for (var n = 0; n < lines.length; n++) {
+    if (lines[n].slice(-1) === '\\r') lines[n] = lines[n].slice(0, -1);
+  }
   var diags = [];
   var segs = [];
   var start = 0;
@@ -1882,6 +2003,13 @@ async function doExport(id, md, opts, format) {
     /* フッターは装飾より後 = 最前面。帯の上に置いた装飾に隠されないようにする */
     if (format === 'pptx' && opts.footer) {
       out = new Blob([applyFooters(new Uint8Array(await out.arrayBuffer()), opts.footer)]);
+    }
+    /* docx はページフッター、html は本文末尾に 1 回（0.16.4） */
+    if (format === 'docx' && opts.docFooter) {
+      out = new Blob([applyDocxFooter(new Uint8Array(await out.arrayBuffer()), opts.docFooter)]);
+    }
+    if (format === 'html') {
+      out = new Blob([decorateWebHtml(await out.text(), opts.docFooter)], { type: 'text/html' });
     }
 
     var reader = new FileReader();
