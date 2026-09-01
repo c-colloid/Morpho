@@ -713,6 +713,35 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
     assert.ok(!texts.some((x) => /\+\+\+/.test(x)), '本文に生の +++ が出ている');
     assert.equal(u.sc.slides.reduce((a, sl) => a + sl.images.length, 0), 1, '画像が消えている');
   });
+
+  /* CRLF（Windows 由来の原稿。iPad でも iCloud Drive 経由で開く）。
+     行末の \r で COL_SEP / COL_HR が外れ、段組みが無警告で 1 段のままになっていた
+     （再現: Title and Content・本文枠 1 つ・本文に生の +++・警告も診断もゼロ）。
+     pandoc 自身は CRLF でも LF と同じ slide XML を返す（実測）ので、
+     LF 版とシーンが一致すれば塞げている */
+  const crlf = (s) => s.replace(/\n/g, '\r\n');
+  const bc = await run(crlf(basic));
+  t('+++: CRLF 原稿でも LF 版と同じ Two Content になる（沈黙の失敗を塞ぐ）', () => {
+    assert.equal(bc.nonInfo.length, 0, JSON.stringify(bc.nonInfo));
+    assert.equal(bc.sc.slideCount, 1);
+    assert.equal(bc.sc.slides[0].layout, 'Two Content');
+    assert.deepEqual(bc.sc.slides, b.sc.slides, 'CRLF と LF でシーンが違う');
+    assert.deepEqual(bc.diags, b.diags);
+    assert.equal(bc.sc.slideCount, segs(crlf(basic)), 'CRLF で区間数がずれる');
+  });
+
+  const hrLf = '# A\n\n本文\n\n***\n\n左\n\n+++\n\n右\n\n::: notes\nノート\n:::\n';
+  const hl = await run(hrLf);
+  const hc = await run(crlf(hrLf));
+  t('+++: CRLF でも *** の区間と末尾の ::: notes が LF 版と同じに扱われる', () => {
+    assert.equal(hl.sc.slideCount, 2);
+    assert.equal(hl.sc.slides[1].layout, 'Two Content');
+    assert.deepEqual(hc.sc.slides, hl.sc.slides, 'CRLF と LF でシーンが違う');
+    assert.deepEqual(hc.diags, hl.diags);
+    assert.equal(hc.sc.slideCount, segs(crlf(hrLf)));
+    const notes = hc.sc.slides[1].notes.map((p) => p.runs.map((r) => r.text).join('')).join('');
+    assert.equal(notes, 'ノート');
+  });
 }
 
 console.log(`\n${n} 件すべて通過`);

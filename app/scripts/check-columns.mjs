@@ -172,4 +172,47 @@ t('*** で作った区間にも効く', () => {
   assert.equal(cols('# A\n\n本文\n\n***\n\n左\n\n+++\n\n右\n'), 2);
 });
 
+/* ---------- CRLF（Windows 由来の原稿） ----------
+   行末の \r が残ると COL_SEP / COL_HR / COL_DIV_CLOSE が一致せず、段組みが
+   無警告で 1 段のままになっていた（再現済み）。判定のときだけ \r を外す規約
+   （src/text/lineEnding.ts）が両側で守られていることを見る */
+const crlf = (s) => s.replace(/\n/g, '\r\n');
+
+t('CRLF: 判定は行末の \\r を無視する', () => {
+  assert.ok(isColumnSeparator('+++\r'));
+  assert.ok(isColumnSeparator('＋ ＋ ＋\r'));
+  assert.ok(!isColumnSeparator('***\r'));
+  assert.ok(!isColumnSeparator('+++ 左\r'));
+});
+
+t('CRLF: 区切り行の位置と列の範囲が LF と同じ（オフセットは \\r 込みで数える）', () => {
+  const lf = '左の文\n\n+++\n\n右の文\n';
+  const cr = crlf(lf);
+  assert.deepEqual(separatorLines(cr), separatorLines(lf));
+  assert.deepEqual(separatorLines(crlf('左\n\n::: notes\n+++\n:::\n\n右\n')), []);
+  assert.deepEqual(separatorLines(crlf('左\n\n```\n+++\n```\n\n右\n')), []);
+  const left = columnRangeAt(cr, 1);
+  assert.equal(cr.slice(left.start, left.end).trim(), '左の文');
+  const right = columnRangeAt(cr, cr.indexOf('右'));
+  assert.equal(cr.slice(right.start, right.end).trim(), '右の文');
+  assert.equal(columnRangeAt(cr, cr.indexOf('+++')), null);
+});
+
+t('CRLF: 展開結果と診断が LF 版と一致する（派生テキストは LF に正規化される）', () => {
+  for (const lf of [
+    '# T\n\n左\n\n+++\n\n右\n',
+    '# A\n\n本文\n\n***\n\n左\n\n+++\n\n右\n',
+    '# T\n\n左\n\n+++\n\n右\n\n::: notes\nノート\n:::\n',
+    '# T\n\nA\n\n+++\n\nB\n\n+++\n\nC\n',
+    '# 実験\n\n![](z.png)\n\n図1: 装置\n\n+++\n\n右\n',
+    '# T\n\n```\n+++\n```\n\n本文\n',
+    '# 見出し\n\n本文\n\n- 項目\n',
+  ]) {
+    assert.equal(expand(crlf(lf)).md, expand(lf).md, JSON.stringify(lf));
+    assert.deepEqual(labels(crlf(lf)), labels(lf), JSON.stringify(lf));
+  }
+  assert.equal(cols(crlf('# T\n\n左\n\n+++\n\n右\n')), 2);
+  assert.ok(!/\r/.test(expand(crlf('# T\n\n左\n\n+++\n\n右\n')).md), '派生テキストに \\r が残っている');
+});
+
 console.log('\n' + n + ' 件すべて通過');

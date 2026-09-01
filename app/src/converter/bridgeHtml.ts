@@ -1540,7 +1540,17 @@ function colHead(colLines) {
 }
 
 function expandColumns(md) {
+  /* CRLF 原稿（Windows 由来の .md）では各行末に \\r が残り、COL_SEP / COL_HR /
+     COL_DIV_CLOSE が一致せず、段組みが無警告で 1 段のまま出ていた（実測:
+     scripts/check-deck.mjs）。ここは変換器へ渡す派生テキストしか作らないので、
+     行末の \\r を丸ごと落として LF に正規化する。pandoc は CRLF でも LF と同じ
+     出力を返す（実測）ので結果は変わらない。原稿側のオフセット系
+     （splitFrontMatter / cursorSlide.ts）には適用しない — 長さが変わる。
+     src/text/lineEnding.ts と同じ規約（ブリッジは import できないので自前） */
   var lines = md.split('\\n');
+  for (var n = 0; n < lines.length; n++) {
+    if (lines[n].slice(-1) === '\\r') lines[n] = lines[n].slice(0, -1);
+  }
   var diags = [];
   var segs = [];
   var start = 0;
