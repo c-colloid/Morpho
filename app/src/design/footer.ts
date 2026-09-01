@@ -143,6 +143,24 @@ export function toExportFooter(
   };
 }
 
+/**
+ * docx / Web 向けのデッキ全体フッター（0.16.4）。座標は無い —
+ * docx はページフッター、Web は本文末尾に 1 回、と媒体ごとに置き場所が決まっている。
+ * pptx（toExportFooter）と同じ文言・揃え・字サイズを使うので、形式を切り替えても
+ * 出典の見え方が食い違わない。文言が空なら undefined（何も出さない）。
+ * デッキ（スライドの解析結果）を要求しないので、スライドを一度も
+ * プレビューしていなくても docx / Web に出典が載る。
+ */
+export function toDocFooter(
+  text: string | undefined,
+  style: Partial<FooterStyle> | undefined,
+): ConvertOptions['docFooter'] | undefined {
+  const t = sanitizeFooterText(text ?? '').trim();
+  if (!t) return undefined;
+  const st = withFooterDefaults(style);
+  return { text: t, algn: st.align, sizePt: clampFooterPt(st.sizePt) };
+}
+
 const SCHEMES = ['dk1', 'lt1', 'accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6'];
 
 /** 保存ファイル（design-*.json / .morphodesign）からの読み込み。壊れた値は捨てる */

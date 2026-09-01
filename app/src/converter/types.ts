@@ -220,9 +220,12 @@ export interface DocBlock {
   level?: number;
   /**
    * para の段落スタイル。title/author/date は front matter 由来、
-   * quote は引用（BlockText）、footnote は文末に並べる脚注本文
+   * quote は引用（BlockText）、footnote は文末に並べる脚注本文、
+   * footer はページフッター（word/footer1.xml。フロー表示にページは無いので末尾に 1 回）
    */
-  style?: 'title' | 'author' | 'date' | 'body' | 'quote' | 'footnote';
+  style?: 'title' | 'author' | 'date' | 'body' | 'quote' | 'footnote' | 'footer';
+  /** para: 段落の揃え（w:jc）。footer で使う */
+  align?: 'l' | 'ctr' | 'r';
   /** heading / para / listItem の中身。行内改行は text 中の \n */
   runs?: TextRun[];
   /** listItem: 番号付きか（numbering.xml の numFmt で判定） */
@@ -381,6 +384,17 @@ export interface ConvertOptions {
     algn: 'l' | 'ctr' | 'r';
     color: ThemeColor;
     onCover?: boolean;
+  };
+  /**
+   * デッキ全体のフッターの docx / Web 向け（0.16.4）。pptx では無視される。
+   * docx はページフッター（word/footer1.xml）として全ページに、
+   * Web は本文末尾に 1 回だけ出す（HTML は「1 枚ごとに同じ出典を刷る」媒体ではない）。
+   * 座標は持たない。文言・揃え・字サイズは pptx の footer と同じ解決結果から作る
+   */
+  docFooter?: {
+    text: string;
+    algn: 'l' | 'ctr' | 'r';
+    sizePt: number;
   };
   /**
    * setReferenceDoc で預けたテンプレートを reference-doc として使う。

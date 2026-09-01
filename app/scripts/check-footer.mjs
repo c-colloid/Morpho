@@ -279,4 +279,99 @@ t('原稿 → front matter → 解決 の一巡が通る（アプリと同じ経
   assert.equal(src2, src0, '原稿が元どおりに戻る');
 });
 
+/* ---------- docx / Web のデッキ全体フッター（0.16.1） ---------- */
+
+const { toDocFooter } = await import('../src/design/footer.ts');
+const READER = 'markdown-yaml_metadata_block+east_asian_line_breaks';
+const toDocx = (md, meta) => convert(
+  { from: READER, to: 'docx', 'output-file': 'o.docx', ...(meta ? { metadata: meta } : {}) },
+  md, {},
+);
+const docxBytesOf = async (r) => new Uint8Array(await r.files['o.docx'].arrayBuffer());
+const partOf = (bytes, name) => { const z = unzipSync(bytes); return z[name] ? strFromU8(z[name]) : null; };
+
+t('toDocFooter: 文言・揃え・字サイズだけ。デッキを要求しない', () => {
+  assert.equal(toDocFooter('', undefined), undefined);
+  assert.deepEqual(toDocFooter(' NEJM 2024 ', undefined), { text: 'NEJM 2024', algn: 'r', sizePt: 9 });
+  assert.deepEqual(toDocFooter('X', { align: 'ctr', sizePt: 8 }), { text: 'X', algn: 'ctr', sizePt: 8 });
+  /* pptx 側と同じ解決結果になること（形式を切り替えても出典の見え方が食い違わない） */
+  const pf = toExportFooter('X', { align: 'ctr', sizePt: 8 }, DECK);
+  assert.equal(pf.algn, 'ctr');
+  assert.equal(pf.sz, 800);
+});
+
+const docBytes = await docxBytesOf(await toDocx('# 見出し\n\n本文。[^1]\n\n[^1]: 脚注\n', { title: '抄読会' }));
+const DF = toDocFooter('Smith & Jones <2024> N Engl J Med 2024;390:1234-45', { align: 'ctr', sizePt: 8 });
+const docOut = win.__morphoApplyDocxFooter(docBytes, DF);
+
+t('docx: 素の pandoc 出力にはフッターの受け皿が無い（実測 5 の前提）', () => {
+  assert.equal(partOf(docBytes, 'word/footer1.xml'), null);
+  assert.ok(!partOf(docBytes, 'word/document.xml').includes('footerReference'));
+});
+
+t('docx: footer1.xml・rels・[Content_Types]・sectPr の footerReference が揃う', () => {
+  const ftr = partOf(docOut, 'word/footer1.xml');
+  assert.ok(ftr, 'footer パートがある');
+  assert.ok(ftr.includes('Smith &amp; Jones &lt;2024&gt;'), '1 度だけエスケープ');
+  assert.ok(ftr.includes('<w:jc w:val="center"/>'));
+  assert.ok(ftr.includes('<w:sz w:val="16"/>'), '8pt = sz 16');
+  const doc = partOf(docOut, 'word/document.xml');
+  const sect = /<w:sectPr>([\s\S]*?)<\/w:sectPr>/.exec(doc);
+  assert.ok(sect, 'sectPr がある');
+  assert.ok(sect[1].trimStart().startsWith('<w:footerReference w:type="default" r:id="rId'), 'footerReference が sectPr の先頭');
+  const rId = /r:id="(rId\d+)"/.exec(sect[1])[1];
+  const rels = partOf(docOut, 'word/_rels/document.xml.rels');
+  assert.ok(new RegExp('Id="' + rId + '" Target="footer1.xml"').test(rels), 'rels が同じ rId で footer1.xml を指す');
+  assert.equal((rels.match(new RegExp('Id="' + rId + '"', 'g')) || []).length, 1, 'rId が重複しない');
+  assert.ok(partOf(docOut, '[Content_Types].xml').includes('PartName="/word/footer1.xml"'));
+});
+
+t('docx: 冪等 — 2 回目は何もしない。文言が空なら何もしない', () => {
+  assert.equal(win.__morphoApplyDocxFooter(docOut, DF), docOut);
+  assert.equal(win.__morphoApplyDocxFooter(docBytes, undefined), docBytes);
+  assert.equal(win.__morphoApplyDocxFooter(docBytes, { ...DF, text: '' }), docBytes);
+});
+
+t('docx: 文書プレビューがページフッターを末尾に 1 回だけ出す（脚注より後）', () => {
+  const blocks = win.__morphoParseDocx(docOut).blocks;
+  const footers = blocks.filter((b) => b.style === 'footer');
+  assert.equal(footers.length, 1);
+  const last = blocks[blocks.length - 1];
+  assert.equal(last.style, 'footer');
+  assert.equal(last.align, 'ctr');
+  assert.equal(last.runs.map((r) => r.text).join(''), DF.text, '& < > が往復する');
+  assert.ok(blocks.some((b) => b.style === 'footnote'), '脚注も残っている');
+  assert.ok(blocks.findIndex((b) => b.style === 'footnote') < blocks.length - 1, '脚注はフッターより前');
+  /* 素の出力にはフッターのブロックが無い */
+  assert.equal(win.__morphoParseDocx(docBytes).blocks.filter((b) => b.style === 'footer').length, 0);
+});
+
+if (validate) {
+  const derrs = async (b) => (await validate(b, 'docx', 'Microsoft365')).length;
+  await ta('docx の妥当性: 素の出力もフッター後付け後も 0 件、較正は 1 件以上', async () => {
+    assert.equal(await derrs(docBytes), 0, '素の pandoc 出力');
+    assert.equal(await derrs(docOut), 0, 'フッター後付け後');
+    /* 較正: rPr の子要素順を sz → color に入れ替えると検証器が鳴ること（実測で 1 件） */
+    const z = unzipSync(docOut);
+    z['word/footer1.xml'] = strToU8(strFromU8(z['word/footer1.xml'])
+      .replace(/(<w:color w:val="[^"]+"\/>)(<w:sz w:val="\d+"\/>)/, '$2$1'));
+    assert.ok(await derrs(zipSync(z)) > 0, '較正ケースが検出されること');
+  });
+}
+
+t('Web: .footer の CSS と、本文末尾に 1 回だけのデッキフッター', () => {
+  const html = '<html><head><style>p{margin:1em 0}</style></head><body><p>本文</p></body></html>';
+  const out = win.__morphoDecorateWebHtml(html, DF);
+  assert.equal((out.match(/\.footer\{/g) || []).length, 1, '.footer 規則が 1 つ');
+  assert.ok(out.indexOf('.footer{') < out.indexOf('</head>'), 'CSS は head の中');
+  assert.equal((out.match(/class="footer morpho-deck-footer"/g) || []).length, 1, 'デッキフッターは 1 回だけ');
+  assert.ok(out.includes('Smith &amp; Jones &lt;2024&gt;'), '1 度だけエスケープ');
+  assert.ok(out.includes('text-align:center') && out.includes('font-size:8pt'));
+  const div = out.indexOf('<div class="footer morpho-deck-footer"');
+  assert.ok(div > out.indexOf('<p>本文</p>') && div < out.lastIndexOf('</body>'), '本文の後・</body> の前');
+  /* 文言が無ければ CSS だけ入れて div は足さない */
+  const bare = win.__morphoDecorateWebHtml(html, undefined);
+  assert.ok(bare.includes('.footer{') && !bare.includes('class="footer morpho-deck-footer"'));
+});
+
 console.log('\n' + n + ' 件すべて通過');
