@@ -7,6 +7,7 @@
  * pandoc の分割規則（CLAUDE.md 落とし穴 5・10）を字面で近似している。
  */
 import { slideSegments } from './cursorSlide.ts';
+import { stripCr } from '../text/lineEnding.ts';
 
 export type SplitCause = 'columns' | 'table' | 'image' | 'unknown';
 
@@ -26,8 +27,12 @@ type Kind = 'blank' | 'heading' | 'table' | 'image' | 'columns' | 'notes' | 'fen
 function blocksOf(seg: string): Array<{ kind: Kind; at: number; text: string }> {
   const out: Array<{ kind: Kind; at: number; text: string }> = [];
   let off = 0, inCode = false, divDepth = 0, divKind: Kind | null = null, divAt = 0;
-  for (const line of seg.split('\n')) {
-    const at = off; off += line.length + 1;
+  /* 直前の text 行の終端（raw のオフセット）。段落の続きかどうかはこれで見る
+     （text の長さで数えると CRLF で 1 文字ずれる） */
+  let lastTextEnd = -1;
+  for (const raw of seg.split('\n')) {
+    const at = off; off += raw.length + 1;
+    const line = stripCr(raw);   /* 判定は行末の \r を外して（CRLF 原稿）。at は raw で数える */
     if (/^ {0,3}(```|~~~)/.test(line)) { inCode = !inCode; if (!inCode) continue; out.push({ kind: 'text', at, text: line }); continue; }
     if (inCode) continue;
     if (/^ {0,3}:::+/.test(line)) {
@@ -52,9 +57,10 @@ function blocksOf(seg: string): Array<{ kind: Kind; at: number; text: string }> 
     if (/^ {0,3}#/.test(line)) { out.push({ kind: 'heading', at, text: line.replace(/^ {0,3}#+\s*/, '') }); continue; }
     if (/^ {0,3}\|/.test(line)) { if (out[out.length-1]?.kind !== 'table') out.push({ kind: 'table', at, text: line }); continue; }
     if (/^ {0,3}!\[[^\]]*\]\([^)]*\)\s*$/.test(line)) { out.push({ kind: 'image', at, text: line }); continue; }
-    if (out[out.length-1]?.kind !== 'text' || out[out.length-1].at + out[out.length-1].text.length + 1 !== at) {
+    if (out[out.length-1]?.kind !== 'text' || lastTextEnd !== at) {
       out.push({ kind: 'text', at, text: line });
     } else { out[out.length-1].text += '\n' + line; }
+    lastTextEnd = off;
   }
   return out;
 }
