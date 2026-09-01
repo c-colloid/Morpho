@@ -8,7 +8,7 @@
  */
 import { slideSegments } from './cursorSlide.ts';
 import { COLUMN_SEPARATOR } from '../text/columns.ts';
-import { stripCr } from '../text/lineEnding.ts';
+import { stripCr, detectNewline } from '../text/lineEnding.ts';
 
 /* 改行を外して繋ぐとき、両側が ASCII の語なら空白を挟む。
    和文は east_asian_line_breaks と同じく直結する */
@@ -194,7 +194,7 @@ export function locateEditable(
   const lines = segment.split('\n');
   /* 判定用（行末の \r なし）。オフセットと原文は lines（元の行）で数える */
   const judge = lines.map(stripCr);
-  const newline: '\n' | '\r\n' = segment.includes('\r\n') ? '\r\n' : '\n';
+  const newline = detectNewline(body);
 
   interface Cand {
     startLine: number;

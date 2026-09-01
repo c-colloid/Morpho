@@ -20,3 +20,13 @@
 export function stripCr(line: string): string {
   return line.endsWith('\r') ? line.slice(0, -1) : line;
 }
+
+/**
+ * 原稿の改行コード。書き戻しで改行を**入れる**ときはこれに合わせる
+ * （CRLF 原稿に LF で書くと、原稿の中で改行コードが混在する）。
+ * 1 つでも `\r\n` があれば CRLF とみなす。区間ではなく原稿全体で見る
+ * （見出し 1 行だけの短い区間には改行が無いことがある）。
+ */
+export function detectNewline(text: string): '\n' | '\r\n' {
+  return text.includes('\r\n') ? '\r\n' : '\n';
+}
