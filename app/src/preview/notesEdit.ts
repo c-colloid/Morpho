@@ -3,24 +3,51 @@
  *
  * プレビューのノート欄から編集した内容を、該当スライドの原稿区間へ書き戻す。
  * 「プレビューで編集し、確定は原稿へ書く」一方向フローの最初の実装。
+ *
+ * ブロックの範囲は columns.ts の scanFences（柵の深さ追跡）で決める。
+ * 以前は「`::: notes` から最初のコロンだけの行まで」の遅延一致だったので、
+ * ノートの中に入れ子の div（`::: warning` 等。Quarto 系のコピペで現実に入る）が
+ * あると内側の閉じで止まり、読むとノートの続きが欠け、書き戻すと続きと外側の
+ * 閉じ柵が本文へ取り残された（実測。0.16.1 で段組み側を直したのと同じ族）。
+ * 判定規則を二重に持たない（notes/column-input.md の「必ず守ること」）。
+ *
+ * CRLF 原稿は判定のときだけ行末の `\r` を落として読み（シートへ渡す文字列は LF）、
+ * 書き戻しは原稿の改行コードを保つ（lineEnding.ts の規約・0.16.3）。
  */
 import { slideSegments } from './cursorSlide.ts';
-import { detectNewline } from '../text/lineEnding.ts';
+import { scanFences } from '../text/columns.ts';
+import { stripCr, detectNewline } from '../text/lineEnding.ts';
 
-/* 閉じ柵の `$` は複数行モードなので `\r` の手前にも一致し、CRLF 原稿でも
-   ブロックを読める（実測）。inner には `\r\n` と末尾の `\r` が残るので下で外す */
-const NOTES_BLOCK = /^[ \t]*:::+[ \t]*notes[ \t]*\r?\n([\s\S]*?)^[ \t]*:::+[ \t]*$/gm;
+interface NotesBlock {
+  /** 区間内オフセット。開き柵の行頭 */
+  index: number;
+  /** 開き柵の行頭から閉じ柵の行末まで（閉じ柵の後ろの改行は含めない） */
+  length: number;
+  /** 柵の間の本文。末尾の空白は落とす */
+  inner: string;
+}
 
-/** 区間内の notes ブロックをすべて列挙する（pandoc は複数あっても全部ノートにする） */
-function findBlocks(segment: string): Array<{ index: number; length: number; inner: string }> {
-  const out: Array<{ index: number; length: number; inner: string }> = [];
-  NOTES_BLOCK.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = NOTES_BLOCK.exec(segment)) !== null) {
-    /* シートへ渡す文字列は LF に揃える（原稿は触らない。書き戻しで原稿の改行コードに戻す） */
-    out.push({ index: m.index, length: m[0].length, inner: m[1].replace(/\s+$/, '').replace(/\r\n/g, '\n') });
+/**
+ * 区間内の notes ブロックをすべて列挙する（pandoc は複数あっても全部ノートにする）。
+ * 深さ 0 で開いて閉じたものだけ（scanFences の notesBlocks）。閉じていないものは
+ * 対象にしない。開き柵の形（`::: notes` / `::: {.notes}` / 引用の中）は NOTES_OPEN に従う。
+ */
+function findBlocks(segment: string): NotesBlock[] {
+  const raw = segment.split('\n');
+  /* 判定のときだけ行末の \r を落とす（CRLF 原稿）。オフセットは raw の長さで数える */
+  const lines = raw.map(stripCr);
+  const starts: number[] = [];
+  let off = 0;
+  for (const l of raw) {
+    starts.push(off);
+    off += l.length + 1;
   }
-  return out;
+  return scanFences(lines).notesBlocks.map(([open, close]) => {
+    const index = starts[open];
+    const end = starts[close] + lines[close].length;
+    const inner = lines.slice(open + 1, close).join('\n').replace(/\s+$/, '');
+    return { index, length: end - index, inner };
+  });
 }
 
 /** contentIndex は 1 始まりのコンテンツスライド番号（タイトルスライドを含まない） */

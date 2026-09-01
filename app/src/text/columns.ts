@@ -35,38 +35,103 @@ export function isColumnSeparator(line: string): boolean {
   return COLUMN_SEPARATOR.test(stripCr(line));
 }
 
+/* ---- 柵の追跡（規則の原本はここ。bridgeHtml.ts は同じ本文を写している） ----
+ *
+ * pandoc の fenced div は、開き柵（`:::` + 属性）と閉じ柵（コロンだけの行）が
+ * **直近の開きと対**になる。だから `::: notes` の中に `::: warning` などが
+ * 入れ子になっていても（Quarto 系からのコピペで現実に入る）、ノートが終わるのは
+ * 深さがノートの外へ戻ったときだけ。pandoc 自身はこれを正しく解釈する（実測）。
+ *
+ * 「`::: notes` で +1・任意の `:::` で -1」という浅い追跡は、入れ子の最初の
+ * 閉じでノートを終わらせ、ノートの中身（観客に見せない情報）を本文側の処理へ
+ * 渡してしまう。実測では notes 内の `+++` が列区切りとして拾われ、ノートの
+ * 続きがスライド本体へ漏れた（notes/footer-design.md の既存の不具合 6・7）。
+ *
+ * 開き柵は lineBreakEdit.ts と同じ上位集合を取る（`::: 二語` も柵として拾う）。
+ * 拾いすぎは「区切りを見逃す」側に倒れて本文に `+++` が見えるだけだが、
+ * 取りこぼしはノートが本文へ漏れる側に倒れるので、安全な方を選んでいる。
+ *
+ * **scanFences の本文と 4 つの正規表現は bridgeHtml.ts にも同じものがある**
+ * （ブリッジは WebView 用の文字列なので import できない）。判定規則を二重に
+ * 持たないよう、scripts/check-columns.mjs が両者の**本文の一致**と挙動の一致を
+ * 常時検証している。片方だけ直すと検査が落ちる。 */
+
 /** コードフェンスの開始/終了行 */
-const CODE_FENCE = /^ {0,3}(```|~~~)/;
-/** `::: notes` の開き柵。中の `+++` は区切りにしない */
-const NOTES_OPEN = /^[ \t]*(?:>[ \t]*)*:::+[ \t]*(?:\{[^}]*\.notes[^}]*\}|notes\b)/;
+export const CODE_FENCE = /^ {0,3}(```|~~~)/;
+/** 柵の行（開き・閉じの両方。閉じかどうかは DIV_CLOSE で先に見る） */
+export const DIV_FENCE = /^[ \t]*(?:>[ \t]*)*:::+/;
 /** 閉じ柵（コロンだけの行） */
-const DIV_CLOSE = /^[ \t]*(?:>[ \t]*)*:::+[ \t]*$/;
+export const DIV_CLOSE = /^[ \t]*(?:>[ \t]*)*:::+[ \t]*$/;
+/** `::: notes` の開き柵。中の `+++` は区切りにしない */
+export const NOTES_OPEN = /^[ \t]*(?:>[ \t]*)*:::+[ \t]*(?:\{[^}]*\.notes[^}]*\}|notes\b)/;
+
+export interface FenceScan {
+  /** その行がコードフェンスの中か（柵の行自身を含む） */
+  code: boolean[];
+  /** その行が `::: notes` の中か（柵の行自身と、入れ子の div の中も含む） */
+  notes: boolean[];
+  /** 深さ 0 で開いて閉じた `::: notes` ブロックの [開き行, 閉じ行]。閉じていないものは含めない */
+  notesBlocks: number[][];
+}
+
+/**
+ * 行ごとに柵の深さを追い、コードフェンスの中・`::: notes` の中を印す。
+ * 入れ子の div を含むノートでも、閉じ柵は開いた柵と対で数える。
+ * lines は行末の `\r` を落としたもの（stripCr 済み）を渡す。CRLF のままだと
+ * `[ \t]*$` で終わる柵の判定が一致しない（lineEnding.ts の規約）。
+ */
+export function scanFences(lines: string[]): FenceScan {
+  const code = [];
+  const notes = [];
+  const notesBlocks = [];
+  let inCode = false;
+  let depth = 0;
+  /* 最も外側の notes が開いたときの深さ。0 ならノートの外 */
+  let notesAt = 0;
+  let notesOpen = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fence = CODE_FENCE.test(line);
+    if (fence) inCode = !inCode;
+    if (fence || inCode) {
+      code.push(true);
+      notes.push(notesAt > 0);
+      continue;
+    }
+    code.push(false);
+    if (DIV_CLOSE.test(line)) {
+      /* 閉じ柵は直近の開き柵と対。ノートが終わるのは深さがノートの外へ戻ったとき */
+      if (depth > 0) depth--;
+      notes.push(notesAt > 0);
+      if (notesAt > 0 && depth < notesAt) {
+        if (notesAt === 1) notesBlocks.push([notesOpen, i]);
+        notesAt = 0;
+      }
+      continue;
+    }
+    if (DIV_FENCE.test(line)) {
+      depth++;
+      if (notesAt === 0 && NOTES_OPEN.test(line)) {
+        notesAt = depth;
+        notesOpen = i;
+      }
+    }
+    notes.push(notesAt > 0);
+  }
+  return { code: code, notes: notes, notesBlocks: notesBlocks };
+}
 
 /**
  * 本文中の列区切り行の位置（0 始まりの行番号）。
- * コードフェンスの中と `::: notes` の中は数えない。
+ * コードフェンスの中と `::: notes` の中（入れ子の div を含む）は数えない。
  */
 export function separatorLines(body: string): number[] {
+  /* 判定のときだけ行末の \r を落とす（CRLF 原稿）。行番号とオフセットは raw のまま */
+  const lines = body.split('\n').map(stripCr);
+  const scan = scanFences(lines);
   const out: number[] = [];
-  let inCode = false;
-  let notesDepth = 0;
-  body.split('\n').forEach((raw, i) => {
-    /* 判定のときだけ行末の \r を落とす（CRLF 原稿）。行番号は raw のまま */
-    const line = stripCr(raw);
-    if (CODE_FENCE.test(line)) {
-      inCode = !inCode;
-      return;
-    }
-    if (inCode) return;
-    if (NOTES_OPEN.test(line)) {
-      notesDepth += 1;
-      return;
-    }
-    if (notesDepth > 0) {
-      if (DIV_CLOSE.test(line)) notesDepth -= 1;
-      return;
-    }
-    if (COLUMN_SEPARATOR.test(line)) out.push(i);
+  lines.forEach((line, i) => {
+    if (!scan.code[i] && !scan.notes[i] && COLUMN_SEPARATOR.test(line)) out.push(i);
   });
   return out;
 }

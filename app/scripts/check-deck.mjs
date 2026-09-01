@@ -657,12 +657,13 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
     (c) => c.charCodeAt(0),
   );
   const segs = (md) => slideSegments(md).length;
-  const run = async (md) => {
+  const run = async (md, extra) => {
     const e = expand(md);
-    const r = await convert(
-      { from: 'markdown-yaml_metadata_block+east_asian_line_breaks', to: 'pptx', 'output-file': 'p.pptx' },
-      e.md, { 'z.png': new Blob([PNG]) },
-    );
+    const o = { from: 'markdown-yaml_metadata_block+east_asian_line_breaks', to: 'pptx', 'output-file': 'p.pptx' };
+    const files = { 'z.png': new Blob([PNG]) };
+    if (extra && extra.title) o.metadata = { title: extra.title };
+    if (extra && extra.ruby) { o.filters = ['ruby.lua']; files['ruby.lua'] = win.__morphoRubyLua; }
+    const r = await convert(o, e.md, files);
     const sc2 = win.__morphoParsePptx(new Uint8Array(await r.files['p.pptx'].arrayBuffer()));
     return {
       sc: sc2,
@@ -714,6 +715,88 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
     assert.equal(u.sc.slides.reduce((a, sl) => a + sl.images.length, 0), 1, '画像が消えている');
   });
 
+  /* ---- ノートの中の入れ子 div（footer-design.md の既存の不具合 6・7） ----
+     Quarto 系からのコピペで ::: warning 等がノートの中に入る。pandoc 自身は入れ子を
+     正しく解釈するので、間違えるのは JS 側の追跡だけ。入れ子なし版と枚数・レイアウト・
+     本文が一致し、ノート本文が notesSlide 側に丸ごと残ることを本物の pandoc で固定する */
+  /* vm レルムの配列は deepEqual でプロトタイプ不一致になるので Array.from で包む */
+  const bodyTexts = (sc) => Array.from(sc.slides, (sl) =>
+    sl.shapes.map((sh) =>
+      sh.placeholder + ':' + sh.paragraphs.map((pp) => pp.runs.map((rr) => rr.text).join('')).join('/'),
+    ).join('|'));
+  const noteTexts = (sc) => Array.from(sc.slides, (sl) =>
+    sl.notes.map((pp) => pp.runs.map((rr) => rr.text).join('')).join('/'));
+  const layouts = (sc) => Array.from(sc.slides, (sl) => sl.layout);
+
+  const flatNotes = '# 見出し\n\n左\n\n+++\n\n右\n\n::: notes\nノート本文。\n\nノートの続き。\n:::\n';
+  const nestedNotes = '# 見出し\n\n左\n\n+++\n\n右\n\n::: notes\nノート本文。\n\n::: warning\n注意の中身。\n:::\n\nノートの続き。\n:::\n';
+  const nestedWithSep = '# 見出し\n\n左\n\n+++\n\n右\n\n::: notes\nノート本文。\n\n::: warning\n注意の中身。\n:::\n\n+++\n\nノートの続き。\n:::\n';
+  const fn = await run(flatNotes);
+  const nn = await run(nestedNotes);
+  const ns = await run(nestedWithSep);
+
+  t('+++: ノートに入れ子の div があっても、枚数・レイアウト・本文が入れ子なしと一致する', () => {
+    assert.equal(fn.sc.slideCount, segs(flatNotes));
+    assert.equal(fn.sc.slides[0].layout, 'Two Content');
+    assert.equal(nn.nonInfo.length, 0, JSON.stringify(nn.nonInfo));
+    assert.deepEqual(nn.diags, []);
+    assert.equal(nn.sc.slideCount, segs(nestedNotes), 'スライドが割れて contentIndexOf が死ぬ形');
+    assert.deepEqual(layouts(nn.sc), layouts(fn.sc));
+    assert.deepEqual(bodyTexts(nn.sc), bodyTexts(fn.sc));
+  });
+  t('+++: 入れ子 div を含むノート本文が notesSlide 側に丸ごと残る', () => {
+    assert.deepEqual(noteTexts(fn.sc), ['ノート本文。/ノートの続き。']);
+    assert.deepEqual(noteTexts(nn.sc), ['ノート本文。/注意の中身。/ノートの続き。']);
+  });
+  t('+++: 入れ子 div の後ろにあるノート内の +++ は区切りにならず、ノートの続きが本文へ漏れない', () => {
+    assert.equal(ns.nonInfo.length, 0, JSON.stringify(ns.nonInfo));
+    assert.equal(ns.sc.slideCount, segs(nestedWithSep));
+    assert.deepEqual(layouts(ns.sc), layouts(fn.sc));
+    assert.deepEqual(bodyTexts(ns.sc), bodyTexts(fn.sc), 'ノートの中身がスライド本体へ漏れている');
+    assert.ok(noteTexts(ns.sc)[0].includes('ノートの続き。'), 'ノートの続きが消えている');
+  });
+
+  /* ---- notes/column-input.md「検証結果」の各ケース（退行検知） ----
+     どれも「pandoc の枚数 = 区間数（+ 表紙）」で、非 INFO の警告が出ない */
+  const REGRESSION = [
+    ['基本', '# 見出し\n\n左\n\n+++\n\n右\n', { cols: true }],
+    ['導入つき', '# 見出し\n\n導入の文。\n\n左\n\n+++\n\n右\n', { cols: true }],
+    ['全角 ＋＋＋', '# 見出し\n\n左\n\n＋＋＋\n\n右\n', { cols: true }],
+    ['::: notes つき', '# 見出し\n\n左\n\n+++\n\n右\n\n::: notes\nノート\n:::\n', { cols: true, notes: 'ノート' }],
+    ['箇条書きを列に', '# 見出し\n\n- a\n- b\n\n+++\n\n- c\n', { cols: true }],
+    ['画像を列に', '# 見出し\n\n![](z.png)\n\n+++\n\n右\n', { cols: true, images: 1 }],
+    ['表を列に', '# 見出し\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n+++\n\n右\n', { cols: true, tables: 1 }],
+    ['ルビ・傍点を列に', '# 見出し\n\n{漢字|かんじ}\n\n+++\n\n《《傍点》》\n', { cols: true, ruby: true, text: '漢字（かんじ）' }],
+    ['左が空', '# 見出し\n\n+++\n\n右\n', { cols: true }],
+    ['右が空', '# 見出し\n\n左\n\n+++\n', { cols: true }],
+    ['+++ が連続', '# 見出し\n\n左\n\n+++\n\n+++\n\n右\n', { cols: true, diags: ['3 列目以降はスライドに出ません'] }],
+    ['コードフェンスの中の +++', '# 見出し\n\n```\n+++\n```\n\n本文\n', { text: '+++' }],
+    ['インラインコードの +++', '# 見出し\n\n`+++` は区切りにならない\n', { text: '+++' }],
+    ['front matter あり', '# 見出し\n\n左\n\n+++\n\n右\n', { cols: true, title: '表紙' }],
+    ['*** 区切りと併用', '# A\n\n本文\n\n***\n\n左\n\n+++\n\n右\n', { cols: true }],
+    ['見出しなし区間', '本文\n\n***\n\n左\n\n+++\n\n右\n', { cols: true }],
+    ['複数スライドに混在', '# A\n\n左\n\n+++\n\n右\n\n# B\n\n本文\n\n# C\n\nあ\n\n+++\n\nい\n', { cols: true }],
+    ['3 列', '# 見出し\n\nA\n\n+++\n\nB\n\n+++\n\nC\n', { cols: true, diags: ['3 列目以降はスライドに出ません'] }],
+  ];
+  for (const [name, md, x] of REGRESSION) {
+    const r = await run(md, x);
+    t('退行検知: ' + name, () => {
+      assert.equal(r.nonInfo.length, 0, JSON.stringify(r.nonInfo));
+      assert.equal(r.sc.slideCount, segs(md) + (x.title ? 1 : 0), '枚数と区間数が食い違う');
+      assert.deepEqual(r.diags, x.diags || []);
+      const ls = layouts(r.sc);
+      if (x.cols) {
+        assert.ok(ls.some((l) => l === 'Two Content' || l === 'Comparison'), '段組みになっていない: ' + ls);
+      } else {
+        assert.ok(!ls.some((l) => l === 'Two Content' || l === 'Comparison'), '段組みになっている: ' + ls);
+      }
+      const all = bodyTexts(r.sc).join('|');
+      if (x.text) assert.ok(all.includes(x.text), x.text + ' が本文に無い: ' + all);
+      if (x.images) assert.equal(r.sc.slides.reduce((a, sl) => a + sl.images.length, 0), x.images);
+      if (x.tables) assert.equal(r.sc.slides.reduce((a, sl) => a + (sl.tables ?? []).length, 0), x.tables);
+      if (x.notes) assert.ok(noteTexts(r.sc).join('|').includes(x.notes), 'ノートが無い');
+    });
+  }
   /* CRLF（Windows 由来の原稿。iPad でも iCloud Drive 経由で開く）。
      行末の \r で COL_SEP / COL_HR が外れ、段組みが無警告で 1 段のままになっていた
      （再現: Title and Content・本文枠 1 つ・本文に生の +++・警告も診断もゼロ）。

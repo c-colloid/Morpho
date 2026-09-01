@@ -238,10 +238,10 @@ npm run check
 | `check-frontmatter.mjs` | front matter の切り出し |
 | `check-scene.mjs` | pptx パーサ単体（ブリッジを vm で評価して直接叩く） |
 | `check-cursor.mjs` | カーソル位置 → スライド番号の対応 |
-| `check-notes-edit.mjs` | 発表者ノートの読み取りと書き戻し |
+| `check-notes-edit.mjs` | 発表者ノートの読み取りと書き戻し（入れ子の div を含むノートの範囲は `scanFences` に従う。繰り返し保存・CRLF も） |
 | `check-linebreak.mjs` | 改行位置編集（正規化・分割・オフセット適用・対象特定・柵と禁止区間） |
 | `check-image-insert.mjs` | 画像の挿入位置（行を割らない・独立段落・柵と区間の末尾） |
-| `check-columns.mjs` | 段組みの記法（`+++`）。判定・展開・診断と、**アプリと変換器で規則が食い違っていないこと** |
+| `check-columns.mjs` | 段組みの記法（`+++`）。判定・展開・診断と、**アプリと変換器で規則が食い違っていないこと**（区切りと柵の正規表現、および柵の深さ追跡 `scanFences` の**関数本文**が `columns.ts` とブリッジで一致すること） |
 | `check-update.mjs` | 版の比較と更新通知 |
 | `check-design.mjs` | 装飾・グループ・文字サイズ・.morphodesign の往復 |
 | `check-diff.mjs` | 行 Diff（競合ダイアログ） |

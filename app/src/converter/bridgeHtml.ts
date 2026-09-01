@@ -1625,10 +1625,57 @@ window.__morphoSetTemplate = function (b64) {
 var COL_SEP = /^[ \\t]*[+＋]([ \\t]*[+＋]){2,}[ \\t]*$/;
 var COL_H1 = /^#[ \\t]/;
 var COL_HR = /^ {0,3}([*_-])(?:[ \\t]*\\1){2,}[ \\t]*$/;
-var COL_CODE = /^ {0,3}(\`\`\`|~~~)/;
-var COL_NOTES_OPEN = /^[ \\t]*(?:>[ \\t]*)*:::+[ \\t]*(?:\\{[^}]*\\.notes[^}]*\\}|notes\\b)/;
-var COL_DIV_CLOSE = /^[ \\t]*(?:>[ \\t]*)*:::+[ \\t]*$/;
-var COL_DIV_ANY = /^[ \\t]*(?:>[ \\t]*)*:::+/;
+/* 柵の追跡。規則の原本は src/text/columns.ts で、ここはその写し。
+   4 つの正規表現と scanFences の本文が原本と一致することを check-columns.mjs が
+   検証している（片方だけ直すと落ちる）。閉じ柵は直近の開き柵と対なので、
+   ノートの中に入れ子の div があっても、ノートが終わるのは深さが戻ったときだけ */
+var CODE_FENCE = /^ {0,3}(\`\`\`|~~~)/;
+var DIV_FENCE = /^[ \\t]*(?:>[ \\t]*)*:::+/;
+var DIV_CLOSE = /^[ \\t]*(?:>[ \\t]*)*:::+[ \\t]*$/;
+var NOTES_OPEN = /^[ \\t]*(?:>[ \\t]*)*:::+[ \\t]*(?:\\{[^}]*\\.notes[^}]*\\}|notes\\b)/;
+
+function scanFences(lines) {
+  const code = [];
+  const notes = [];
+  const notesBlocks = [];
+  let inCode = false;
+  let depth = 0;
+  /* 最も外側の notes が開いたときの深さ。0 ならノートの外 */
+  let notesAt = 0;
+  let notesOpen = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fence = CODE_FENCE.test(line);
+    if (fence) inCode = !inCode;
+    if (fence || inCode) {
+      code.push(true);
+      notes.push(notesAt > 0);
+      continue;
+    }
+    code.push(false);
+    if (DIV_CLOSE.test(line)) {
+      /* 閉じ柵は直近の開き柵と対。ノートが終わるのは深さがノートの外へ戻ったとき */
+      if (depth > 0) depth--;
+      notes.push(notesAt > 0);
+      if (notesAt > 0 && depth < notesAt) {
+        if (notesAt === 1) notesBlocks.push([notesOpen, i]);
+        notesAt = 0;
+      }
+      continue;
+    }
+    if (DIV_FENCE.test(line)) {
+      depth++;
+      if (notesAt === 0 && NOTES_OPEN.test(line)) {
+        notesAt = depth;
+        notesOpen = i;
+      }
+    }
+    notes.push(notesAt > 0);
+  }
+  return { code: code, notes: notes, notesBlocks: notesBlocks };
+}
+window.__morphoScanFences = scanFences;
+
 /* 段落 1 つぶんの画像 / パイプ表の先頭行 */
 var COL_IMAGE = /^[ \\t]*!\\[[^\\]]*\\]\\([^)]*\\)[ \\t]*$/;
 var COL_TABLE = /^[ \\t]*\\|/;
@@ -1667,7 +1714,7 @@ function expandColumns(md) {
   var start = 0;
   var inCode = false;
   for (var i = 0; i < lines.length; i++) {
-    if (COL_CODE.test(lines[i])) { inCode = !inCode; continue; }
+    if (CODE_FENCE.test(lines[i])) { inCode = !inCode; continue; }
     if (inCode) continue;
     if (i > start && (COL_H1.test(lines[i]) || COL_HR.test(lines[i]))) {
       segs.push([start, i]);
@@ -1679,31 +1726,28 @@ function expandColumns(md) {
   var out = [];
   for (var s = 0; s < segs.length; s++) {
     var seg = lines.slice(segs[s][0], segs[s][1]);
+    /* 区切りはコードフェンスの外・::: notes の外にある行だけ（columns.ts の
+       separatorLines と同じ規則。入れ子の div を含むノートの中も数えない） */
+    var scan = scanFences(seg);
     var sepIdx = [];
-    var f = false;
-    var notes = 0;
     for (var j = 0; j < seg.length; j++) {
-      if (COL_CODE.test(seg[j])) { f = !f; continue; }
-      if (f) continue;
-      if (COL_NOTES_OPEN.test(seg[j])) { notes++; continue; }
-      if (notes > 0) { if (COL_DIV_CLOSE.test(seg[j])) notes--; continue; }
-      if (COL_SEP.test(seg[j])) sepIdx.push(j);
+      if (!scan.code[j] && !scan.notes[j] && COL_SEP.test(seg[j])) sepIdx.push(j);
     }
     if (!sepIdx.length) { out = out.concat(seg); continue; }
 
     var head = 0;
     while (head < seg.length &&
       (seg[head].trim() === '' || COL_H1.test(seg[head]) || COL_HR.test(seg[head]))) head++;
-    /* 末尾の ::: notes ブロックは列の外へ出す。閉じ柵から遡って開き柵を探す
-       （中身の行で止まらないこと。別の柵に当たったら notes ではないので諦める） */
+    /* 末尾の ::: notes ブロックは列の外へ出す。深さ 0 で開いて閉じたブロックが
+       区間の末尾（空行を除く）で終わっていればその開き柵まで戻し、続けて並んで
+       いれば全部外へ出す。閉じ柵から遡る方式ではないので、ノートの中の入れ子の
+       div（::: warning 等）で止まらない */
     var tail = seg.length;
-    var e = seg.length - 1;
-    while (e >= 0 && seg[e].trim() === '') e--;
-    if (e >= 0 && COL_DIV_CLOSE.test(seg[e])) {
-      for (var t = e - 1; t >= 0; t--) {
-        if (COL_NOTES_OPEN.test(seg[t])) { tail = t; break; }
-        if (COL_DIV_ANY.test(seg[t])) break;
-      }
+    for (var b = scan.notesBlocks.length - 1; b >= 0; b--) {
+      var e = tail - 1;
+      while (e >= 0 && seg[e].trim() === '') e--;
+      if (scan.notesBlocks[b][1] !== e) break;
+      tail = scan.notesBlocks[b][0];
     }
     var body = seg.slice(head, tail);
     var rel = [];
@@ -1735,8 +1779,9 @@ function expandColumns(md) {
         count: 1
       });
       /* 段組みにはしないが、区切りは内容ではなく記法なので消費する。
-         残すと本文に生の +++ が出る（実測）。空行に置き換えて段落の切れ目は保つ */
-      for (var y = 0; y < seg.length; y++) if (COL_SEP.test(seg[y])) seg[y] = '';
+         残すと本文に生の +++ が出る（実測）。空行に置き換えて段落の切れ目は保つ。
+         消すのは区切りとして数えた行だけ（コードフェンスやノートの中は触らない） */
+      for (var y = 0; y < sepIdx.length; y++) seg[sepIdx[y]] = '';
       out = out.concat(seg);
       continue;
     }

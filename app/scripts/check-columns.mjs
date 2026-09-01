@@ -15,7 +15,12 @@ import assert from 'node:assert/strict';
 import {
   COLUMN_SEPARATOR,
   COLUMN_SEPARATOR_TEXT,
+  CODE_FENCE,
+  DIV_FENCE,
+  DIV_CLOSE,
+  NOTES_OPEN,
   isColumnSeparator,
+  scanFences,
   separatorLines,
   columnRangeAt,
 } from '../src/text/columns.ts';
@@ -41,14 +46,164 @@ runInContext(body, createContext({
 const expand = win.__morphoExpandColumns;
 assert.equal(typeof expand, 'function', '__morphoExpandColumns が生えていない');
 
+/* 判定規則の原本は columns.ts。ブリッジは WebView 用の文字列なので import できず
+   写しを持つ。正規表現は toString で、scanFences は関数本文をそのまま突き合わせて、
+   規則が二重に（別々に）実装されていないことを担保する */
+const bridgeRegex = (name) => {
+  const m = new RegExp('^var ' + name + ' = (/.*/);$', 'm').exec(mod[1]);
+  assert.ok(m, 'ブリッジに ' + name + ' が無い');
+  return m[1];
+};
+
 t('区切りの正規表現が columns.ts とブリッジで一致する', () => {
-  const inBridge = /var COL_SEP = (\/.*\/);/.exec(mod[1]);
-  assert.ok(inBridge, 'ブリッジに COL_SEP が無い');
   assert.equal(
-    inBridge[1],
+    bridgeRegex('COL_SEP'),
     COLUMN_SEPARATOR.toString(),
     'columns.ts とブリッジで列区切りの規則が食い違っている',
   );
+});
+
+t('柵の正規表現（コード・div・閉じ・notes）が columns.ts とブリッジで一致する', () => {
+  const pairs = [
+    ['CODE_FENCE', CODE_FENCE],
+    ['DIV_FENCE', DIV_FENCE],
+    ['DIV_CLOSE', DIV_CLOSE],
+    ['NOTES_OPEN', NOTES_OPEN],
+  ];
+  for (const [name, re] of pairs) {
+    assert.equal(bridgeRegex(name), re.toString(), name + ' が columns.ts とブリッジで食い違っている');
+  }
+});
+
+/* 関数本文（最初の { から対応する } まで）を切り出す */
+const fnBody = (text, signature, label) => {
+  const at = text.indexOf(signature);
+  assert.ok(at >= 0, label + ' に「' + signature + '」が無い');
+  const open = text.indexOf('{', at);
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}' && --depth === 0) return text.slice(open, i + 1);
+  }
+  assert.fail(label + ' の scanFences が閉じていない');
+};
+
+t('scanFences の本文が columns.ts とブリッジで一致する（規則を二重に持たない）', () => {
+  const tsSrc = readFileSync(new URL('../src/text/columns.ts', import.meta.url), 'utf8');
+  const original = fnBody(tsSrc, 'export function scanFences(lines: string[]): FenceScan ', 'columns.ts');
+  const mirror = fnBody(mod[1], 'function scanFences(lines) ', 'ブリッジ');
+  assert.equal(
+    mirror,
+    original,
+    'scanFences の本文が食い違っている。columns.ts を直したらブリッジにも同じ本文を写すこと',
+  );
+});
+
+const bridgeScan = win.__morphoScanFences;
+assert.equal(typeof bridgeScan, 'function', '__morphoScanFences が生えていない');
+/* vm レルムの配列は deepEqual でプロトタイプ不一致になるので JSON で正規化 */
+const plain = (v) => JSON.parse(JSON.stringify(v));
+
+/* ---------- 柵の追跡（入れ子の div） ---------- */
+
+t('入れ子の div を含むノートは、外側の閉じ柵までノートの中', () => {
+  const lines = [
+    '# H', '', '::: notes', 'ノート', '', '::: warning', '注意', ':::', '',
+    '+++', '', '続き', ':::', '', '+++',
+  ];
+  const s = scanFences(lines);
+  assert.deepEqual(
+    s.notes,
+    [false, false, true, true, true, true, true, true, true, true, true, true, true, false, false],
+  );
+  assert.deepEqual(s.notesBlocks, [[2, 12]]);
+  /* ノートの中の +++ は数えず、ノートが閉じた後の +++ は数える */
+  assert.deepEqual(separatorLines(lines.join('\n')), [14]);
+});
+
+t('属性つきの柵・3 段の入れ子・4 個以上のコロンでも深さが合う', () => {
+  const lines = [
+    '::: {.notes}', ':::: {.callout-warning}', '::: inner', 'X', ':::', '+++', '::::', '+++', ':::',
+    '+++',
+  ];
+  const s = scanFences(lines);
+  assert.deepEqual(s.notes, [true, true, true, true, true, true, true, true, true, false]);
+  assert.deepEqual(s.notesBlocks, [[0, 8]]);
+  assert.deepEqual(separatorLines(lines.join('\n')), [9]);
+});
+
+t('閉じていないノートは末尾までノートの中（区切りにしない）', () => {
+  const lines = ['::: notes', '::: warning', 'X', ':::', '+++', '続き'];
+  const s = scanFences(lines);
+  assert.deepEqual(s.notes, [true, true, true, true, true, true]);
+  assert.deepEqual(s.notesBlocks, []);
+  assert.deepEqual(separatorLines(lines.join('\n')), []);
+});
+
+t('開きのない :::（迷子の閉じ柵）は深さを負にしない', () => {
+  const lines = ['+++', ':::', '+++', '::: notes', '+++', ':::', '+++'];
+  const s = scanFences(lines);
+  assert.deepEqual(s.notes, [false, false, false, true, true, true, false]);
+  assert.deepEqual(separatorLines(lines.join('\n')), [0, 2, 6]);
+});
+
+t('別の div の中にあるノートも中身は数えないが、末尾ブロックの候補にはしない', () => {
+  const lines = ['::: warning', '::: notes', '+++', ':::', '+++', ':::', '+++'];
+  const s = scanFences(lines);
+  assert.deepEqual(s.notes, [false, true, true, true, false, false, false]);
+  assert.deepEqual(s.notesBlocks, []);
+  assert.deepEqual(separatorLines(lines.join('\n')), [4, 6]);
+});
+
+t('ノートの中のコードフェンスにある ::: はノートを閉じない', () => {
+  const lines = ['::: notes', '```', ':::', '+++', '```', '+++', ':::', '+++'];
+  const s = scanFences(lines);
+  assert.deepEqual(s.code, [false, true, true, true, true, false, false, false]);
+  assert.deepEqual(s.notes, [true, true, true, true, true, true, true, false]);
+  assert.deepEqual(s.notesBlocks, [[0, 6]]);
+  assert.deepEqual(separatorLines(lines.join('\n')), [7]);
+});
+
+t('引用の中の柵（> ::: notes）も同じ規則で追う', () => {
+  const lines = ['> ::: notes', '> ::: warning', '> +++', '> :::', '> +++', '> :::', '+++'];
+  const s = scanFences(lines);
+  assert.deepEqual(s.notes, [true, true, true, true, true, true, false]);
+  assert.deepEqual(s.notesBlocks, [[0, 5]]);
+});
+
+t('ブリッジの scanFences が columns.ts と同じ結果を返す（固定の corpus）', () => {
+  const corpus = [
+    ['# H', '左', '+++', '右', '::: notes', 'ノート', '::: warning', '注意', ':::', '続き', ':::'],
+    ['::: notes', '```', ':::', '```', '+++', ':::'],
+    ['::: warning', '::: notes', '+++', ':::', ':::', '+++'],
+    [':::', '+++', '::: {.notes}', '::::', '+++'],
+    ['> ::: notes', '> +++', '> :::', '+++'],
+    [],
+    [''],
+  ];
+  for (const lines of corpus) {
+    assert.deepEqual(plain(bridgeScan(lines)), plain(scanFences(lines)), JSON.stringify(lines));
+  }
+});
+
+t('ブリッジの scanFences が columns.ts と同じ結果を返す（乱数の柵列 500 本）', () => {
+  /* 決定的な乱数。落ちたら JSON の行列をそのまま固定ケースへ足す */
+  let seed = 20260901;
+  const rnd = (k) => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed % k;
+  };
+  const ALPHA = [
+    '::: notes', '::: {.notes}', '::: warning', '::: {.callout-tip}', ':::', '::::', ':::: notes',
+    '+++', '＋＋＋', '+ + +', '本文', '', '```', '~~~', '> ::: notes', '> :::', '# H', '***',
+    '::: columns compare', '  :::', ':::notes',
+  ];
+  for (let k = 0; k < 500; k++) {
+    const len = 1 + rnd(14);
+    const lines = [];
+    for (let j = 0; j < len; j++) lines.push(ALPHA[rnd(ALPHA.length)]);
+    assert.deepEqual(plain(bridgeScan(lines)), plain(scanFences(lines)), JSON.stringify(lines));
+  }
 });
 
 /* ---------- 記法の判定 ---------- */
@@ -170,6 +325,67 @@ t('複数スライドで、区切りのある区間だけが展開される', ()
 
 t('*** で作った区間にも効く', () => {
   assert.equal(cols('# A\n\n本文\n\n***\n\n左\n\n+++\n\n右\n'), 2);
+});
+
+/* ---------- ノートの中の入れ子 div（footer-design.md の既存の不具合 6・7） ---------- */
+
+/* 出力の骨組み: 柵と見出しの行だけを抜く */
+const skeleton = (md) => expand(md).md.split('\n').filter((l) => /^(:::|#)/.test(l));
+
+t('ノートに入れ子の div があっても、ノートは列の外に残る（入れ子なしと同じ骨組み）', () => {
+  const flat = '# T\n\n左\n\n+++\n\n右\n\n::: notes\nノート\n:::\n';
+  const nested = '# T\n\n左\n\n+++\n\n右\n\n::: notes\nノート\n\n::: warning\n注意\n:::\n\n続き\n:::\n';
+  assert.equal(cols(nested), 2);
+  assert.deepEqual(labels(nested), []);
+  /* ノートより前の骨組みは入れ子なしと同じ（列 2 本 + 段組みの閉じ = 閉じ柵 3 本） */
+  const flatSk = skeleton(flat);
+  const nestedSk = skeleton(nested);
+  const notesAt = nestedSk.indexOf('::: notes');
+  assert.ok(notesAt > 0, '::: notes が無い');
+  assert.deepEqual(nestedSk.slice(0, notesAt), flatSk.slice(0, flatSk.indexOf('::: notes')));
+  assert.equal(nestedSk.slice(0, notesAt).filter((l) => l === ':::').length, 3, 'ノートが列の中にある');
+  /* ノートブロックは 1 バイトも変えずに通す */
+  assert.ok(expand(nested).md.endsWith('::: notes\nノート\n\n::: warning\n注意\n:::\n\n続き\n:::\n'));
+});
+
+t('入れ子 div を含むノートの中の +++ は区切りにならず、ノートの中に残る', () => {
+  const md = '# T\n\n左\n\n+++\n\n右\n\n::: notes\nノート\n\n::: warning\n注意\n:::\n\n+++\n\n続き\n:::\n';
+  assert.equal(cols(md), 2, 'ノートの中の +++ で列が増えている');
+  assert.deepEqual(labels(md), []);
+  const out = expand(md).md;
+  assert.ok(out.endsWith('::: notes\nノート\n\n::: warning\n注意\n:::\n\n+++\n\n続き\n:::\n'),
+    'ノートの中身が変わっている（続きが本文へ漏れる形）');
+});
+
+t('入れ子が末尾にあるノート・属性つきの柵でも列の外に残る', () => {
+  for (const md of [
+    '# T\n\n左\n\n+++\n\n右\n\n::: notes\nノート\n\n::: warning\n注意\n:::\n:::\n',
+    '# T\n\n左\n\n+++\n\n右\n\n::: {.notes}\n::: {.callout-warning}\n注意\n:::\n\nノート\n:::\n',
+    '# T\n\n左\n\n+++\n\n右\n\n:::: notes\n::: a\n::: b\nX\n:::\n:::\n::::\n',
+  ]) {
+    assert.equal(cols(md), 2, md);
+    const sk = skeleton(md);
+    const notesAt = sk.findIndex((l) => /notes/.test(l));
+    assert.equal(sk.slice(0, notesAt).filter((l) => /^:::+$/.test(l)).length, 3, 'ノートが列の中にある: ' + md);
+  }
+});
+
+t('末尾にノートが 2 つ並んでいれば両方とも列の外に残る', () => {
+  const md = '# T\n\n左\n\n+++\n\n右\n\n::: notes\nA\n:::\n\n::: notes\nB\n:::\n';
+  assert.equal(cols(md), 2);
+  const sk = skeleton(md);
+  const first = sk.indexOf('::: notes');
+  assert.equal(sk.slice(0, first).filter((l) => l === ':::').length, 3, '最初のノートが列の中にある');
+  assert.ok(expand(md).md.endsWith('::: notes\nA\n:::\n\n::: notes\nB\n:::\n'));
+});
+
+t('展開しないときに消費するのは区切りとして数えた行だけ（コードとノートの中は触らない）', () => {
+  const md = '# 実験\n\n![](z.png)\n\n図1: 装置\n\n+++\n\n右\n\n```\n+++\n```\n\n::: notes\n+++\n:::\n';
+  const out = expand(md).md;
+  assert.equal(cols(md), 0);
+  assert.ok(out.includes('```\n+++\n```'), 'コードフェンスの中の +++ が消えた');
+  assert.ok(out.includes('::: notes\n+++\n:::'), 'ノートの中の +++ が消えた');
+  assert.ok(!out.includes('図1: 装置\n\n+++'), '本文の区切りが残っている');
 });
 
 /* ---------- CRLF（Windows 由来の原稿） ----------
