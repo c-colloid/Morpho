@@ -314,6 +314,13 @@ inline を保つなら `pandoc.utils.blocks_to_inlines` を使う。
 なお同じ label の警告は畳まれて `count` になり、残る `text` は最初の1件だけなので、
 どこで起きたかはメッセージ自身に埋めること。
 
+### 18. `a:rPr` の子要素順を崩すと PowerPoint 向けの検証が鳴る
+
+ランに色とリンクを両方付けるとき、`<a:solidFill>` は `<a:hlinkClick>` より
+**前**に置く（ECMA-376 の順は fill → … → hlinkClick）。逆順にすると
+`@ooxml-tools/validate` が 1 件出す（実測。整形式性チェックでは捕まらない）。
+既存のランへ後から色を足す後処理を書くときに踏む。
+
 ## 警告の重要度分類
 
 | パターン | 重要度 | 意味 |
