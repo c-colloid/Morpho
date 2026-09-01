@@ -923,12 +923,21 @@ pptx だけを見るテストでは絶対に捕まらないものが多いので
    `slide1.xml` の `dt` の rPr に `sz` は無いので、実出力を読むだけでは直らない —
    `DeckInfo` に `ftr` / `dt` / `sldNum` の既定サイズ（実測でいずれも 900）を持たせる必要がある
 
-v2 の監査（「多視点監査と仕様の改訂」）でさらに 4 件増えた。**未修正:**
+v2 の監査（「多視点監査と仕様の改訂」）でさらに 4 件増えた。**未修正（5 は 0.16.1 で修正済み）:**
 
 5. **CRLF 原稿で 0.15.0 の記法判定が全滅する。** `+++`（`COL_SEP`）・`***`（`HR`）・`:::`（`DIV_CLOSE`）の
-   判定 regex はいずれも `\r` 付きの行に一致しない（regex 単体と、フッター合成経路での不発は実測。
-   `expandColumns` 単独経路の end-to-end は未実測）。pandoc 自身は CRLF を正しく扱うので、
-   壊すのは Morpho の JS 前処理だけ。`cursorSlide.ts` の境界判定も同型の疑いがある（未実測）
+   判定 regex はいずれも `\r` 付きの行に一致しない。pandoc 自身は CRLF を正しく扱うので、
+   壊すのは Morpho の JS 前処理だけ。**→ 0.16.1 で修正済み。** `expandColumns` 単独経路の
+   end-to-end も実測で再現した（Title and Content・本文枠 1 つ・本文に生の `+++`・警告も診断もゼロ。
+   pandoc 自身は同じ記法を LF / CRLF で渡すと slide1.xml が完全一致）。`cursorSlide.ts` も同型で、
+   `***` 単独の境界が CRLF で消えていた（`# ` が続く形は h1 側で救われるので見えにくい）。
+   「判定のときだけ行末の `\r` を外し、オフセットは元の行の長さで数える」規約を
+   `app/src/text/lineEnding.ts` に置き、`expandColumns`（派生 md は丸ごと落とす）/ `columns.ts` /
+   `cursorSlide.ts` / `slideSync.ts` を揃えた。検査は check-columns / check-cursor / check-deck の
+   CRLF 8 件（CRLF 原稿が LF 版と同じシーンになることを本物の pandoc で見る）。
+   残り: `lineBreakEdit.ts` の判定（notes の閉じ柵が読めずノート後の段落が見つからない・
+   空行なしで直結した `+++` が段落へ溶ける・実測）と、ノート編集・改行編集の書き戻しが
+   LF で書いて改行コードが混在する件（`app/CHANGELOG.md` 0.16.1）
 6. **`expandColumns` の tail 検出（`bridgeHtml.ts` の末尾閉じ柵から遡る方式）が
    `::: notes` 内の入れ子 div で破れる。** `# H / 左 / +++ / 右 / ::: notes 内に入れ子 div` で
    notes ブロックが最終列に包まれ、1 枚 → 2 枚 + ノート本文の汚染（非 INFO 警告 0・実測）。
@@ -983,7 +992,8 @@ CLAUDE.md 落とし穴 9 のとおり「Open XML SDK を通っても PowerPoint 
   無いときの挙動（basedOn=BodyText・12pt 自動生成のはず — 未実測）
 - **rels の Target に PUA が残った pptx を実機 PowerPoint が開くか**（validate は 0 件で通す・実測）。
   v2 の抽出側ガードで作らないことが第一の防御
-- **`cursorSlide.ts` が CRLF 原稿で正しいか**（既存の不具合 5 の同型疑い・未実測）
+- ~~`cursorSlide.ts` が CRLF 原稿で正しいか~~ → 実測で `***` 単独の境界が消えることを確認し、
+  0.16.1 で修正済み（既存の不具合 5）
 
 ### 決着した論点（前半の記述を訂正したもの）
 
