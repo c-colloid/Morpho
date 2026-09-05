@@ -225,6 +225,7 @@ export function SlideSurface({
         <TableBox
           key={'tb' + i}
           table={t}
+          deck={deck}
           scale={scale}
           color={deck.colors.dk1 ?? '#000000'}
           annotate={!!onParagraphLongPress}
@@ -288,15 +289,115 @@ export function SlideSurface({
 }
 
 /**
- * 表の枠。
+ * 表。
  *
- * 実出力に入っているのは枠の矩形・列幅・行数だけで、行高は h="0"（中身任せ）、
+ * 実出力に入っているのは枠の矩形・列幅・セルの段落で、行高は h="0"（中身任せ）、
  * 罫線と塗りは組み込みの表スタイル参照（pandoc 既定テンプレートでは実体が
- * パッケージに無い。いずれも実測）。中身を描けるふりをせず、破線の枠と
- * 列の区切り、行×列のラベルで「ここに表がある」ことだけを示す。
- * 枠は本文プレースホルダぶんの予約で、中身の量には一切追随しない（実測）。
+ * パッケージに無い。いずれも実測）。枠は本文プレースホルダぶんの予約で、
+ * 中身の量には追随しない（実測）ので、高さは中身で決めて枠幅だけを使う。
+ * セルの字は defaultTextStyle（表はプレースホルダを継承しない。pandoc 既定 18pt）、
+ * 揃えはセルの pPr algn（原稿の `:---:`）。ヘッダ行は太字と薄い塗りで区別する。
+ * 中身の無い古いシーン（rows 無し）では破線の枠と行×列のラベルへ落ちる。
  */
 function TableBox({
+  table,
+  deck,
+  scale,
+  color,
+  annotate,
+}: {
+  table: SlideTable;
+  deck: DeckInfo;
+  scale: number;
+  color: string;
+  /** 編集面でだけラベルを出す。スライドショーには編集用の注記を出さない */
+  annotate: boolean;
+}) {
+  const px = (emu: number) => (emu / EMU_PER_PT) * scale;
+  const line = Math.max(1, scale);
+  const rows = table.rows;
+  if (!rows) return <TableFrame table={table} scale={scale} color={color} annotate={annotate} />;
+
+  /* 列幅は pandoc が 1pt 刻みに丸めるので合計が枠幅と一致しないことがある（実測）。
+     枠幅に比例配分して収める。列幅が無ければ等分 */
+  const nCols = Math.max(table.colWidths.length, ...rows.map((r) => r.cells.length), 1);
+  const raw = Array.from({ length: nCols }, (_, i) => table.colWidths[i] ?? 0);
+  const sum = raw.reduce((a, b) => a + b, 0);
+  const widths = raw.map((w) => (sum > 0 ? (w / sum) * table.w : table.w / nCols));
+  const fontSize = ((deck.defaultSz ?? 1800) / 100) * scale;
+  /* セル内余白は OOXML 既定（lIns/rIns 91440 EMU = 7.2pt、tIns/bIns 45720 = 3.6pt） */
+  const padX = px(91440);
+  const padY = px(45720);
+  const accent = deck.colors.accent1 ?? color;
+
+  return (
+    <View
+      pointerEvents="none"
+      style={{
+        position: 'absolute',
+        left: px(table.x),
+        top: px(table.y),
+        width: px(table.w),
+        borderWidth: line,
+        borderColor: withAlpha(color, 0.35),
+      }}
+    >
+      {rows.map((row, ri) => (
+        <View
+          key={ri}
+          style={{
+            flexDirection: 'row',
+            borderTopWidth: ri === 0 ? 0 : line,
+            borderTopColor: withAlpha(color, 0.2),
+            backgroundColor: row.header ? withAlpha(accent, 0.15) : undefined,
+          }}
+        >
+          {widths.map((w, ci) => (
+            <View
+              key={ci}
+              style={{
+                width: px(w),
+                paddingHorizontal: padX,
+                paddingVertical: padY,
+                borderLeftWidth: ci === 0 ? 0 : line,
+                borderLeftColor: withAlpha(color, 0.2),
+              }}
+            >
+              {(row.cells[ci] ?? []).map((p, pi) => (
+                <Text
+                  key={pi}
+                  style={{
+                    fontSize,
+                    lineHeight: fontSize * 1.25,
+                    color,
+                    fontWeight: row.header ? '600' : 'normal',
+                    textAlign:
+                      p.algn === 'ctr' ? 'center'
+                      : p.algn === 'r' ? 'right'
+                      : p.algn === 'just' ? 'justify'
+                      : 'left',
+                  }}
+                >
+                  {p.runs.map((run, ri2) => (
+                    <Text key={ri2} style={surfaceRunStyle(run, fontSize)}>
+                      {run.text}
+                    </Text>
+                  ))}
+                </Text>
+              ))}
+            </View>
+          ))}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+/**
+ * 表の枠だけ（0.14.0 の描き方）。セルの中身を持たない古いシーンのための後退先。
+ * 破線の枠と列の区切り、行×列のラベルで「ここに表がある」ことだけを示す。
+ */
+function TableFrame({
   table,
   scale,
   color,
@@ -305,7 +406,6 @@ function TableBox({
   table: SlideTable;
   scale: number;
   color: string;
-  /** 編集面でだけラベルを出す。スライドショーには編集用の注記を出さない */
   annotate: boolean;
 }) {
   const px = (emu: number) => (emu / EMU_PER_PT) * scale;
