@@ -383,10 +383,20 @@ export interface ConvertOptions {
   groups?: Array<{ id: string; contentIndex: number; memberIds: string[] }>;
   /**
    * 文字サイズの上書き（1/100pt）。pptx のみ。
-   * titleSz / bodySz はマスターの titleStyle / bodyStyle を書き換え、
-   * coverTitleSz は表紙スライドの ctrTitle に lstStyle を注入する
+   * 書き出しでは titleSz / bodySz がマスターの titleStyle / bodyStyle を書き換え、
+   * coverTitleSz は表紙スライドの ctrTitle に lstStyle を注入する。
+   * プレビューではマスターを書き換えない（adjustDeck が RN 側で重ねる）。
+   * どちらでも titleSz は、表・図と並ぶスライド（Content with Caption）の
+   * タイトルを狭い枠へ合わせるときの目標サイズになる（applyTitleFitZip）
    */
   textSizes?: { titleSz?: number; coverTitleSz?: number; coverSubSz?: number; bodySz?: number[] };
+  /**
+   * 表・図と並ぶスライド（Content with Caption）のタイトルの置き方。pptx のみ。
+   * 'narrow'（既定）: レイアウトの狭い枠のまま、文字だけ他のスライドに揃える。
+   * 'band': 他のスライドと同じ全幅の帯（マスターの title 枠）へ移し、
+   * 表・図と説明文をその下へ送る（装飾が完全に揃う代わりに表・図の高さが減る）
+   */
+  captionTitle?: 'narrow' | 'band';
   /**
    * フッター（出典・注釈）の帯と体裁。pptx のみ。他形式では無視される。
    * 座標は解決済みの EMU で渡す（装飾と同じ流儀 — テンプレートの帯を読むのも

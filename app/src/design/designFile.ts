@@ -31,6 +31,7 @@ export function serializeDesign(design: DesignData): string {
       ...(design.text ? { text: design.text } : {}),
       /* フッターは体裁だけ。文言は原稿の front matter にあるので含めない */
       ...(design.footer ? { footer: design.footer } : {}),
+      ...(design.captionTitle === 'band' ? { captionTitle: 'band' } : {}),
     },
     null,
     2,
@@ -159,6 +160,7 @@ export function parseDesignFile(text: string): DesignData | null {
   if (sizes) out.text = sizes;
   const footer = sanitizeFooterStyle(o.footer);
   if (footer) out.footer = footer;
+  if (o.captionTitle === 'band') out.captionTitle = 'band';
   return out;
 }
 

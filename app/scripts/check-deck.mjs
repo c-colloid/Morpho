@@ -839,4 +839,150 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
   });
 }
 
+/* ---------- 表・図と並ぶスライド（Content with Caption）のタイトル ---------- */
+{
+  const TABLE = '| a | b |\n|---|---|\n| 1 | 2 |\n';
+  const conv = async (md) => {
+    const r = await convert(
+      { from: 'markdown-yaml_metadata_block', to: 'pptx', 'output-file': 't.pptx' },
+      md, {},
+    );
+    assert.ok(r.files['t.pptx'], 'stderr: ' + (r.stderr || ''));
+    return unzipSync(new Uint8Array(await r.files['t.pptx'].arrayBuffer()));
+  };
+  const titleOf = (scene, i) => scene.slides[i].shapes.find((s) => s.placeholder === 'title');
+
+  const short = await conv('# 見出し\n\n本文。\n\n' + TABLE);
+  const before = win.__morphoParsePptxZip(short);
+  t('段落 → 表 は Content with Caption になり、素の pandoc ではタイトルが 15pt・下寄せ（前提の実測）', () => {
+    assert.equal(before.slideCount, 1);
+    assert.equal(before.slides[0].layout, 'Content with Caption');
+    const tt = titleOf(before, 0);
+    assert.equal(tt.lvlStyle[0].sz, 1500);
+    assert.equal(tt.anchor, 'b');
+    assert.equal(tt.lvlStyle[0].algn, 'l');
+  });
+  const shrunk = win.__morphoApplyTitleFitZip(short, null);
+  const after = win.__morphoParsePptxZip(short);
+  t('短いタイトルはマスターと同じ 33pt・中央揃え・中央寄せになり、太字が打ち消される', () => {
+    assert.equal(Array.from(shrunk).length, 0, '短いタイトルは縮めない');
+    const tt = titleOf(after, 0);
+    assert.equal(tt.lvlStyle[0].sz, 3300);
+    assert.equal(tt.anchor, 'ctr');
+    assert.equal(tt.lvlStyle[0].algn, 'ctr');
+    /* 枠はレイアウトのまま（右の表が全高を使える） */
+    assert.equal(tt.frame.w, 3008313);
+    const xml = strFromU8(short['ppt/slides/slide1.xml']);
+    assert.ok(xml.includes('<a:lvl1pPr algn="ctr"><a:defRPr sz="3300" b="0"/></a:lvl1pPr>'), xml);
+    assert.ok(xml.includes('<a:bodyPr anchor="ctr"/>'), xml);
+  });
+  t('表の枠と本文（idx=2）は触らない', () => {
+    assert.equal(after.slides[0].tables.length, 1);
+    assert.deepEqual(after.slides[0].tables, before.slides[0].tables);
+    const body = after.slides[0].shapes.find((s) => s.placeholder === 'body');
+    assert.equal(body.lvlStyle[0].sz, 1050);
+  });
+
+  const long = await conv('# 二十文字のかなり長い見出しを狭い枠に収める例\n\n本文。\n\n' + TABLE);
+  const shrunkLong = win.__morphoApplyTitleFitZip(long, null);
+  const longScene = win.__morphoParsePptxZip(long);
+  t('長いタイトルは枠に収まるまでだけ縮める（33pt 未満・レイアウト既定の 15pt 以上）', () => {
+    const tt = titleOf(longScene, 0);
+    assert.ok(tt.lvlStyle[0].sz < 3300 && tt.lvlStyle[0].sz >= 1500, String(tt.lvlStyle[0].sz));
+    assert.equal(Array.from(shrunkLong).length, 1);
+    assert.equal(shrunkLong[0].from, 3300);
+    assert.equal(shrunkLong[0].to, tt.lvlStyle[0].sz);
+  });
+
+  const huge = await conv('# ' + '長'.repeat(80) + '\n\n本文。\n\n' + TABLE);
+  win.__morphoApplyTitleFitZip(huge, null);
+  t('どうしても収まらないタイトルはレイアウト既定（15pt）で止まる — pandoc より小さくはしない', () => {
+    assert.equal(titleOf(win.__morphoParsePptxZip(huge), 0).lvlStyle[0].sz, 1500);
+  });
+
+  const sized = await conv('# 見出し\n\n本文。\n\n' + TABLE);
+  win.__morphoApplyTitleFitZip(sized, 2000);
+  t('文字サイズ設定（見出し 20pt）を目標にする（プレビュー経路）', () => {
+    assert.equal(titleOf(win.__morphoParsePptxZip(sized), 0).lvlStyle[0].sz, 2000);
+  });
+
+  const exported = await conv('# 見出し\n\n本文。\n\n' + TABLE);
+  const exportedZip = unzipSync(new Uint8Array(
+    win.__morphoApplyTextSizes(zipSync(exported), { titleSz: 2400 })));
+  win.__morphoApplyTitleFitZip(exportedZip, null);
+  t('書き出し経路: applyTextSizes の後ならマスターの値（24pt）が目標になる', () => {
+    assert.equal(titleOf(win.__morphoParsePptxZip(exportedZip), 0).lvlStyle[0].sz, 2400);
+  });
+
+  const plain = await conv('# 見出し\n\n本文。\n\n***\n\n# 表だけ\n\n' + TABLE + '\n***\n\n左\n\n+++\n\n右\n');
+  const plainBefore = Object.fromEntries(
+    Object.keys(plain).filter((k) => /slides\/slide\d+\.xml$/.test(k)).map((k) => [k, strFromU8(plain[k])]));
+  win.__morphoApplyTitleFitZip(plain, null);
+  t('Title and Content / 表だけ / Two Content のスライドは 1 バイトも変えない', () => {
+    for (const k of Object.keys(plainBefore)) assert.equal(strFromU8(plain[k]), plainBefore[k], k);
+  });
+
+  /* 帯モード（文書の設定 captionTitle: 'band'） */
+  const bandZip = await conv('# 見出し\n\n本文。\n\n' + TABLE);
+  const bandBefore = win.__morphoParsePptxZip(bandZip);
+  win.__morphoApplyTitleFitZip(bandZip, null, 'band');
+  const bandAfter = win.__morphoParsePptxZip(bandZip);
+  t('band: タイトルがマスターの title 枠（全幅）へ移り、字サイズ・揃え・アンカーもマスターと同じ', () => {
+    const tt = titleOf(bandAfter, 0);
+    assert.deepEqual({ x: tt.frame.x, y: tt.frame.y, w: tt.frame.w, h: tt.frame.h },
+      { x: 457200, y: 205979, w: 8229600, h: 857250 });
+    assert.equal(tt.lvlStyle[0].sz, 3300);
+    assert.equal(tt.lvlStyle[0].algn, 'ctr');
+    assert.equal(tt.anchor, 'ctr');
+  });
+  t('band: 表と説明文は本文枠の上端（マスター body の y）まで下がり、下端は変わらない', () => {
+    const tb0 = bandBefore.slides[0].tables[0], tb = bandAfter.slides[0].tables[0];
+    assert.equal(tb.y, 1200151);
+    assert.equal(tb.y + tb.h, tb0.y + tb0.h, '表の下端');
+    assert.equal(tb.x, tb0.x);
+    const b0 = bandBefore.slides[0].shapes.find((s) => s.placeholder === 'body');
+    const b = bandAfter.slides[0].shapes.find((s) => s.placeholder === 'body');
+    assert.equal(b.frame.y, 1200151);
+    assert.equal(b.frame.y + b.frame.h, b0.frame.y + b0.frame.h, '説明文の下端');
+    assert.equal(b.lvlStyle[0].sz, 1050, '説明文の字サイズは触らない');
+  });
+  const bandLong = await conv('# 二十文字のかなり長い見出しを狭い枠に収める例\n\n本文。\n\n' + TABLE);
+  const bandLongShrunk = win.__morphoApplyTitleFitZip(bandLong, null, 'band');
+  t('band: 長い見出しも縮めない（枠が他のスライドと同じなので同じ大きさにする）', () => {
+    assert.equal(Array.from(bandLongShrunk).length, 0);
+    assert.equal(titleOf(win.__morphoParsePptxZip(bandLong), 0).lvlStyle[0].sz, 3300);
+  });
+  {
+    const PNGB = Uint8Array.from(atob(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='), (c) => c.charCodeAt(0));
+    const r = await convert(
+      { from: 'markdown-yaml_metadata_block', to: 'pptx', 'output-file': 'p.pptx' },
+      '# 見出し\n\n本文。\n\n![](a.png)\n', { 'a.png': new Blob([PNGB]) },
+    );
+    const pz = unzipSync(new Uint8Array(await r.files['p.pptx'].arrayBuffer()));
+    const p0 = win.__morphoParsePptxZip(pz);
+    win.__morphoApplyTitleFitZip(pz, null, 'band');
+    const p1 = win.__morphoParsePptxZip(pz);
+    t('band: 画像は本文枠の上端へ下がり、縦横比を保って縮む', () => {
+      const i0 = p0.slides[0].images[0], i1 = p1.slides[0].images[0];
+      assert.equal(p0.slides[0].layout, 'Content with Caption');
+      assert.ok(i0.y < 1200151, '前提: 画像は帯に食い込んでいる');
+      assert.equal(i1.y, 1200151);
+      assert.ok(i1.h < i0.h && i1.w < i0.w);
+      assert.ok(Math.abs(i1.w / i1.h - i0.w / i0.h) < 0.01, '縦横比');
+    });
+  }
+  const bandPlain = await conv('# 見出し\n\n本文。\n\n***\n\n左\n\n+++\n\n右\n');
+  const bandPlainBefore = Object.fromEntries(
+    Object.keys(bandPlain).filter((k) => /slides\/slide\d+\.xml$/.test(k)).map((k) => [k, strFromU8(bandPlain[k])]));
+  win.__morphoApplyTitleFitZip(bandPlain, null, 'band');
+  t('band: Content with Caption 以外のスライドは 1 バイトも変えない', () => {
+    for (const k of Object.keys(bandPlainBefore)) assert.equal(strFromU8(bandPlain[k]), bandPlainBefore[k], k);
+  });
+
+  t('fitTitleSz: 目標が下限以下なら目標のまま（書き手の指定が勝つ）', () => {
+    assert.equal(win.__morphoFitTitleSz(['見出し'], 200, 60, 1200, 1500), 1200);
+  });
+}
+
 console.log(`\n${n} 件すべて通過`);

@@ -1142,6 +1142,311 @@ function applyTextSizes(bytes, sizes) {
 }
 window.__morphoApplyTextSizes = applyTextSizes;
 
+/* ---- 表・図と並ぶスライド（Content with Caption）のタイトル ----
+   pandoc は「段落 → 表 / 画像」を Content with Caption に載せる（実測）。
+   既定テンプレートのこのレイアウトは、タイトルを左上の狭い枠（3.29×0.95 in）に
+   置き、レイアウト側の lstStyle が 15pt・太字・左寄せ・下寄せに固定している
+   （マスターは 33pt・中央揃え・中央寄せ）。右の表・図が全高を使えるので枠が
+   狭いのは合理的だが、書き手は段落と表を書いただけなのにそのスライドだけ
+   タイトルの文字が半分以下になり、タイトルの帯に合わせて置いた装飾
+   （アクセント線・番号バッジ）と噛み合わなくなる。
+   ここでは枠はそのまま、文字だけを他のスライドと同じ既定（マスターの
+   titleStyle と title 枠のアンカー）に揃え、枠に収まらないときだけ必要な分
+   縮める。下限はレイアウトの既定 — pandoc が出す大きさより小さくはしない。
+   スライド側の lstStyle / bodyPr へ明示するので、プレビュー（同じ zip を解析
+   する）と書き出しは同じ 1 つの結果になる。 */
+/* 行高と幅の見積もりは安全側に取る。プレビューの lineHeight は 1.25 だが、
+   LibreOffice の実描画（IPA ゴシック）で 22 文字を 20pt にすると 3 行に折れて
+   枠からはみ出た（1.25・余白なしの見積もりでは 2 行と数えていた）。
+   日本語フォントの行送りは欧文より大きく、折り返し位置も数 % 手前に来る */
+var TITLE_LINE_HEIGHT = 1.35;
+var TITLE_WIDTH_MARGIN = 0.9;    /* 内側幅のこの割合に収まるときだけ 1 行と数える */
+var TITLE_FIT_MIN = 1200;       /* レイアウトが既定サイズを持たないときの下限（1/100pt） */
+var EMU_PER_PT = 12700;
+
+/* 1 文字の幅（em）。プレビューの折り返しと同じ程度の近似で、実測ではない。
+   PowerPoint のフォントメトリクスとの一致は保証しない（README の既知の制約） */
+function charEm(cp) {
+  if (cp === 32) return 0.3;
+  if (cp >= 0xFF61 && cp <= 0xFF9F) return 0.5;   /* 半角カナ */
+  if (cp >= 0x1100) return 1.0;                    /* CJK・全角記号・かな */
+  if (cp >= 65 && cp <= 90) return 0.68;           /* 大文字 */
+  if (cp >= 48 && cp <= 57) return 0.55;           /* 数字 */
+  if (cp >= 97 && cp <= 122) return 0.52;          /* 小文字 */
+  return 0.5;
+}
+function textEm(s) {
+  var em = 0;
+  for (var i = 0; i < s.length; i++) {
+    var cp = s.charCodeAt(i);
+    if (cp >= 0xD800 && cp <= 0xDBFF) { em += 1.0; i++; continue; } /* サロゲート対（絵文字等） */
+    em += charEm(cp);
+  }
+  return em;
+}
+
+/* txBody の行（段落と a:br で分ける）の文字列 */
+function titleTextLines(txBodyXml) {
+  var lines = [];
+  var pre = /<a:p>([\\s\\S]*?)<\\/a:p>/g;
+  var pm;
+  while ((pm = pre.exec(txBodyXml)) !== null) {
+    var parts = pm[1].split(/<a:br\\b[^>]*\\/>|<a:br\\b[^>]*>[\\s\\S]*?<\\/a:br>/);
+    for (var i = 0; i < parts.length; i++) {
+      var text = '';
+      var tre = /<a:t>([\\s\\S]*?)<\\/a:t>/g;
+      var tm;
+      while ((tm = tre.exec(parts[i])) !== null) text += decodeXml(tm[1]);
+      lines.push(text);
+    }
+  }
+  return lines;
+}
+
+/* 目標サイズから 1pt ずつ下げ、枠（内側の pt 寸法）に収まる最初のサイズ。
+   下限まで収まらなければ下限。目標が下限以下ならそのまま（書き手の指定が勝つ） */
+function fitTitleSz(lines, innerWPt, innerHPt, targetSz, floorSz) {
+  if (targetSz <= floorSz) return targetSz;
+  for (var sz = targetSz; sz >= floorSz; sz -= 100) {
+    var pt = sz / 100;
+    var rows = 0;
+    for (var i = 0; i < lines.length; i++) {
+      rows += Math.max(1, Math.ceil((textEm(lines[i]) * pt) / (innerWPt * TITLE_WIDTH_MARGIN)));
+    }
+    if (rows * pt * TITLE_LINE_HEIGHT <= innerHPt) return sz;
+  }
+  return floorSz;
+}
+window.__morphoFitTitleSz = fitTitleSz;
+
+/* <p:ph type="title"> を持つ <p:sp> の文字列（無ければ null） */
+function titleSpOf(xml) {
+  var re = /<p:sp>[\\s\\S]*?<\\/p:sp>/g;
+  var m;
+  while ((m = re.exec(xml)) !== null) {
+    if (/<p:ph\\b[^>]*\\btype="title"/.test(m[0])) return m[0];
+  }
+  return null;
+}
+function bodyPrAttrs(spXml) {
+  var m = /<a:bodyPr\\b([^>]*?)\\s*\\/?>/.exec(spXml || '');
+  return m ? m[1] : null;
+}
+function attrOf(attrs, name) {
+  if (attrs == null) return null;
+  var m = new RegExp('\\\\b' + name + '="([^"]*)"').exec(attrs);
+  return m ? m[1] : null;
+}
+
+/* zip（unzipSync の結果）を直接書き換える。返り値は縮めたスライドの記録
+   [{ slide, from, to }]（診断用。縮めなかったスライドは含めない）。
+   titleSzOverride は文書の文字サイズ設定（1/100pt）。プレビューではマスターを
+   書き換えない（adjustDeck が RN 側で重ねる）ので、ここで直接受け取る。
+   書き出しでは applyTextSizes の後に呼ぶので null でよい（マスターが既に持つ） */
+/* 帯モード: 表・図（graphicFrame / pic）と説明文（idx=2 の sp）の上端を bandTop まで
+   下げ、高さをその分減らす。bandTop より下にあるものは触らない */
+function lowerCaptionContent(xml, layout, bandTop) {
+  var layoutFrameOf = function (idx) {
+    if (!layout.xml) return null;
+    var re = /<p:sp>[\\s\\S]*?<\\/p:sp>/g;
+    var m;
+    while ((m = re.exec(layout.xml)) !== null) {
+      var ph = /<p:ph\\b([^>]*)/.exec(m[0]);
+      if (!ph) continue;
+      var id = /\\bidx="(\\d+)"/.exec(ph[1]);
+      if (id && Number(id[1]) === idx) return parseXfrm(m[0]);
+    }
+    return null;
+  };
+  var lower = function (f, keepAspect) {
+    if (!f || f.y >= bandTop) return null;
+    var h = f.h - (bandTop - f.y);
+    if (h <= 0) return null;
+    if (keepAspect) {
+      var k = h / f.h;
+      return { x: f.x, y: bandTop, w: Math.round(f.w * k), h: Math.round(h) };
+    }
+    return { x: f.x, y: bandTop, w: f.w, h: h };
+  };
+  /* 表: 自前の <p:xfrm> を持つ */
+  xml = xml.replace(/<p:graphicFrame\\b[\\s\\S]*?<\\/p:graphicFrame>/g, function (gf) {
+    var xf = /<p:xfrm\\b[^>]*>([\\s\\S]*?)<\\/p:xfrm>/.exec(gf);
+    var nf = xf ? lower(parseXfrm(xf[1]), false) : null;
+    if (!nf) return gf;
+    return gf.replace(xf[0], function () {
+      return '<p:xfrm><a:off x="' + nf.x + '" y="' + nf.y + '"/><a:ext cx="' + nf.w + '" cy="' + Math.round(nf.h) + '"/></p:xfrm>';
+    });
+  });
+  /* 画像: spPr の <a:xfrm>。縦横比を保って縮める */
+  xml = xml.replace(/<p:pic>[\\s\\S]*?<\\/p:pic>/g, function (pic) {
+    var xf = /<a:xfrm>[\\s\\S]*?<\\/a:xfrm>/.exec(pic);
+    var nf = xf ? lower(parseXfrm(xf[0]), true) : null;
+    if (!nf) return pic;
+    return pic.replace(xf[0], function () { return xfrmXml(nf); });
+  });
+  /* 説明文: idx=2 の sp。座標はレイアウトから継承しているので明示する */
+  xml = xml.replace(/<p:sp>[\\s\\S]*?<\\/p:sp>/g, function (sp) {
+    var ph = /<p:ph\\b([^>]*)/.exec(sp);
+    if (!ph || /\\btype="title"/.test(ph[1])) return sp;
+    var id = /\\bidx="(\\d+)"/.exec(ph[1]);
+    if (!id) return sp;
+    var cur = parseXfrm(sp) || layoutFrameOf(Number(id[1]));
+    var nf = lower(cur, false);
+    if (!nf) return sp;
+    if (/<a:xfrm>[\\s\\S]*?<\\/a:xfrm>/.test(sp)) {
+      return sp.replace(/<a:xfrm>[\\s\\S]*?<\\/a:xfrm>/, function () { return xfrmXml(nf); });
+    }
+    if (/<p:spPr\\s*\\/>/.test(sp)) {
+      return sp.replace(/<p:spPr\\s*\\/>/, function () { return '<p:spPr>' + xfrmXml(nf) + '</p:spPr>'; });
+    }
+    return sp.replace(/<p:spPr>/, function () { return '<p:spPr>' + xfrmXml(nf); });
+  });
+  return xml;
+}
+
+function xfrmXml(f) {
+  return '<a:xfrm><a:off x="' + Math.round(f.x) + '" y="' + Math.round(f.y) + '"/>' +
+    '<a:ext cx="' + Math.round(f.w) + '" cy="' + Math.round(f.h) + '"/></a:xfrm>';
+}
+/* <p:ph type="body"> を持つ <p:sp>（マスターの本文枠）。無ければ null */
+function bodySpOf(xml) {
+  var re = /<p:sp>[\\s\\S]*?<\\/p:sp>/g;
+  var m;
+  while ((m = re.exec(xml)) !== null) {
+    if (/<p:ph\\b[^>]*\\btype="body"/.test(m[0])) return m[0];
+  }
+  return null;
+}
+
+/* mode === 'band'（文書の設定）: 枠も他のスライドと同じにする。タイトルは
+   マスターの title 枠へ移し、表・図（idx=1）と説明文（idx=2）はマスターの本文枠の
+   上端まで下げる。装飾が完全に揃う代わりに、表・図の高さがその分減る。
+   画像は縦横比を保って縮める（pandoc が枠に合わせて決めた寸法を、新しい高さに
+   合わせて等比で縮小する）。既定（'narrow'）はここを通らない */
+function applyTitleFitZip(zip, titleSzOverride, mode) {
+  var dec2 = new TextDecoder();
+  var shrunk = [];
+  var band = mode === 'band';
+  var masterName = Object.keys(zip).filter(function (n) {
+    return /^ppt\\/slideMasters\\/slideMaster\\d+\\.xml$/.test(n);
+  })[0];
+  if (!masterName) return shrunk;
+  var master = dec2.decode(zip[masterName]);
+  var ts = /<p:titleStyle>[\\s\\S]*?<\\/p:titleStyle>/.exec(master);
+  var tsLvl = ts ? /<a:lvl1pPr\\b([^>]*)>([\\s\\S]*?)<\\/a:lvl1pPr>/.exec(ts[0]) : null;
+  var masterSz = tsLvl ? attrOf((/<a:defRPr\\b([^>]*)/.exec(tsLvl[2]) || [])[1], 'sz') : null;
+  var targetSz = titleSzOverride != null ? Number(titleSzOverride) : masterSz ? Number(masterSz) : 3300;
+  var masterAlgn = tsLvl ? attrOf(tsLvl[1], 'algn') : null;
+  var masterBold = tsLvl ? attrOf((/<a:defRPr\\b([^>]*)/.exec(tsLvl[2]) || [])[1], 'b') : null;
+  var masterTitleSp = titleSpOf(master);
+  var masterBodyPr = bodyPrAttrs(masterTitleSp);
+  var masterAnchor = attrOf(masterBodyPr, 'anchor');
+  var masterTitleFrame = masterTitleSp ? parseXfrm(masterTitleSp) : null;
+  var masterBodySp = bodySpOf(master);
+  var masterBodyFrame = masterBodySp ? parseXfrm(masterBodySp) : null;
+  /* 帯モードの本文上端。マスターに本文枠が無ければ title 枠の下 + 0.05in */
+  var bandTop = masterBodyFrame ? masterBodyFrame.y
+    : masterTitleFrame ? masterTitleFrame.y + masterTitleFrame.h + 45720 : null;
+  if (band && !(masterTitleFrame && bandTop != null)) band = false;
+
+  var layoutCache = {};
+  var layoutOf = function (slidePath) {
+    var relPath = slidePath.replace(/^ppt\\/slides\\//, 'ppt/slides/_rels/') + '.rels';
+    if (!zip[relPath]) return null;
+    var hit = /Target="([^"]*slideLayout\\d+\\.xml)"/.exec(dec2.decode(zip[relPath]));
+    if (!hit) return null;
+    var target = hit[1].replace(/^\\.\\.\\//, 'ppt/');
+    if (!(target in layoutCache)) {
+      if (!zip[target]) { layoutCache[target] = null; }
+      else {
+        var lx = dec2.decode(zip[target]);
+        var cSld = /<p:cSld\\b[^>]*\\sname="([^"]*)"/.exec(lx);
+        layoutCache[target] = { name: cSld ? decodeXml(cSld[1]) : null, titleSp: titleSpOf(lx), xml: lx };
+      }
+    }
+    return layoutCache[target];
+  };
+
+  Object.keys(zip).forEach(function (name) {
+    if (!/^ppt\\/slides\\/slide\\d+\\.xml$/.test(name)) return;
+    var layout = layoutOf(name);
+    if (!layout || layout.name !== 'Content with Caption') return;
+    var xml = dec2.decode(zip[name]);
+    var sp = titleSpOf(xml);
+    if (!sp) return;
+    /* スライド側に既に階層既定があれば触らない（pandoc は空で出す。実測） */
+    if (!/<a:lstStyle\\s*\\/>/.test(sp)) return;
+    var frame = band ? masterTitleFrame
+      : parseXfrm(sp) || (layout.titleSp ? parseXfrm(layout.titleSp) : null) || masterTitleFrame;
+    if (!frame) return;
+    /* 下限 = レイアウトの既定（pandoc が出す大きさ）。無ければ固定の下限 */
+    var layoutLst = layout.titleSp ? parseLvlStyle(layout.titleSp) : null;
+    var floorSz = layoutLst && layoutLst[0] && layoutLst[0].sz ? layoutLst[0].sz : TITLE_FIT_MIN;
+    /* 内側の寸法。余白は スライド → レイアウト → マスター の順に継承、既定は OOXML の値 */
+    var bps = [bodyPrAttrs(sp), bodyPrAttrs(layout.titleSp), masterBodyPr];
+    var ins = function (attr, def) {
+      for (var i = 0; i < bps.length; i++) {
+        var v = attrOf(bps[i], attr);
+        if (v != null) return Number(v);
+      }
+      return def;
+    };
+    var innerW = (frame.w - ins('lIns', 91440) - ins('rIns', 91440)) / EMU_PER_PT;
+    var innerH = (frame.h - ins('tIns', 45720) - ins('bIns', 45720)) / EMU_PER_PT;
+    if (!(innerW > 0) || !(innerH > 0)) return;
+    var tx = /<p:txBody>([\\s\\S]*?)<\\/p:txBody>/.exec(sp);
+    var lines = titleTextLines(tx ? tx[1] : '');
+    /* 帯モードは枠が他のスライドと同じなので縮めない（同じ条件 = 同じ大きさ） */
+    var sz = band ? targetSz : fitTitleSz(lines, innerW, innerH, targetSz, floorSz);
+
+    var out = sp;
+    if (band) {
+      /* 枠をマスターの title 枠へ。スライド側に xfrm があれば置換、無ければ spPr に足す */
+      if (/<a:xfrm>[\\s\\S]*?<\\/a:xfrm>/.test(out)) {
+        out = out.replace(/<a:xfrm>[\\s\\S]*?<\\/a:xfrm>/, xfrmXml(frame));
+      } else {
+        out = out.replace(/<p:spPr\\s*\\/>/, '<p:spPr>' + xfrmXml(frame) + '</p:spPr>')
+          .replace(/<p:spPr>(?!<a:xfrm>)/, '<p:spPr>' + xfrmXml(frame));
+      }
+    }
+    /* 垂直アンカー: スライドに無ければマスターの title 枠の値を明示する
+       （レイアウトの anchor="b" を上書きする） */
+    if (attrOf(bodyPrAttrs(sp), 'anchor') == null && masterAnchor) {
+      out = out.replace(/<a:bodyPr\\b([^>]*?)\\s*(\\/?)>/, function (all, attrs, close) {
+        return '<a:bodyPr' + (attrs ? ' ' + attrs.replace(/^\\s+/, '') : '') +
+          ' anchor="' + masterAnchor + '"' + (close ? '/>' : '>');
+      });
+    }
+    /* サイズ・揃え・太字。太字はマスターに指定が無ければ「なし」を明示して
+       レイアウトの b="1" を打ち消す（マスターと同じ見た目にする） */
+    var lvl = '<a:lvl1pPr' + (masterAlgn ? ' algn="' + masterAlgn + '"' : '') + '>' +
+      '<a:defRPr sz="' + Math.round(sz) + '" b="' + (masterBold === '1' ? '1' : '0') + '"/>' +
+      '</a:lvl1pPr>';
+    out = out.replace(/<a:lstStyle\\s*\\/>/, '<a:lstStyle>' + lvl + '</a:lstStyle>');
+    /* 置換は関数で渡す（タイトル本文の $& や $' を置換パターンとして読まないように） */
+    if (out !== sp) xml = xml.replace(sp, function () { return out; });
+    if (band) xml = lowerCaptionContent(xml, layout, bandTop);
+    zip[name] = strToU8(xml);
+    if (sz < targetSz) shrunk.push({ slide: slideNum(name), from: targetSz, to: sz });
+  });
+  return shrunk;
+}
+window.__morphoApplyTitleFitZip = applyTitleFitZip;
+
+/* 縮めたときだけ出す情報診断。沈黙させない（notes/column-input.md の方針） */
+function titleFitDiags(shrunk) {
+  if (!shrunk || !shrunk.length) return [];
+  var s = shrunk[0];
+  return [{
+    kind: 'info',
+    label: '表・図と並ぶスライドのタイトルを枠に合わせて縮めました',
+    hint: '表や図の横に置くタイトル枠は狭いため、収まる大きさまで下げています。' +
+      '他のスライドと同じ大きさにするには *** で表や図を別のスライドにするか、+++ で列に分けてください',
+    text: 'スライド ' + s.slide + ': ' + (s.from / 100) + 'pt → ' + (s.to / 100) + 'pt',
+    count: shrunk.length
+  }];
+}
+
 async function convert(id, md, opts, format) {
   return serialized(async function () { await doConvert(id, md, opts, format); });
 }
@@ -2444,6 +2749,9 @@ async function doConvert(id, md, opts, format) {
     /* スライドごとのフッター: 目印を実出力から取り出し（再 zip しない）、シーンへ載せる */
     var zip = unzipSync(buf);
     var hv = harvestFooters(zip);
+    /* 表・図と並ぶスライドのタイトルを他のスライドと同じ既定に揃える（解析前に
+       同じ zip を書き換えるので、プレビューは書き出しと同じ XML を読む） */
+    var tf = titleFitDiags(applyTitleFitZip(zip, opts.textSizes ? opts.textSizes.titleSz : null, opts.captionTitle));
     var parsed = parsePptxZip(zip);
     attachSlideFooters(parsed.slides, hv.slides);
 
@@ -2455,7 +2763,7 @@ async function doConvert(id, md, opts, format) {
         slideCount: parsed.slideCount,
         slides: parsed.slides,
         deck: parsed.deck,
-        diagnostics: classify(res.warnings, res.stderr, ft.diags.concat(col.diags, hv.diags)),
+        diagnostics: classify(res.warnings, res.stderr, ft.diags.concat(col.diags, hv.diags, tf)),
         ms: ms,
         bytes: buf.length
       }
@@ -2517,6 +2825,15 @@ async function doExport(id, md, opts, format) {
       out = new Blob([
         applyTextSizes(new Uint8Array(await out.arrayBuffer()), opts.textSizes),
       ]);
+    }
+
+    /* 表・図と並ぶスライドのタイトル。文字サイズの後（マスターが目標サイズを
+       持った後）に、プレビューと同じ関数で同じ結果を焼き込む */
+    if (format === 'pptx') {
+      var zipT = unzipSync(new Uint8Array(await out.arrayBuffer()));
+      extraDiags = extraDiags.concat(titleFitDiags(applyTitleFitZip(zipT, null, opts.captionTitle)));
+      /* 縮めなくても揃え・アンカーの明示で XML は変わり得るので常に書き戻す */
+      out = new Blob([zipSync(zipT)]);
     }
 
     /* 装飾は pptx にだけ OOXML 後処理で焼き込む */
