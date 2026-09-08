@@ -286,6 +286,8 @@ idx 照合で越境すると、段組みの右列が日付枠の値を拾う。
 また `type="body"` が 2 つあるレイアウト（Comparison）があるので、**照合は idx を優先**する。
 字サイズはマスターだけでなく**レイアウト固有の `lstStyle`** にもある
 （Two Content=2100 / Comparison=1800 / Content with Caption の title=1500。マスターは title 3300 / body 2400）。
+Content with Caption の title は 0.17.1 から後処理（`applyTitleFitZip`）がスライド側の `lstStyle` /
+`bodyPr` を明示してマスターの既定に揃えるので、シーンにはその値が入る（CLAUDE.md 落とし穴 20）。
 
 `pandoc-wasm` は devDependency に入れてある（55.9 MB あるので `npm install` が重い）。
 入っている pandoc は **3.10**（wasm 中の `pandoc-3.10` 文字列。README の「1.0.0 は 3.9」から上がっている）。

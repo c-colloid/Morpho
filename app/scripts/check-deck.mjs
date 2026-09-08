@@ -827,4 +827,92 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
   });
 }
 
+/* ---------- 表・図と並ぶスライド（Content with Caption）のタイトル ---------- */
+{
+  const TABLE = '| a | b |\n|---|---|\n| 1 | 2 |\n';
+  const conv = async (md) => {
+    const r = await convert(
+      { from: 'markdown-yaml_metadata_block', to: 'pptx', 'output-file': 't.pptx' },
+      md, {},
+    );
+    assert.ok(r.files['t.pptx'], 'stderr: ' + (r.stderr || ''));
+    return unzipSync(new Uint8Array(await r.files['t.pptx'].arrayBuffer()));
+  };
+  const titleOf = (scene, i) => scene.slides[i].shapes.find((s) => s.placeholder === 'title');
+
+  const short = await conv('# 見出し\n\n本文。\n\n' + TABLE);
+  const before = win.__morphoParsePptxZip(short);
+  t('段落 → 表 は Content with Caption になり、素の pandoc ではタイトルが 15pt・下寄せ（前提の実測）', () => {
+    assert.equal(before.slideCount, 1);
+    assert.equal(before.slides[0].layout, 'Content with Caption');
+    const tt = titleOf(before, 0);
+    assert.equal(tt.lvlStyle[0].sz, 1500);
+    assert.equal(tt.anchor, 'b');
+    assert.equal(tt.lvlStyle[0].algn, 'l');
+  });
+  const shrunk = win.__morphoApplyTitleFitZip(short, null);
+  const after = win.__morphoParsePptxZip(short);
+  t('短いタイトルはマスターと同じ 33pt・中央揃え・中央寄せになり、太字が打ち消される', () => {
+    assert.equal(Array.from(shrunk).length, 0, '短いタイトルは縮めない');
+    const tt = titleOf(after, 0);
+    assert.equal(tt.lvlStyle[0].sz, 3300);
+    assert.equal(tt.anchor, 'ctr');
+    assert.equal(tt.lvlStyle[0].algn, 'ctr');
+    /* 枠はレイアウトのまま（右の表が全高を使える） */
+    assert.equal(tt.frame.w, 3008313);
+    const xml = strFromU8(short['ppt/slides/slide1.xml']);
+    assert.ok(xml.includes('<a:lvl1pPr algn="ctr"><a:defRPr sz="3300" b="0"/></a:lvl1pPr>'), xml);
+    assert.ok(xml.includes('<a:bodyPr anchor="ctr"/>'), xml);
+  });
+  t('表の枠と本文（idx=2）は触らない', () => {
+    assert.equal(after.slides[0].tables.length, 1);
+    assert.deepEqual(after.slides[0].tables, before.slides[0].tables);
+    const body = after.slides[0].shapes.find((s) => s.placeholder === 'body');
+    assert.equal(body.lvlStyle[0].sz, 1050);
+  });
+
+  const long = await conv('# 二十文字のかなり長い見出しを狭い枠に収める例\n\n本文。\n\n' + TABLE);
+  const shrunkLong = win.__morphoApplyTitleFitZip(long, null);
+  const longScene = win.__morphoParsePptxZip(long);
+  t('長いタイトルは枠に収まるまでだけ縮める（33pt 未満・レイアウト既定の 15pt 以上）', () => {
+    const tt = titleOf(longScene, 0);
+    assert.ok(tt.lvlStyle[0].sz < 3300 && tt.lvlStyle[0].sz >= 1500, String(tt.lvlStyle[0].sz));
+    assert.equal(Array.from(shrunkLong).length, 1);
+    assert.equal(shrunkLong[0].from, 3300);
+    assert.equal(shrunkLong[0].to, tt.lvlStyle[0].sz);
+  });
+
+  const huge = await conv('# ' + '長'.repeat(80) + '\n\n本文。\n\n' + TABLE);
+  win.__morphoApplyTitleFitZip(huge, null);
+  t('どうしても収まらないタイトルはレイアウト既定（15pt）で止まる — pandoc より小さくはしない', () => {
+    assert.equal(titleOf(win.__morphoParsePptxZip(huge), 0).lvlStyle[0].sz, 1500);
+  });
+
+  const sized = await conv('# 見出し\n\n本文。\n\n' + TABLE);
+  win.__morphoApplyTitleFitZip(sized, 2000);
+  t('文字サイズ設定（見出し 20pt）を目標にする（プレビュー経路）', () => {
+    assert.equal(titleOf(win.__morphoParsePptxZip(sized), 0).lvlStyle[0].sz, 2000);
+  });
+
+  const exported = await conv('# 見出し\n\n本文。\n\n' + TABLE);
+  const exportedZip = unzipSync(new Uint8Array(
+    win.__morphoApplyTextSizes(zipSync(exported), { titleSz: 2400 })));
+  win.__morphoApplyTitleFitZip(exportedZip, null);
+  t('書き出し経路: applyTextSizes の後ならマスターの値（24pt）が目標になる', () => {
+    assert.equal(titleOf(win.__morphoParsePptxZip(exportedZip), 0).lvlStyle[0].sz, 2400);
+  });
+
+  const plain = await conv('# 見出し\n\n本文。\n\n***\n\n# 表だけ\n\n' + TABLE + '\n***\n\n左\n\n+++\n\n右\n');
+  const plainBefore = Object.fromEntries(
+    Object.keys(plain).filter((k) => /slides\/slide\d+\.xml$/.test(k)).map((k) => [k, strFromU8(plain[k])]));
+  win.__morphoApplyTitleFitZip(plain, null);
+  t('Title and Content / 表だけ / Two Content のスライドは 1 バイトも変えない', () => {
+    for (const k of Object.keys(plainBefore)) assert.equal(strFromU8(plain[k]), plainBefore[k], k);
+  });
+
+  t('fitTitleSz: 目標が下限以下なら目標のまま（書き手の指定が勝つ）', () => {
+    assert.equal(win.__morphoFitTitleSz(['見出し'], 200, 60, 1200, 1500), 1200);
+  });
+}
+
 console.log(`\n${n} 件すべて通過`);

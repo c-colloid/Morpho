@@ -371,8 +371,11 @@ export interface ConvertOptions {
   groups?: Array<{ id: string; contentIndex: number; memberIds: string[] }>;
   /**
    * 文字サイズの上書き（1/100pt）。pptx のみ。
-   * titleSz / bodySz はマスターの titleStyle / bodyStyle を書き換え、
-   * coverTitleSz は表紙スライドの ctrTitle に lstStyle を注入する
+   * 書き出しでは titleSz / bodySz がマスターの titleStyle / bodyStyle を書き換え、
+   * coverTitleSz は表紙スライドの ctrTitle に lstStyle を注入する。
+   * プレビューではマスターを書き換えない（adjustDeck が RN 側で重ねる）。
+   * どちらでも titleSz は、表・図と並ぶスライド（Content with Caption）の
+   * タイトルを狭い枠へ合わせるときの目標サイズになる（applyTitleFitZip）
    */
   textSizes?: { titleSz?: number; coverTitleSz?: number; coverSubSz?: number; bodySz?: number[] };
   /**

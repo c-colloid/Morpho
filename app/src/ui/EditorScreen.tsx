@@ -953,6 +953,13 @@ export default function EditorScreen() {
             stripHtmlComments: true,
             format: job.format,
             useTemplate: designRef.current.template !== undefined,
+            /* 文字サイズ設定。プレビューではマスターを書き換えず（adjustDeck が
+               RN 側で重ねる）、表・図と並ぶスライドのタイトルを枠に合わせる
+               目標サイズにだけ使う（ブリッジの applyTitleFitZip） */
+            textSizes: toExportSizes(
+              designRef.current.text,
+              resultRef.current?.deck?.bodySz ?? [2400, 2100, 1800, 1500, 1500],
+            ),
             /* docx / Web のデッキ全体フッター。pptx は帯をアプリ側で描くので不要 */
             docFooter: toDocFooter(metadata.footer, designRef.current.footer),
           });
@@ -996,6 +1003,24 @@ export default function EditorScreen() {
       if (convTimer.current) clearTimeout(convTimer.current);
     };
   }, [source, status.phase, runner, activeId]);
+
+  /* 文字サイズ設定が変わったら再変換する。表・図と並ぶスライド（Content with
+     Caption）のタイトルは、ブリッジが設定を目標に枠へ合わせて XML へ焼き込むので
+     adjustDeck だけでは追従しない。ほかのタイトルは adjustDeck が即時に反映し、
+     こちらは少し遅れて揃う。書類の切り替えは本線の効果が変換するので除く */
+  const textSizesKey = JSON.stringify(design.text ?? null);
+  const textSizesSeen = useRef<{ id: string | null; key: string } | null>(null);
+  useEffect(() => {
+    const prev = textSizesSeen.current;
+    textSizesSeen.current = { id: activeId, key: textSizesKey };
+    if (!prev || prev.id !== activeId || prev.key === textSizesKey) return;
+    if (statusRef.current !== 'ready' || activeId === null) return;
+    const t = setTimeout(() => {
+      setBusy(true);
+      runnerRef.current?.submit({ md: sourceRef.current, format: previewFormatRef.current });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [textSizesKey, activeId]);
 
   /* 形式の切り替え。古い結果は残したまま（切り戻しで即表示）、
      その形式の最新結果をすぐ取りに行く */
