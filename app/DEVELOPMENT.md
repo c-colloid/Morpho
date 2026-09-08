@@ -278,7 +278,7 @@ node scripts/dump-footer-notation.mjs    # フッター記法の選定の実測
 | 段組み `::: {.columns}` | `<p:ph idx="1" sz="half"/>` と `<p:ph idx="2" sz="half"/>` の 2 枠。`spPr` は空でレイアウト継承。**`width=` は無視される**。Morpho の `+++` はブリッジの `expandColumns` がこの形へ展開する |
 | 段組み（列に画像や表が混ざる） | Comparison レイアウト。`type="body"` の枠が idx=1 と idx=3 の**2 つ**ある |
 | 画像 | `<p:pic>`。`cNvPr descr` に元ファイル名（title 属性があると `"タイトル\n\n名前"`）。`<a:off>/<a:ext>` は pandoc が決め、**`{width=}` は無視される** |
-| 表 | `<p:graphicFrame><a:tbl>`。`<p:sp>` ではないので図形の走査には掛からない |
+| 表 | `<p:graphicFrame><a:tbl>`。`<p:sp>` ではないので図形の走査には掛からない。セルは `<a:tc><a:txBody>` に本文と同じ `<a:p>`（揃えは `pPr algn`、空セルは `endParaRPr` だけ）。ヘッダ行は `tblPr firstRow="1"`。セルの字サイズは `presentation.xml` の `defaultTextStyle`（18pt）で、rPr に sz は無い |
 
 `<p:ph>` の継承には落とし穴がある。**マスターの `idx` とレイアウトの `idx` は別の名前空間**で、
 マスターの `idx="2"` は日付枠（`type="dt" anchor="ctr"`）。レイアウトからマスターへ
@@ -323,7 +323,6 @@ flex:1 の兄弟がもう1人いることが算術で確定した。
   設計と実測は `../notes/column-input.md`。`+++` を使えば踏まないので優先度は下げた
 - 画像の大きさ・位置を指定する手段（pandoc が全部決めている。`{width=}` は pptx で無視される）
 - テーマ層（三層分離の第2層）。**コード上はまだゼロ**
-- 表のセルの解析と描画（0.14.0 は枠と行数・列数まで）
 - カーソル同期の `headingSegments` 一般化（文書 / Web プレビューは同期なし）
 - 縦書き。置き場はテーマ層
 - `to: 'pdf'` が wasm で可能かの 1 回の実験（`../notes/preview-formats.md` の宿題）

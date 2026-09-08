@@ -332,7 +332,9 @@ function parsePics(slideXml) {
 /* 表（p:graphicFrame の a:tbl）。枠は自前の <p:xfrm> に必ず入っていて
    プレースホルダ継承は要らない（実測。reference-doc を与えた場合も
    レイアウト枠を解決した絶対値がスライドへ書かれる）。
-   v0.14 は枠と行数・列幅だけ。セルの中身は後の版 */
+   セルは <a:tc><a:txBody> に本文と同じ <a:p> が入る（実測: 揃えは pPr algn、
+   太字・等幅は rPr / latin、空セルは <a:p><a:endParaRPr/></a:p>）ので
+   parseParagraphs をそのまま使う。先頭行がヘッダかは tblPr firstRow="1" で分かる */
 function parseTables(slideXml) {
   var out = [];
   var re = /<p:graphicFrame\\b[^>]*>([\\s\\S]*?)<\\/p:graphicFrame>/g;
@@ -348,13 +350,30 @@ function parseTables(slideXml) {
     var cre = /<a:gridCol\\b[^>]*\\sw="(\\d+)"/g;
     var cm;
     while ((cm = cre.exec(gf)) !== null) cols.push(Number(cm[1]));
+    var firstRow = /<a:tblPr\\b[^>]*\\bfirstRow="(1|true)"/.test(gf);
+    var rows = [];
+    /* <a:tr h="0">…</a:tr>。<a:trPr> は行ではない（\\b で区別） */
+    var tre = /<a:tr\\b[^>]*>([\\s\\S]*?)<\\/a:tr>/g;
+    var tm;
+    while ((tm = tre.exec(gf)) !== null) {
+      var cells = [];
+      /* 空要素 <a:tc/> と <a:tc>…</a:tc> の両方を出現順に */
+      var tce = /<a:tc\\b[^>]*\\/>|<a:tc\\b[^>]*>([\\s\\S]*?)<\\/a:tc>/g;
+      var tcm;
+      while ((tcm = tce.exec(tm[1])) !== null) {
+        var tb = tcm[1] === undefined ? null : /<a:txBody>([\\s\\S]*?)<\\/a:txBody>/.exec(tcm[1]);
+        cells.push(tb ? parseParagraphs(tb[1]) : []);
+      }
+      rows.push({ header: firstRow && rows.length === 0, cells: cells });
+    }
     out.push({
       x: frame.x,
       y: frame.y,
       w: frame.w,
       h: frame.h,
-      rowCount: (gf.match(/<a:tr\\b/g) || []).length,
-      colWidths: cols
+      rowCount: rows.length,
+      colWidths: cols,
+      rows: rows
     });
   }
   return out;
@@ -559,7 +578,7 @@ window.__morphoFindAnchor = findAnchor;
 
 /* デッキ情報: 寸法・配色・既定の文字サイズ */
 function parseDeck(zip, dec) {
-  var deck = { w: 9144000, h: 5143500, colors: {}, ftrBand: null, titleSz: 3300, bodySz: [2400, 2100, 1800, 1500, 1500], bodyMarL: [], bodyIndent: [], titleAlgn: null, bodyAlgn: [], bodySpcBef: [], bodySpcBefPts: [], bodyBuChar: [] };
+  var deck = { w: 9144000, h: 5143500, colors: {}, ftrBand: null, titleSz: 3300, bodySz: [2400, 2100, 1800, 1500, 1500], defaultSz: 1800, bodyMarL: [], bodyIndent: [], titleAlgn: null, bodyAlgn: [], bodySpcBef: [], bodySpcBefPts: [], bodyBuChar: [] };
   /* 既定はマスターの実測値: marL=342900*(n+1), indent=-342900（27pt 刻みのぶら下げ） */
   for (var di = 0; di < 9; di++) {
     deck.bodyMarL.push(342900 * (di + 1));
@@ -576,6 +595,10 @@ function parseDeck(zip, dec) {
     var pres = dec.decode(zip['ppt/presentation.xml']);
     var sz = /<p:sldSz\\s+cx="(\\d+)"\\s+cy="(\\d+)"/.exec(pres);
     if (sz) { deck.w = Number(sz[1]); deck.h = Number(sz[2]); }
+    /* プレースホルダ外のテキスト（表のセル）の既定サイズ。pandoc 既定は 1800（実測） */
+    var dts = /<p:defaultTextStyle>[\s\S]*?<a:lvl1pPr\b[\s\S]*?<a:defRPr\b([^>]*)>/.exec(pres);
+    var dsz = dts ? /\bsz="(\d+)"/.exec(dts[1]) : null;
+    if (dsz) deck.defaultSz = Number(dsz[1]);
   } catch (e) {}
   try {
     var theme = dec.decode(zip['ppt/theme/theme1.xml']);
@@ -768,7 +791,7 @@ function parsePptxZip(zip) {
   return {
     slideCount: slides.length,
     slides: slides,
-    deck: { w: deck.w, h: deck.h, colors: deck.colors, ftrBand: deck.ftrBand, titleSz: deck.titleSz, bodySz: deck.bodySz, bodyMarL: deck.bodyMarL, bodyIndent: deck.bodyIndent, titleAlgn: deck.titleAlgn, bodyAlgn: deck.bodyAlgn, bodySpcBef: deck.bodySpcBef, bodySpcBefPts: deck.bodySpcBefPts, bodyBuChar: deck.bodyBuChar }
+    deck: { w: deck.w, h: deck.h, colors: deck.colors, ftrBand: deck.ftrBand, titleSz: deck.titleSz, bodySz: deck.bodySz, defaultSz: deck.defaultSz, bodyMarL: deck.bodyMarL, bodyIndent: deck.bodyIndent, titleAlgn: deck.titleAlgn, bodyAlgn: deck.bodyAlgn, bodySpcBef: deck.bodySpcBef, bodySpcBefPts: deck.bodySpcBefPts, bodyBuChar: deck.bodyBuChar }
   };
 }
 function parsePptx(u8) { return parsePptxZip(unzipSync(u8)); }
