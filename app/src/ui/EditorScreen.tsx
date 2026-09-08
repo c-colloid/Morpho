@@ -376,8 +376,9 @@ export default function EditorScreen() {
       const { body } = splitFrontMatter(src);
       const next = src.slice(0, src.length - body.length) + nextBody;
       /* 挿し込んだ直後はその位置へ。それ以外（ノート・改行の書き戻し）は
-         今のキャレット位置を保つ（原稿が変わる範囲はキャレットより後ろが普通） */
-      if (nextCursor !== undefined) editorRef.current?.focus();
+         今のキャレット位置を保つ（原稿が変わる範囲はキャレットより後ろが普通）。
+         focus() はしない — ソフトキーボードだとボタンのたびに上がって煩わしい
+         （実機フィードバック）。native は選択位置まで自前でスクロールする */
       const at = nextCursor ?? cursorRef.current;
       applyEdit(next, { start: at, end: at });
     },
@@ -1204,18 +1205,24 @@ export default function EditorScreen() {
       if (seg) pos = fmOffset + seg.start;
     }
     setCurrentSlide(slideIndex);
-    /* 一画面のときは原稿の面へ移ってから置く（隠れた TextInput は focus できない） */
-    const switching = !wideRef.current && paneRef.current !== 'editor';
-    if (switching) setPane('editor');
-    const place = () => {
-      const input = editorRef.current;
-      if (!input) return;
-      input.focus();
-      // focus 直後の setSelection は無視されることがあるので1フレーム置く
-      requestAnimationFrame(() => editorRef.current?.setSelection(pos, pos));
-    };
-    if (switching) setTimeout(place, 50);
-    else place();
+    /* プログラム的な選択変更は native が notifyDelegate:NO で行うので
+       onSelectionChange は返ってこない。参照はここで進める（直後の「画像」等が
+       古い位置へ入らないように） */
+    cursorRef.current = pos;
+    selectionRef.current = { start: pos, end: pos };
+    /* focus() はしない。0.17 まではしていたが、ソフトキーボードだとカードを
+       タップするたびにキーボードが上がって画面の半分を覆う（実機フィードバック）。
+       setSelection だけでも native は選択位置まで原稿をスクロールする
+       （RCTTextInputComponentView の setTextAndSelection）。キャレットは
+       編集を始めるときに原稿をタップすれば出る */
+    const place = () => editorRef.current?.setSelection(pos, pos);
+    /* 一画面のときは原稿の面へ移ってから置く（隠れた TextInput は測れない） */
+    if (!wideRef.current && paneRef.current !== 'editor') {
+      setPane('editor');
+      setTimeout(place, 50);
+    } else {
+      place();
+    }
   }, []);
 
   /* ---------- プレビューからの原稿編集（ノート・改行） ---------- */
@@ -1271,8 +1278,10 @@ export default function EditorScreen() {
                   text: 'その場所へ移動',
                   onPress: () => {
                     const pos = sourceRef.current.length - body.length + s.insertAt;
-                    editorRef.current?.focus();
-                    requestAnimationFrame(() => editorRef.current?.setSelection(pos, pos));
+                    cursorRef.current = pos;
+                    selectionRef.current = { start: pos, end: pos };
+                    if (!wideRef.current) setPane('editor');
+                    setTimeout(() => editorRef.current?.setSelection(pos, pos), 50);
                   },
                 },
               ]
