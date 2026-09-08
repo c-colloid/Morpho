@@ -373,11 +373,51 @@ t('A-5 表は枠と行数・列幅として読める', () => {
     '<a:tr h="0"><a:tc/></a:tr><a:tr h="0"><a:tc/></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame>';
   const tb = parseTables(gf);
   assert.equal(tb.length, 1);
-  assert.deepEqual({ ...tb[0], colWidths: Array.from(tb[0].colWidths) },
+  const { rows, ...rest } = tb[0];
+  assert.deepEqual({ ...rest, colWidths: Array.from(rest.colWidths) },
     { x: 457200, y: 1193800, w: 8229600, h: 3390900, rowCount: 2, colWidths: [4114800, 4114800] });
+  /* 空要素 <a:tc/> は段落ゼロのセルとして残る（列がずれない） */
+  assert.equal(rows.length, 2);
+  assert.deepEqual(Array.from(rows[0].cells).map((c) => Array.from(c)), [[]]);
+  assert.equal(rows[0].header, false, 'firstRow 無しの先頭行をヘッダにしている');
   /* 表でない graphicFrame（グラフ・OLE）は落とす。trPr を行と数えない */
   assert.equal(parseTables('<p:graphicFrame><p:xfrm><a:off x="0" y="0"/><a:ext cx="1" cy="1"/></p:xfrm>' +
     '<a:graphic><a:graphicData><a:chart/></a:graphicData></a:graphic></p:graphicFrame>').length, 0);
+});
+
+t('表のセルの中身（段落・揃え・太字・等幅・空セル・ヘッダ行）が読める', () => {
+  /* pandoc 3.10 の実出力の形（scripts/dump-pptx.mjs で確認）。
+     ヘッダ行は tblPr firstRow="1"、セルは <a:tc><a:txBody><a:p>…、空セルは endParaRPr だけ */
+  const cell = (algn, inner) =>
+    '<a:tc><a:txBody><a:bodyPr /><a:lstStyle /><a:p><a:pPr lvl="0" indent="0" marL="0"' +
+    (algn ? ' algn="' + algn + '"' : '') + '><a:buNone /></a:pPr>' + inner + '</a:p></a:txBody><a:tcPr /></a:tc>';
+  const gf =
+    '<p:graphicFrame><p:xfrm><a:off x="457200" y="1193800"/><a:ext cx="8229600" cy="3390900"/></p:xfrm>' +
+    '<a:graphic><a:graphicData><a:tbl><a:tblPr firstRow="1" bandRow="1"><a:tableStyleId>{X}</a:tableStyleId></a:tblPr>' +
+    '<a:tblGrid><a:gridCol w="2743200" /><a:gridCol w="2743200" /><a:gridCol w="2743200" /></a:tblGrid>' +
+    '<a:tr h="0">' + cell('l', '<a:r><a:rPr /><a:t>項目</a:t></a:r>') + cell('r', '<a:r><a:rPr /><a:t>値</a:t></a:r>') +
+    cell('ctr', '<a:r><a:rPr /><a:t>備考</a:t></a:r>') + '</a:tr>' +
+    '<a:tr h="0">' + cell('l', '<a:r><a:rPr b="1" /><a:t>太字</a:t></a:r><a:r><a:rPr /><a:t>の行</a:t></a:r>') +
+    cell('r', '<a:r><a:rPr /><a:t>12</a:t></a:r>') +
+    cell('ctr', '<a:r><a:rPr><a:latin typeface="Courier" /></a:rPr><a:t>code</a:t></a:r><a:r><a:rPr /><a:t> あり</a:t></a:r>') + '</a:tr>' +
+    '<a:tr h="0">' + cell('l', '<a:r><a:rPr /><a:t>あり</a:t></a:r>') +
+    '<a:tc><a:txBody><a:bodyPr /><a:lstStyle /><a:p><a:endParaRPr /></a:p></a:txBody></a:tc>' +
+    '<a:tc><a:txBody><a:bodyPr /><a:lstStyle /><a:p><a:endParaRPr /></a:p></a:txBody></a:tc>' + '</a:tr>' +
+    '</a:tbl></a:graphicData></a:graphic></p:graphicFrame>';
+  const [tb] = parseTables(gf);
+  assert.equal(tb.rowCount, 3);
+  const rows = Array.from(tb.rows).map((r) => ({ header: r.header, cells: Array.from(r.cells).map((c) => Array.from(c)) }));
+  assert.deepEqual(rows.map((r) => r.header), [true, false, false]);
+  assert.deepEqual(rows.map((r) => r.cells.length), [3, 3, 3], '列数が行ごとに揃わない');
+  const text = (c) => c.map((p) => p.runs.map((r) => r.text).join('')).join('\n');
+  assert.deepEqual(rows[0].cells.map(text), ['項目', '値', '備考']);
+  assert.deepEqual(rows[0].cells.map((c) => c[0].algn), ['l', 'r', 'ctr']);
+  assert.deepEqual(rows[1].cells.map(text), ['太字の行', '12', 'code あり']);
+  assert.equal(rows[1].cells[0][0].runs[0].bold, true);
+  assert.equal(rows[1].cells[2][0].runs[0].mono, true);
+  assert.equal(rows[1].cells[0][0].bullet, 'none', 'セルの段落に行頭記号が付く');
+  assert.deepEqual(rows[2].cells.map(text), ['あり', '', '']);
+  assert.deepEqual(rows[2].cells.slice(1).map((c) => c.length), [0, 0], '空セルが段落ゼロにならない');
 });
 
 console.log(`\n${n} 件すべて通過`);

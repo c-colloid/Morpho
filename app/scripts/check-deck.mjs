@@ -65,6 +65,9 @@ t('テーマ配色が入る', () => {
   assert.equal(parsed.deck.colors.lt1, '#FFFFFF');
   assert.match(parsed.deck.colors.accent1, /^#[0-9A-Fa-f]{6}$/);
 });
+t('表のセルが継承する既定サイズ（defaultTextStyle 18pt）', () => {
+  assert.equal(parsed.deck.defaultSz, 1800);
+});
 t('字サイズ既定（タイトル33pt・本文24pt）', () => {
   assert.equal(parsed.deck.titleSz, 3300);
   assert.equal(parsed.deck.bodySz[0], 2400);
@@ -634,6 +637,15 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
     assert.equal(tables[0].x, 457200);
     assert.equal(tables[0].rowCount, 2);
     assert.equal(Array.from(tables[0].colWidths).length, 2);
+    /* セルの中身が端から端まで届く（0.17.1）。ヘッダ行は firstRow="1" */
+    const rows = Array.from(tables[0].rows).map((r) => ({
+      header: r.header,
+      cells: Array.from(r.cells).map((c) => Array.from(c).map((p) => p.runs.map((x) => x.text).join('')).join('\n')),
+    }));
+    assert.deepEqual(rows, [
+      { header: true, cells: ['a', 'b'] },
+      { header: false, cells: ['1', '2'] },
+    ]);
   });
   t('段組み: 列の本文にレイアウト固有の字サイズが載る（A-6）', () => {
     for (const b of bodies) {
