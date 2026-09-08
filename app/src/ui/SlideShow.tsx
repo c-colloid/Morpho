@@ -9,6 +9,8 @@ import {
   useWindowDimensions,
 } from 'react-native';
 
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
 import type { SlideDecoration, SlideResult } from '../converter/types';
 import { SlideSurface } from './SlideSurface';
 
@@ -18,6 +20,8 @@ const two = (n: number) => String(n).padStart(2, '0');
  * 全画面スライドショー。
  * 横スワイプ（ページング）と左右端タップで送る。Keynote の操作語彙。
  * 発表者ビューはボトムシートで、ノート・次スライド・経過時間を出す。
+ * 幅の狭い画面（iPhone の縦持ち）では、次のスライドと時計をノートの上に横並びで置く。
+ * 上下のバーはセーフエリア（ノッチ・ホームバー）を避ける。
  */
 export function SlideShow({
   visible,
@@ -37,6 +41,8 @@ export function SlideShow({
   onClose: () => void;
 }) {
   const { width, height } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const narrow = width < 600;
   const [page, setPage] = useState(0);
   const [presenter, setPresenter] = useState(false);
   const [startedAt, setStartedAt] = useState(0);
@@ -58,10 +64,15 @@ export function SlideShow({
   if (!result) return null;
   const slides = result.slides;
 
-  /* 発表者ビューぶんの高さを引いた残りにスライドを収める（16:9 レターボックス） */
-  const stageH = presenter ? height * 0.62 : height;
+  /* 発表者ビューぶんの高さを引いた残りにスライドを収める（16:9 レターボックス）。
+     上のバー（+ノッチ）と下のホームバーのぶんは舞台から引く */
+  const stageH = presenter ? height * (narrow ? 0.5 : 0.62) : height;
   const ratio = result.deck.h / result.deck.w;
-  const surfaceW = Math.min(width - 24, (stageH - 72) / ratio);
+  const topBarH = 48 + insets.top;
+  const surfaceW = Math.min(
+    width - 24 - insets.left - insets.right,
+    (stageH - topBarH - (presenter ? 8 : insets.bottom + 8)) / ratio,
+  );
 
   const goTo = (idx: number) => {
     const clamped = Math.max(0, Math.min(idx, slides.length - 1));
@@ -86,7 +97,10 @@ export function SlideShow({
             }
           >
             {slides.map((s) => (
-              <View key={s.index} style={[styles.pageBox, { width, height: stageH }]}>
+              <View
+                key={s.index}
+                style={[styles.pageBox, { width, height: stageH, paddingTop: topBarH - 24 }]}
+              >
                 <SlideSurface
                   imageUriOf={imageUriOf}
                   slide={s}
@@ -99,10 +113,16 @@ export function SlideShow({
           </ScrollView>
 
           {/* 左右端タップで送る。中央は何もしない（誤送り防止） */}
-          <Pressable style={[styles.tapZone, styles.tapLeft]} onPress={() => goTo(page - 1)} />
-          <Pressable style={[styles.tapZone, styles.tapRight]} onPress={() => goTo(page + 1)} />
+          <Pressable
+            style={[styles.tapZone, styles.tapLeft, { top: topBarH }]}
+            onPress={() => goTo(page - 1)}
+          />
+          <Pressable
+            style={[styles.tapZone, styles.tapRight, { top: topBarH }]}
+            onPress={() => goTo(page + 1)}
+          />
 
-          <View style={styles.topBar}>
+          <View style={[styles.topBar, { paddingTop: 14 + insets.top }]}>
             <Text style={styles.pageLabel}>
               {page + 1} / {slides.length}
             </Text>
@@ -117,7 +137,32 @@ export function SlideShow({
         </View>
 
         {presenter && (
-          <View style={styles.presenter}>
+          <View
+            style={[
+              styles.presenter,
+              narrow && styles.presenterNarrow,
+              { paddingBottom: 16 + insets.bottom },
+            ]}
+          >
+            <View style={[styles.presenterSide, narrow && styles.presenterSideNarrow]}>
+              <Text style={styles.timer}>
+                {two(Math.floor(elapsed / 60))}:{two(elapsed % 60)}
+              </Text>
+              <View>
+                <Text style={styles.presenterLabel}>次のスライド</Text>
+                {next ? (
+                  <SlideSurface
+                    imageUriOf={imageUriOf}
+                    slide={next}
+                    deck={result.deck}
+                    width={narrow ? 120 : 200}
+                    decorations={decorations?.get(next.index)}
+                  />
+                ) : (
+                  <Text style={styles.noteEmpty}>（最後のスライドです）</Text>
+                )}
+              </View>
+            </View>
             <View style={styles.presenterNotes}>
               <Text style={styles.presenterLabel}>ノート</Text>
               <ScrollView>
@@ -131,23 +176,6 @@ export function SlideShow({
                   ))
                 )}
               </ScrollView>
-            </View>
-            <View style={styles.presenterSide}>
-              <Text style={styles.timer}>
-                {two(Math.floor(elapsed / 60))}:{two(elapsed % 60)}
-              </Text>
-              <Text style={styles.presenterLabel}>次のスライド</Text>
-              {next ? (
-                <SlideSurface
-                  imageUriOf={imageUriOf}
-                  slide={next}
-                  deck={result.deck}
-                  width={200}
-                  decorations={decorations?.get(next.index)}
-                />
-              ) : (
-                <Text style={styles.noteEmpty}>（最後のスライドです）</Text>
-              )}
             </View>
           </View>
         )}
@@ -181,14 +209,22 @@ const styles = StyleSheet.create({
 
   presenter: {
     flex: 1,
-    flexDirection: 'row',
+    flexDirection: 'row-reverse',
     gap: 16,
     padding: 16,
     borderTopWidth: 1,
     borderTopColor: '#22252C',
   },
+  /* 狭い画面: 上に「時計・次のスライド」を横並び、下にノート */
+  presenterNarrow: { flexDirection: 'column' },
   presenterNotes: { flex: 1 },
   presenterSide: { width: 220, gap: 8 },
+  presenterSideNarrow: {
+    width: undefined,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+  },
   presenterLabel: { color: '#666C78', fontSize: 12, marginBottom: 6, letterSpacing: 0.6 },
   noteText: { color: '#E6E8EC', fontSize: 17, lineHeight: 27, marginBottom: 6 },
   noteEmpty: { color: '#666C78', fontSize: 14, fontStyle: 'italic' },

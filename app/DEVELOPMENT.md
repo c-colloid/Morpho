@@ -200,6 +200,7 @@ src/store/      ── 永続化と共有
   updateCheck.ts         新しい版の通知
 
 src/text/       ── 文字列ユーティリティ（純関数）
+  editActions.ts         ソフトキーボード用ツールバーの編集操作（行頭マーク・字下げ・囲み・改行固定）
   columns.ts             段組みの記法（+++ の列区切り）。内容層の語彙で pandoc を知らない
   footerBlocks.ts        スライドごとのフッターの記法（/// 文言・::: footer）。同上
   blockInsert.ts         ブロック（画像等）の挿入位置。行を割らず、柵と区間の末尾を守る
@@ -207,7 +208,10 @@ src/text/       ── 文字列ユーティリティ（純関数）
   diffLines.ts           行 Diff（競合ダイアログ）
 
 src/ui/
-  EditorScreen.tsx       メイン画面。原稿とプレビューの二画面、全体の配線
+  layout.ts              画面の形 → 二画面 / 一画面・既定の面・キーボードの重なり・カード幅（純関数）
+  useKeyboardInset.ts    ソフトキーボードの重なり（pt）を返す hook
+  MarkdownToolbar.tsx    キーボードの上の Markdown ツールバー（見た目だけ。操作は EditorScreen）
+  EditorScreen.tsx       メイン画面。原稿とプレビューの二画面 / 一画面、全体の配線
   SlideSurface.tsx       EMU 座標・配色・字サイズ・字下げを使った実寸スライド描画
   DocumentSurface.tsx    文書（docx）プレビューのフロー描画
   SlideShow.tsx          全画面スライドショーと発表者ビュー
@@ -249,6 +253,8 @@ npm run check
 | `check-template.mjs` | テンプレート（reference-doc のテーマ色引き継ぎと和名 → 英語名の書き換え） |
 | `check-footer.mjs` | フッター（帯の解決・色・浄化・注入・docx ページフッター・Web の CSS・Open XML 妥当性と較正） |
 | `check-deck.mjs` | **統合検査**: 本物の pandoc.wasm で pptx / html / docx を作り、座標・配色・字サイズ・字下げ・改行・ノート・Web の CSS 注入・docx のノート除去までを確認 |
+| `check-layout.mjs` | 画面の形 → レイアウト様式（iPad / iPhone 縦横 / Slide Over）・キーボードの重なり・横持ちのカード幅 |
+| `check-edit-actions.mjs` | ツールバーの編集操作（行頭マークのトグル・複数行・字下げ・囲み / 外し・改行固定・CRLF・選択範囲の追随） |
 
 ### pandoc の実出力を見る
 
@@ -305,11 +311,39 @@ Content with Caption の title は 0.17.2 から後処理（`applyTitleFitZip`�
 `1032 − 余白52 − ヘッダ44 ≒ 936` の半分 `468` が「本体 h468」と一致し、
 flex:1 の兄弟がもう1人いることが算術で確定した。
 
+## 画面の形とキーボード（0.18.0）
+
+規則は `src/ui/layout.ts` にあり、`check-layout.mjs` が固定している。
+
+| 画面 | 様式 | 既定の面 |
+|---|---|---|
+| 幅 ≥ 700 かつ 高さ ≥ 500（iPad の縦横・広い Split View） | 二画面（左右） | — |
+| それ以外・縦持ち（iPhone 縦・Slide Over・狭い Split View） | 一画面 | 原稿 |
+| それ以外・横持ち（iPhone 横） | 一画面 | プレビュー（1 枚がひと画面に収まる幅） |
+
+- 判定は寸法だけ。`Platform.isPad` は見ない（Expo Go が iPad で iPhone 幅になる件と
+  Split View は寸法でしか分からない）
+- 一画面で見せていない面は `display: 'none'` で隠すだけ。unmount すると TextInput の
+  スクロール位置・選択・IME の状態と WebView のロードが飛ぶ
+- ソフトキーボードの重なりは `useKeyboardInset`（`keyboardWillChangeFrame`）で取り、
+  ルートの `paddingBottom` として足す。KeyboardAvoidingView を使わないのは、
+  二画面の両方を同じ高さだけ縮めたいのと、iPad のフローティング / 物理キーボードの
+  短いバーを `keyboardOverlap` の規則 1 つで扱うため
+- **差し込み（画像・段組み・出典・ノート・改行編集・ツールバー）は TextInput を
+  remount しない。** 1 レンダーだけ `value=` と `selection=` を付けて native へ送り、
+  直後の `useLayoutEffect` で外す（`pushed`）。RN の TextInput は value 付きレンダーの
+  layout effect で `setTextAndSelection` を 1 回発行し、eventCount が食い違えば
+  native が捨てる（`RCTTextInputComponentView.mm`）。remount は文書切替のときだけ
+- ツールバーは iOS では `InputAccessoryView`（`inputAccessoryViewID` で原稿の
+  TextInput にだけ結ぶ。ノート欄・装飾パネルの入力には付かない）。物理キーボード
+  接続時は iOS の標準挙動で画面下端のバーになる。Android は原稿ペインの下端に描く
+- **iPhone 実機では未検証**（手元に無い）。確認項目は `../notes/status-and-plan.md`
+
 ## バージョン
 
-`app.json` の `version` を上げて、画面上部のヘッダに出している。
+`app.json` の `version` を上げて、画面上部のヘッダに出している
+（幅 500pt 未満の詰めたヘッダでは原稿ペインの右肩）。
 実機で見ているものがどの版か分かるようにするため、変更を push するたびに上げる。
-ヘッダには版のほかに画面幅と一画面／二画面の別も出る（不具合の切り分け用）。
 
 企画検証を抜けて実装が始まった時点で 0.1.0 とした。
 版ごとの変更は [`CHANGELOG.md`](CHANGELOG.md)。

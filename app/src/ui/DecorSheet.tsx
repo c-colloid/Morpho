@@ -8,9 +8,7 @@ import {
   Text,
   TextInput,
   View,
-  useWindowDimensions,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { DecorationShape, DeckInfo, SlideDecoration } from '../converter/types';
 import type { DecorGroup, TemplateMeta } from '../store/designs';
@@ -59,6 +57,10 @@ const PANEL_W = 336;
  * 背面のスライドを見ながら微調整できる。タイトルバーをドラッグで移動。
  * プリセットから追加し、テーマ配色のスウォッチと 1% 刻みの微調整で整える。
  * 生の座標や色コードをユーザーに触らせない。
+ *
+ * 一画面（iPhone・Slide Over）では浮かせる場所が無いので、`docked` で
+ * 下端に貼り付くシートになる。幅いっぱい・高さは親の半分まで・ドラッグなし。
+ * 親（EditorScreen）はシートの高さぶんプレビューの末尾に余白を足す。
  */
 export function DecorSheet({
   visible,
@@ -93,8 +95,17 @@ export function DecorSheet({
   onCycleLayout,
   onRemoveTemplate,
   onClose,
+  docked = false,
+  bounds,
+  onDockedHeight,
 }: {
   visible: boolean;
+  /** 下端に貼り付くシートにする（一画面のとき） */
+  docked?: boolean;
+  /** 親の大きさ。パネルの座標系は親の左上（浮かせるときのクランプと、貼り付くときの高さ上限） */
+  bounds: { w: number; h: number };
+  /** 貼り付いたシートの実高さ（親が余白を足すために使う） */
+  onDockedHeight?: (h: number) => void;
   /** 対象のコンテンツスライド番号（1 始まり・0 は表紙） */
   contentIndex: number;
   /** そのスライドの装飾（配列順 = 背面から前面） */
@@ -140,18 +151,12 @@ export function DecorSheet({
   onImportDesign: () => void;
   onClose: () => void;
 }) {
-  const { width: winW, height: winH } = useWindowDimensions();
-  const insets = useSafeAreaInsets();
-
-  /* パネル位置。座標系は EditorScreen のルート View（セーフエリア内）なので、
-     クランプは window からインセットを引いた有効領域で行う。
+  /* パネル位置。座標系は親（EditorScreen の面のコンテナ）の左上なので、
+     クランプは親の大きさで行う（キーボードで親が縮めば追随する）。
      ドラッグ中は Animated 値だけを動かして再描画を起こさない。
      位置は開き直しても前回の場所を保つ */
-  const availRef = useRef({ w: winW, h: winH });
-  availRef.current = {
-    w: winW - insets.left - insets.right,
-    h: winH - insets.top - insets.bottom,
-  };
+  const availRef = useRef({ w: bounds.w, h: bounds.h });
+  availRef.current = { w: Math.max(PANEL_W, bounds.w), h: Math.max(200, bounds.h) };
   const clamp = (p: { x: number; y: number }) => ({
     x: Math.max(0, Math.min(availRef.current.w - PANEL_W, p.x)),
     y: Math.max(0, Math.min(availRef.current.h - 120, p.y)),
@@ -190,7 +195,12 @@ export function DecorSheet({
     pan.setValue(p);
     setCommittedY(p.y);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [winW, winH, insets.left, insets.right, insets.top, insets.bottom]);
+  }, [bounds.w, bounds.h]);
+
+  /* 閉じたら親の余白も戻す */
+  useEffect(() => {
+    if (!visible || !docked) onDockedHeight?.(0);
+  }, [visible, docked, onDockedHeight]);
 
   if (!visible) return null;
 
@@ -203,14 +213,24 @@ export function DecorSheet({
     `${i + 1}. ${SHAPE_NAMES[d.shape] ?? d.shape}${d.text ? `「${d.text}」` : ''} · ` +
     `${Math.round((d.w / slideW) * 100)}×${Math.round((d.h / slideH) * 100)}%`;
 
+  /* 貼り付くシートは親の半分まで。浮かせるときは今の位置から下端まで */
+  const scrollMax = docked
+    ? Math.max(160, Math.floor(availRef.current.h * 0.5) - 48)
+    : Math.max(160, availRef.current.h - committedY - 64);
+
   return (
     <Animated.View
-      style={[styles.panel, { transform: [{ translateX: pan.x }, { translateY: pan.y }] }]}
+      style={
+        docked
+          ? styles.panelDocked
+          : [styles.panel, { transform: [{ translateX: pan.x }, { translateY: pan.y }] }]
+      }
       pointerEvents="box-none"
+      onLayout={docked ? (e) => onDockedHeight?.(e.nativeEvent.layout.height) : undefined}
     >
-      <View style={styles.panelBody}>
-        <View style={styles.titleBar} {...responder.panHandlers}>
-          <Text style={styles.grip}>⠿</Text>
+      <View style={[styles.panelBody, docked && styles.panelBodyDocked]}>
+        <View style={styles.titleBar} {...(docked ? {} : responder.panHandlers)}>
+          {!docked && <Text style={styles.grip}>⠿</Text>}
           <Text style={styles.title}>
             {contentIndex === 0 ? '表紙' : `スライド ${contentIndex}`} の装飾
           </Text>
@@ -220,11 +240,9 @@ export function DecorSheet({
         </View>
 
         <ScrollView
-          style={[
-            styles.scroll,
-            { maxHeight: Math.max(160, availRef.current.h - committedY - 64) },
-          ]}
+          style={[styles.scroll, { maxHeight: scrollMax }]}
           contentContainerStyle={styles.scrollBody}
+          keyboardShouldPersistTaps="handled"
         >
           <Text style={styles.section}>追加（プリセット）</Text>
           <View style={styles.presetRow}>
@@ -717,6 +735,19 @@ const styles = StyleSheet.create({
     top: 0,
     width: PANEL_W,
     zIndex: 40,
+  },
+  panelDocked: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 40,
+  },
+  panelBodyDocked: {
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    borderBottomWidth: 0,
+    shadowOffset: { width: 0, height: -4 },
   },
   panelBody: {
     borderRadius: 12,
