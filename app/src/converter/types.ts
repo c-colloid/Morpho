@@ -379,6 +379,13 @@ export interface ConvertOptions {
    */
   textSizes?: { titleSz?: number; coverTitleSz?: number; coverSubSz?: number; bodySz?: number[] };
   /**
+   * 表・図と並ぶスライド（Content with Caption）のタイトルの置き方。pptx のみ。
+   * 'narrow'（既定）: レイアウトの狭い枠のまま、文字だけ他のスライドに揃える。
+   * 'band': 他のスライドと同じ全幅の帯（マスターの title 枠）へ移し、
+   * 表・図と説明文をその下へ送る（装飾が完全に揃う代わりに表・図の高さが減る）
+   */
+  captionTitle?: 'narrow' | 'band';
+  /**
    * フッター（出典・注釈）の帯と体裁。pptx のみ。他形式では無視される。
    * 座標は解決済みの EMU で渡す（装飾と同じ流儀 — テンプレートの帯を読むのも
    * 比率の既定値へ落とすのもアプリ側の仕事で、変換器は書くだけ）。

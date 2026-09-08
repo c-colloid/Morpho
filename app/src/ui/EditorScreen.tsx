@@ -960,6 +960,7 @@ export default function EditorScreen() {
               designRef.current.text,
               resultRef.current?.deck?.bodySz ?? [2400, 2100, 1800, 1500, 1500],
             ),
+            captionTitle: designRef.current.captionTitle,
             /* docx / Web のデッキ全体フッター。pptx は帯をアプリ側で描くので不要 */
             docFooter: toDocFooter(metadata.footer, designRef.current.footer),
           });
@@ -1004,11 +1005,11 @@ export default function EditorScreen() {
     };
   }, [source, status.phase, runner, activeId]);
 
-  /* 文字サイズ設定が変わったら再変換する。表・図と並ぶスライド（Content with
+  /* 文字サイズ設定（と表・図と並ぶタイトルの置き方）が変わったら再変換する。表・図と並ぶスライド（Content with
      Caption）のタイトルは、ブリッジが設定を目標に枠へ合わせて XML へ焼き込むので
      adjustDeck だけでは追従しない。ほかのタイトルは adjustDeck が即時に反映し、
      こちらは少し遅れて揃う。書類の切り替えは本線の効果が変換するので除く */
-  const textSizesKey = JSON.stringify(design.text ?? null);
+  const textSizesKey = JSON.stringify([design.text ?? null, design.captionTitle ?? null]);
   const textSizesSeen = useRef<{ id: string | null; key: string } | null>(null);
   useEffect(() => {
     const prev = textSizesSeen.current;
@@ -1503,6 +1504,18 @@ export default function EditorScreen() {
     [result, previewDeck],
   );
 
+  const handleUpdateCaptionTitle = useCallback(
+    (v: 'band' | undefined) => {
+      mutateDesign((prev) => {
+        const next = { ...prev };
+        if (v === 'band') next.captionTitle = 'band';
+        else delete next.captionTitle;
+        return next;
+      });
+    },
+    [mutateDesign],
+  );
+
   const handleUpdateTextSizes = useCallback(
     (t: TextSizes | undefined) => {
       mutateDesign((prev) => {
@@ -1641,6 +1654,7 @@ export default function EditorScreen() {
               resultRef.current?.deck,
             ),
             docFooter: toDocFooter(splitFrontMatter(src).metadata.footer, design.footer),
+            captionTitle: design.captionTitle,
             useTemplate: design.template !== undefined,
           });
           await shareExport(fileName, choice, { base64: out.base64 });
@@ -1925,6 +1939,8 @@ export default function EditorScreen() {
         onCopyToAll={handleCopyDecorToAll}
         textSizes={design.text}
         onUpdateTextSizes={handleUpdateTextSizes}
+        captionTitle={design.captionTitle}
+        onUpdateCaptionTitle={handleUpdateCaptionTitle}
         footerText={deckFooterText}
         onUpdateFooterText={handleUpdateFooterText}
         footerStyle={design.footer}

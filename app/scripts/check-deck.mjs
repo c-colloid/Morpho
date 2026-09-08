@@ -910,6 +910,64 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
     for (const k of Object.keys(plainBefore)) assert.equal(strFromU8(plain[k]), plainBefore[k], k);
   });
 
+  /* 帯モード（文書の設定 captionTitle: 'band'） */
+  const bandZip = await conv('# 見出し\n\n本文。\n\n' + TABLE);
+  const bandBefore = win.__morphoParsePptxZip(bandZip);
+  win.__morphoApplyTitleFitZip(bandZip, null, 'band');
+  const bandAfter = win.__morphoParsePptxZip(bandZip);
+  t('band: タイトルがマスターの title 枠（全幅）へ移り、字サイズ・揃え・アンカーもマスターと同じ', () => {
+    const tt = titleOf(bandAfter, 0);
+    assert.deepEqual({ x: tt.frame.x, y: tt.frame.y, w: tt.frame.w, h: tt.frame.h },
+      { x: 457200, y: 205979, w: 8229600, h: 857250 });
+    assert.equal(tt.lvlStyle[0].sz, 3300);
+    assert.equal(tt.lvlStyle[0].algn, 'ctr');
+    assert.equal(tt.anchor, 'ctr');
+  });
+  t('band: 表と説明文は本文枠の上端（マスター body の y）まで下がり、下端は変わらない', () => {
+    const tb0 = bandBefore.slides[0].tables[0], tb = bandAfter.slides[0].tables[0];
+    assert.equal(tb.y, 1200151);
+    assert.equal(tb.y + tb.h, tb0.y + tb0.h, '表の下端');
+    assert.equal(tb.x, tb0.x);
+    const b0 = bandBefore.slides[0].shapes.find((s) => s.placeholder === 'body');
+    const b = bandAfter.slides[0].shapes.find((s) => s.placeholder === 'body');
+    assert.equal(b.frame.y, 1200151);
+    assert.equal(b.frame.y + b.frame.h, b0.frame.y + b0.frame.h, '説明文の下端');
+    assert.equal(b.lvlStyle[0].sz, 1050, '説明文の字サイズは触らない');
+  });
+  const bandLong = await conv('# 二十文字のかなり長い見出しを狭い枠に収める例\n\n本文。\n\n' + TABLE);
+  const bandLongShrunk = win.__morphoApplyTitleFitZip(bandLong, null, 'band');
+  t('band: 長い見出しも縮めない（枠が他のスライドと同じなので同じ大きさにする）', () => {
+    assert.equal(Array.from(bandLongShrunk).length, 0);
+    assert.equal(titleOf(win.__morphoParsePptxZip(bandLong), 0).lvlStyle[0].sz, 3300);
+  });
+  {
+    const PNGB = Uint8Array.from(atob(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='), (c) => c.charCodeAt(0));
+    const r = await convert(
+      { from: 'markdown-yaml_metadata_block', to: 'pptx', 'output-file': 'p.pptx' },
+      '# 見出し\n\n本文。\n\n![](a.png)\n', { 'a.png': new Blob([PNGB]) },
+    );
+    const pz = unzipSync(new Uint8Array(await r.files['p.pptx'].arrayBuffer()));
+    const p0 = win.__morphoParsePptxZip(pz);
+    win.__morphoApplyTitleFitZip(pz, null, 'band');
+    const p1 = win.__morphoParsePptxZip(pz);
+    t('band: 画像は本文枠の上端へ下がり、縦横比を保って縮む', () => {
+      const i0 = p0.slides[0].images[0], i1 = p1.slides[0].images[0];
+      assert.equal(p0.slides[0].layout, 'Content with Caption');
+      assert.ok(i0.y < 1200151, '前提: 画像は帯に食い込んでいる');
+      assert.equal(i1.y, 1200151);
+      assert.ok(i1.h < i0.h && i1.w < i0.w);
+      assert.ok(Math.abs(i1.w / i1.h - i0.w / i0.h) < 0.01, '縦横比');
+    });
+  }
+  const bandPlain = await conv('# 見出し\n\n本文。\n\n***\n\n左\n\n+++\n\n右\n');
+  const bandPlainBefore = Object.fromEntries(
+    Object.keys(bandPlain).filter((k) => /slides\/slide\d+\.xml$/.test(k)).map((k) => [k, strFromU8(bandPlain[k])]));
+  win.__morphoApplyTitleFitZip(bandPlain, null, 'band');
+  t('band: Content with Caption 以外のスライドは 1 バイトも変えない', () => {
+    for (const k of Object.keys(bandPlainBefore)) assert.equal(strFromU8(bandPlain[k]), bandPlainBefore[k], k);
+  });
+
   t('fitTitleSz: 目標が下限以下なら目標のまま（書き手の指定が勝つ）', () => {
     assert.equal(win.__morphoFitTitleSz(['見出し'], 200, 60, 1200, 1500), 1200);
   });

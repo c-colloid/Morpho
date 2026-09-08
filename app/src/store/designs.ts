@@ -43,6 +43,11 @@ export interface DesignData {
    * front matter `footer:` にある（notes/footer-design.md の三層分離）
    */
   footer?: Partial<FooterStyle>;
+  /**
+   * 表・図と並ぶスライドのタイトルの置き方。未指定 = 'narrow'（狭い枠のまま）。
+   * 'band' で他のスライドと同じ全幅の帯にする（notes: CLAUDE.md 落とし穴 20）
+   */
+  captionTitle?: 'band';
   /** テンプレート（reference-doc）。.morphodesign には含めない（本体が別ファイル） */
   template?: TemplateMeta;
 }
@@ -72,6 +77,7 @@ export async function loadDesign(docId: string): Promise<DesignData> {
       if (text) out.text = text;
       const footer = sanitizeFooterStyle(parsed.footer);
       if (footer) out.footer = footer;
+      if (parsed.captionTitle === 'band') out.captionTitle = 'band';
       const tpl = sanitizeTemplateMeta(parsed.template);
       if (tpl) out.template = tpl;
       return out;

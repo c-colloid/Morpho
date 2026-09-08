@@ -84,6 +84,8 @@ export function DecorSheet({
   onCopyToAll,
   textSizes,
   onUpdateTextSizes,
+  captionTitle,
+  onUpdateCaptionTitle,
   onExportDesign,
   onImportDesign,
   template,
@@ -123,6 +125,9 @@ export function DecorSheet({
   /** 文書全体の文字サイズ設定（pt）。undefined = テンプレート既定 */
   textSizes: TextSizes | undefined;
   onUpdateTextSizes: (t: TextSizes | undefined) => void;
+  /** 表・図と並ぶスライドのタイトルの置き方。undefined = 狭い枠のまま */
+  captionTitle: 'band' | undefined;
+  onUpdateCaptionTitle: (v: 'band' | undefined) => void;
   /** 文書全体のデザインを .morphodesign として共有シートへ */
   onExportDesign: () => void;
   /** テンプレート（reference-doc）。undefined = 既定デザイン */
@@ -505,6 +510,23 @@ export function DecorSheet({
               </>
             );
           })()}
+
+          <Text style={styles.section}>表・図と並ぶスライドのタイトル</Text>
+          <Text style={styles.tplHint}>
+            段落のあとに表や画像を置いたスライドは、タイトルが左上の狭い枠に入ります
+          </Text>
+          {([
+            { v: undefined, label: '狭い枠に収める（表・図が大きい）' },
+            { v: 'band' as const, label: '他のスライドと同じ帯にする（装飾が揃う）' },
+          ] as Array<{ v: 'band' | undefined; label: string }>).map((o) => {
+            const on = (captionTitle ?? undefined) === o.v;
+            return (
+              <Pressable key={o.label} style={styles.checkRow} onPress={() => onUpdateCaptionTitle(o.v)}>
+                <Text style={[styles.mark, on && styles.markOn]}>{on ? '●' : '○'}</Text>
+                <Text style={styles.checkLabel}>{o.label}</Text>
+              </Pressable>
+            );
+          })}
 
           <Text style={styles.section}>テンプレート（自作 .pptx のデザイン）</Text>
           {template ? (
