@@ -1,10 +1,21 @@
 import React, { useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 
 /**
  * 発表者ノートの編集シート。
  * TextInput は本物の UITextView なので IME はそのまま使える
  * （本編集エリアとは別インスタンス）。空で保存するとブロックごと消える。
+ * 画面中央のシートなので、ソフトキーボードが出たら KeyboardAvoidingView で
+ * 上へ逃がす（iPhone では入力欄がキーボードの下に隠れる）。
  */
 export function NotesEditSheet({
   visible,
@@ -26,35 +37,41 @@ export function NotesEditSheet({
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={() => {}}>
-          <Text style={styles.title}>発表者ノート</Text>
-          <Text style={styles.hint}>スライドには表示されません。空で保存すると削除します。</Text>
-          <TextInput
-            value={text}
-            onChangeText={setText}
-            multiline
-            autoCorrect={false}
-            style={styles.input}
-            textAlignVertical="top"
-            placeholder="ここで話すこと"
-          />
-          <View style={styles.actions}>
-            <Pressable style={styles.btn} onPress={onClose}>
-              <Text style={styles.btnText}>キャンセル</Text>
-            </Pressable>
-            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={() => onSave(text)}>
-              <Text style={[styles.btnText, styles.btnPrimaryText]}>保存</Text>
-            </Pressable>
-          </View>
+      <KeyboardAvoidingView
+        style={styles.avoid}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <Pressable style={styles.backdrop} onPress={onClose}>
+          <Pressable style={styles.sheet} onPress={() => {}}>
+            <Text style={styles.title}>発表者ノート</Text>
+            <Text style={styles.hint}>スライドには表示されません。空で保存すると削除します。</Text>
+            <TextInput
+              value={text}
+              onChangeText={setText}
+              multiline
+              autoCorrect={false}
+              style={styles.input}
+              textAlignVertical="top"
+              placeholder="ここで話すこと"
+            />
+            <View style={styles.actions}>
+              <Pressable style={styles.btn} onPress={onClose}>
+                <Text style={styles.btnText}>キャンセル</Text>
+              </Pressable>
+              <Pressable style={[styles.btn, styles.btnPrimary]} onPress={() => onSave(text)}>
+                <Text style={[styles.btnText, styles.btnPrimaryText]}>保存</Text>
+              </Pressable>
+            </View>
+          </Pressable>
         </Pressable>
-      </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
 
 const RULE = '#BFC4CD';
 const styles = StyleSheet.create({
+  avoid: { flex: 1 },
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(20,22,27,0.35)',
@@ -74,8 +91,8 @@ const styles = StyleSheet.create({
   title: { fontSize: 15, fontWeight: '600', color: '#14161B' },
   hint: { fontSize: 12, color: '#666C78', marginTop: 4, marginBottom: 10 },
   input: {
-    minHeight: 140,
-    maxHeight: 300,
+    minHeight: 120,
+    maxHeight: 240,
     borderWidth: 1,
     borderColor: RULE,
     borderRadius: 8,

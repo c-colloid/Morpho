@@ -1,9 +1,19 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   ActivityIndicator,
   Alert,
   AppState,
+  InputAccessoryView,
+  Keyboard,
   Linking,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -30,6 +40,18 @@ import {
 import { insertBlock } from '../text/blockInsert.ts';
 import { COLUMN_SEPARATOR_TEXT } from '../text/columns.ts';
 import { FOOTER_LINE_TEXT } from '../text/footerBlocks.ts';
+import { detectNewline } from '../text/lineEnding.ts';
+import {
+  indentLines,
+  insertHardBreak,
+  toggleLinePrefix,
+  wrapSelection,
+  type EditResult,
+  type Selection,
+} from '../text/editActions.ts';
+import { cardWidthFor, layoutFor, type Pane } from './layout';
+import { useKeyboardInset } from './useKeyboardInset';
+import { MarkdownToolbar, type ToolbarAction } from './MarkdownToolbar';
 import { findSplitSuspects } from '../preview/slideSync.ts';
 import { usePandocConverter } from '../converter/usePandocConverter';
 import { WebView } from 'react-native-webview';
@@ -127,6 +149,14 @@ import { SlideSurface } from './SlideSurface';
 const IDLE_MS = 1500;
 /** 自動保存は手が止まって 1 秒後。フラッシュは文書切替と background 遷移でも走る */
 const SAVE_MS = 1000;
+/** iOS: 原稿の TextInput とキーボード上のツールバーを結ぶ ID */
+const TOOLBAR_ID = 'morpho-markdown-toolbar';
+/** 発表者ノートの空ブロック。キャレットは中の空行に置く（末尾の `\n:::` の手前） */
+const NOTES_BLOCK = '::: notes\n\n:::';
+/** カードの枠（左右）。カードの padding 16×2 + 枠線 2×2。previewBody の余白は別に足す */
+const CARD_CHROME_W = 36;
+/** カードの枠・余白（上下）+ 見出し行。横持ちで 1 枚をひと画面に収める計算に使う */
+const CARD_CHROME_H = 96;
 
 const SAMPLE = `---
 title: "Morpho"
@@ -185,8 +215,35 @@ export default function EditorScreen() {
   const { element, converter, status } = usePandocConverter();
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  // iPad の縦向きは 820〜834pt。900 では縦で二画面にならず、狭い縦積みになる
-  const wide = width >= 700;
+  /* 画面の形 → 二画面（iPad）か一画面（iPhone・Slide Over）か。規則は layout.ts */
+  const layout = useMemo(() => layoutFor(width, height), [width, height]);
+  const wide = layout.mode === 'split';
+  /* ソフトキーボードの重なり。ルートの下余白として両方の面を同じだけ縮める */
+  const keyboardInset = useKeyboardInset();
+
+  /* 一画面のときに見せている面。向きが変わったら既定の面へ戻す
+     （縦持ちで書いて、横に倒してスライドを確かめる） */
+  const [pane, setPaneState] = useState<Pane>(layout.defaultPane);
+  const lastDefaultPane = useRef(layout.defaultPane);
+  useEffect(() => {
+    if (lastDefaultPane.current === layout.defaultPane) return;
+    lastDefaultPane.current = layout.defaultPane;
+    setPaneState(layout.defaultPane);
+    if (layout.defaultPane === 'preview') Keyboard.dismiss();
+  }, [layout.defaultPane]);
+  const showEditor = wide || pane === 'editor';
+  const showPreview = wide || pane === 'preview';
+  const wideRef = useRef(wide);
+  wideRef.current = wide;
+  const paneRef = useRef(pane);
+  paneRef.current = pane;
+  /* 装飾パネルは一画面では下端に貼り付くので、原稿の面へ移るときは閉じる */
+  const closeDecorRef = useRef<() => void>(() => {});
+  const setPane = useCallback((next: Pane) => {
+    setPaneState(next);
+    if (next === 'preview') Keyboard.dismiss();
+    else closeDecorRef.current();
+  }, []);
 
   const [source, setSource] = useState('');
   const [result, setResult] = useState<SlideResult | null>(null);
@@ -235,6 +292,19 @@ export default function EditorScreen() {
     setSource(text);
     setEditorEpoch((e) => e + 1);
   }, []);
+
+  /* 編集中の原稿への差し込み（ツールバー・画像・ノート・改行編集）は remount しない。
+     remount するとフォーカスが外れてソフトキーボードが閉じ、開き直しで画面が跳ねる。
+     代わりに 1 レンダーだけ value= で制御して native へ text と選択を送り、
+     直後の layout effect で非制御に戻す（RN の TextInput は value が付いた
+     レンダーの layout effect で setTextAndSelection を 1 回だけ発行する）。
+     打鍵中の native 側の更新は eventCount の照合で守られる（食い違えば無視） */
+  const [pushed, setPushed] = useState<{ text: string; sel: Selection } | null>(null);
+  useLayoutEffect(() => {
+    if (pushed) setPushed(null);
+  }, [pushed]);
+  /* 最後に見た選択範囲（ツールバーの行頭操作と囲み操作に使う） */
+  const selectionRef = useRef<Selection>({ start: 0, end: 0 });
 
   /* デバウンス中でも、書き込み先は必ず「その編集が起きた文書」。
      文書切替の前に必ず flush するので、ref 参照で取り違えは起きない */
@@ -288,24 +358,30 @@ export default function EditorScreen() {
 
   /* front matter を保ったまま本文だけ差し替える。
      原稿へ書き戻す操作（画像挿入・ノート編集・改行編集）はすべてここを通す */
+  const applyEdit = useCallback(
+    (next: string, sel: Selection) => {
+      const start = Math.max(0, Math.min(sel.start, next.length));
+      const end = Math.max(start, Math.min(sel.end, next.length));
+      onChangeSource(next);
+      selectionRef.current = { start, end };
+      cursorRef.current = start;
+      setPushed({ text: next, sel: { start, end } });
+    },
+    [onChangeSource],
+  );
+
   const patchBody = useCallback(
     (nextBody: string, nextCursor?: number) => {
       const src = sourceRef.current;
       const { body } = splitFrontMatter(src);
-      onChangeSource(src.slice(0, src.length - body.length) + nextBody);
-      /* エディタは非制御なので、プログラム的な差し替えは remount で画面へ反映する */
-      setEditorEpoch((e) => e + 1);
-      /* remount 後の TextInput は選択位置を持たない。挿し込んだ直後だけ戻す
-         （handleSelectSlide と同じ作法。focus してから1フレーム置く） */
-      if (nextCursor !== undefined) {
-        const input = editorRef.current;
-        if (input) {
-          input.focus();
-          requestAnimationFrame(() => editorRef.current?.setSelection(nextCursor, nextCursor));
-        }
-      }
+      const next = src.slice(0, src.length - body.length) + nextBody;
+      /* 挿し込んだ直後はその位置へ。それ以外（ノート・改行の書き戻し）は
+         今のキャレット位置を保つ（原稿が変わる範囲はキャレットより後ろが普通） */
+      if (nextCursor !== undefined) editorRef.current?.focus();
+      const at = nextCursor ?? cursorRef.current;
+      applyEdit(next, { start: at, end: at });
     },
-    [onChangeSource],
+    [applyEdit],
   );
 
   /* ---------- 文書デザインデータ（装飾。三層分離の第3層） ---------- */
@@ -566,6 +642,65 @@ export default function EditorScreen() {
     const r = insertBlock(body, cursorRef.current - fmLen, FOOTER_LINE_TEXT);
     patchBody(r.body, fmLen + r.cursor);
   }, [patchBody]);
+
+  /* ソフトキーボード上のツールバー。行頭・囲み・改行は editActions の純関数、
+     ブロック（区切り・段組み・出典・ノート・画像）は既存の挿入経路に流す */
+  const handleToolbar = useCallback(
+    (action: ToolbarAction) => {
+      const src = sourceRef.current;
+      const sel = selectionRef.current;
+      let r: EditResult | null = null;
+      switch (action) {
+        case 'heading':
+          r = toggleLinePrefix(src, sel, '# ');
+          break;
+        case 'bullet':
+          r = toggleLinePrefix(src, sel, '- ');
+          break;
+        case 'numbered':
+          r = toggleLinePrefix(src, sel, '1. ');
+          break;
+        case 'indent':
+          r = indentLines(src, sel, 1);
+          break;
+        case 'outdent':
+          r = indentLines(src, sel, -1);
+          break;
+        case 'bold':
+          r = wrapSelection(src, sel, '**');
+          break;
+        case 'hardBreak':
+          r = insertHardBreak(src, sel, detectNewline(src));
+          break;
+        case 'slideBreak': {
+          const { body } = splitFrontMatter(src);
+          const fmLen = src.length - body.length;
+          const b = insertBlock(body, cursorRef.current - fmLen, '***');
+          patchBody(b.body, fmLen + b.cursor);
+          return;
+        }
+        case 'notes': {
+          const { body } = splitFrontMatter(src);
+          const fmLen = src.length - body.length;
+          const b = insertBlock(body, cursorRef.current - fmLen, NOTES_BLOCK);
+          /* キャレットは中の空行へ（`\n:::` の手前） */
+          patchBody(b.body, fmLen + b.cursor - 4);
+          return;
+        }
+        case 'columns':
+          handleInsertColumn();
+          return;
+        case 'footer':
+          handleInsertFooter();
+          return;
+        case 'image':
+          void handleInsertImage();
+          return;
+      }
+      if (r) applyEdit(r.text, r.selection);
+    },
+    [applyEdit, patchBody, handleInsertColumn, handleInsertFooter, handleInsertImage],
+  );
 
   /* ---------- 更新チェック（起動時に1回・失敗は黙って無視） ---------- */
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
@@ -1026,9 +1161,11 @@ export default function EditorScreen() {
   const cursorRef = useRef(0);
 
   const onSelectionChange = useCallback(
-    (e: { nativeEvent: { selection: { start: number } } }) => {
+    (e: { nativeEvent: { selection: { start: number; end: number } } }) => {
       // 読むだけ。selection を書き戻すと日本語 IME が壊れる
-      const cursor = e.nativeEvent.selection.start;
+      const { start, end } = e.nativeEvent.selection;
+      selectionRef.current = { start, end };
+      const cursor = start;
       cursorRef.current = cursor;
       const src = sourceRef.current;
       const { metadata, body } = splitFrontMatter(src);
@@ -1040,10 +1177,16 @@ export default function EditorScreen() {
   );
 
   useEffect(() => {
+    if (!showPreview) return;
     const clamped = result ? Math.min(currentSlide, result.slideCount) : currentSlide;
-    const y = cardYs.current.get(clamped);
-    if (y !== undefined) previewRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
-  }, [currentSlide, result]);
+    const go = () => {
+      const y = cardYs.current.get(clamped);
+      if (y !== undefined) previewRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
+    };
+    /* 一画面で面を切り替えた直後はカードの座標が測り直される。1 拍置いてから寄せる */
+    const t = setTimeout(go, wideRef.current ? 0 : 80);
+    return () => clearTimeout(t);
+  }, [currentSlide, result, showPreview]);
 
   /* プレビューのスライドをタップ → 原稿の該当区間の先頭へカーソルを移す。
      読み取り専用の移動なので、スライド数と区間数がずれていても実害はなく
@@ -1061,11 +1204,18 @@ export default function EditorScreen() {
       if (seg) pos = fmOffset + seg.start;
     }
     setCurrentSlide(slideIndex);
-    const input = editorRef.current;
-    if (!input) return;
-    input.focus();
-    // focus 直後の setSelection は無視されることがあるので1フレーム置く
-    requestAnimationFrame(() => editorRef.current?.setSelection(pos, pos));
+    /* 一画面のときは原稿の面へ移ってから置く（隠れた TextInput は focus できない） */
+    const switching = !wideRef.current && paneRef.current !== 'editor';
+    if (switching) setPane('editor');
+    const place = () => {
+      const input = editorRef.current;
+      if (!input) return;
+      input.focus();
+      // focus 直後の setSelection は無視されることがあるので1フレーム置く
+      requestAnimationFrame(() => editorRef.current?.setSelection(pos, pos));
+    };
+    if (switching) setTimeout(place, 50);
+    else place();
   }, []);
 
   /* ---------- プレビューからの原稿編集（ノート・改行） ---------- */
@@ -1077,10 +1227,10 @@ export default function EditorScreen() {
   const patchSource = useCallback(
     (next: string) => {
       if (next === sourceRef.current) return;
-      onChangeSource(next);
-      setEditorEpoch((e) => e + 1);
+      const at = cursorRef.current;
+      applyEdit(next, { start: at, end: at });
     },
-    [onChangeSource],
+    [applyEdit],
   );
 
   /**
@@ -1251,6 +1401,16 @@ export default function EditorScreen() {
     },
     [designIndexOf],
   );
+
+  const closeDecor = useCallback(() => {
+    setDecorSheetCi(null);
+    setSelectedDecorId(null);
+    setMarkedIds(new Set());
+    setDecorDragging(false);
+  }, []);
+  closeDecorRef.current = closeDecor;
+  /* 一画面で下端に貼り付いた装飾パネルの高さ。プレビューの末尾に同じだけ余白を足す */
+  const [dockedDecorH, setDockedDecorH] = useState(0);
 
   const handleAddDecor = useCallback(
     (kind: PresetKind) => {
@@ -1560,7 +1720,20 @@ export default function EditorScreen() {
 
   /* ---------- スライドショー ---------- */
   const [showOpen, setShowOpen] = useState(false);
-  const [previewW, setPreviewW] = useState(0);
+  const [previewSize, setPreviewSize] = useState({ w: 0, h: 0 });
+  const previewW = previewSize.w;
+  const [panesSize, setPanesSize] = useState({ w: 0, h: 0 });
+  /* 横持ちの一画面では 1 枚がひと画面に収まる幅まで（layout.ts の cardWidthFor） */
+  const fitHeight = !wide && layout.orientation === 'landscape';
+  const cardW = useMemo(() => {
+    const deck = previewDeck ?? result?.deck;
+    const ratio = deck ? deck.h / deck.w : 9 / 16;
+    return cardWidthFor(previewW, previewSize.h, ratio, {
+      horizontalPadding: (layout.compact ? 24 : 40) + CARD_CHROME_W,
+      chrome: CARD_CHROME_H,
+      fitHeight,
+    });
+  }, [previewW, previewSize.h, previewDeck, result, fitHeight, layout.compact]);
 
   /* ---------- 書き出し ---------- */
   const [exportOpen, setExportOpen] = useState(false);
@@ -1646,7 +1819,8 @@ export default function EditorScreen() {
         styles.root,
         {
           paddingTop: insets.top,
-          paddingBottom: insets.bottom,
+          /* キーボードが出ている間はその高さぶん。閉じたらホームバーの余白へ戻る */
+          paddingBottom: keyboardInset > 0 ? keyboardInset : insets.bottom,
           paddingLeft: insets.left,
           paddingRight: insets.right,
         },
@@ -1659,6 +1833,9 @@ export default function EditorScreen() {
         busy={busy}
         result={previewFormat === 'web' ? webResult : previewFormat === 'doc' ? docResult : result}
         canPlay={previewFormat === 'slides' && result !== null}
+        compact={layout.compact}
+        pane={wide ? null : pane}
+        onPane={setPane}
         onOpenDocs={() => setDocsOpen(true)}
         onOpenExport={() => setExportOpen(true)}
         onPlay={() => setShowOpen(true)}
@@ -1678,9 +1855,14 @@ export default function EditorScreen() {
         </View>
       )}
 
-      <View style={[styles.panes, wide && styles.panesWide]}>
-        <View style={[styles.pane, styles.editorPane]}>
-          <View style={styles.paneLabelRow}>
+      <View
+        style={[styles.panes, wide && styles.panesWide]}
+        onLayout={(e) =>
+          setPanesSize({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })
+        }
+      >
+        <View style={[styles.pane, styles.editorPane, !showEditor && styles.hidden]}>
+          <View style={[styles.paneLabelRow, layout.compact && styles.paneLabelRowCompact]}>
             <Text style={styles.paneLabel}>原稿</Text>
             <Pressable hitSlop={8} onPress={() => void handleInsertImage()}>
               <Text style={styles.imageInsert}>画像</Text>
@@ -1691,7 +1873,8 @@ export default function EditorScreen() {
             <Pressable hitSlop={8} onPress={handleInsertFooter}>
               <Text style={styles.imageInsert}>出典</Text>
             </Pressable>
-            <Text style={styles.paneMeta}>
+            <Text style={styles.paneMeta} numberOfLines={1}>
+              {layout.compact ? `v${VERSION} · ` : ''}
               {source.length}字 · {saveLabel}
             </Text>
           </View>
@@ -1701,20 +1884,34 @@ export default function EditorScreen() {
             defaultValue={source}
             onChangeText={onChangeSource}
             onSelectionChange={onSelectionChange}
+            /* 差し込みは 1 レンダーだけ value= で native へ送る（pushed の説明を参照） */
+            value={pushed?.text}
+            selection={pushed?.sel}
             multiline
             autoCorrect={false}
             autoCapitalize="none"
             spellCheck={false}
-            style={styles.editor}
+            style={[styles.editor, layout.compact && styles.editorCompact]}
             textAlignVertical="top"
+            inputAccessoryViewID={Platform.OS === 'ios' ? TOOLBAR_ID : undefined}
           />
+          {Platform.OS !== 'ios' && keyboardInset > 0 && (
+            <MarkdownToolbar onAction={handleToolbar} onDismiss={() => Keyboard.dismiss()} />
+          )}
         </View>
 
         <View
-          style={[styles.pane, styles.previewPane, wide && styles.previewPaneWide]}
-          onLayout={(e) => setPreviewW(e.nativeEvent.layout.width)}
+          style={[
+            styles.pane,
+            styles.previewPane,
+            wide && styles.previewPaneWide,
+            !showPreview && styles.hidden,
+          ]}
+          onLayout={(e) =>
+            setPreviewSize({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })
+          }
         >
-          <View style={styles.paneLabelRow}>
+          <View style={[styles.paneLabelRow, layout.compact && styles.paneLabelRowCompact]}>
             <Text style={styles.paneLabel}>
               プレビュー
               {previewFormat === 'slides' && result ? ` · ${result.slideCount} 枚` : ''}
@@ -1742,7 +1939,7 @@ export default function EditorScreen() {
             </View>
           </View>
           {previewFormat === 'doc' ? (
-            <View style={styles.webPane}>
+            <View style={[styles.webPane, layout.compact && styles.webPaneCompact]}>
               {error && (
                 <View style={[styles.diag, styles.critical]}>
                   <Text style={styles.diagLabel}>変換に失敗しました</Text>
@@ -1761,7 +1958,7 @@ export default function EditorScreen() {
               )}
             </View>
           ) : previewFormat === 'web' ? (
-            <View style={styles.webPane}>
+            <View style={[styles.webPane, layout.compact && styles.webPaneCompact]}>
               {error && (
                 <View style={[styles.diag, styles.critical]}>
                   <Text style={styles.diagLabel}>変換に失敗しました</Text>
@@ -1805,7 +2002,12 @@ export default function EditorScreen() {
           ) : (
             <ScrollView
               ref={previewRef}
-              contentContainerStyle={styles.previewBody}
+              contentContainerStyle={[
+                styles.previewBody,
+                layout.compact && styles.previewBodyCompact,
+                /* 下端に貼り付いた装飾パネルの裏に最後のカードが隠れないように */
+                { paddingBottom: 24 + (!wide && decorSheetCi !== null ? dockedDecorH : 0) },
+              ]}
               /* 装飾ドラッグ中はネイティブスクロールを止める（JS レスポンダの
                  拒否だけでは実機の縦スクロールに勝てない・実機フィードバック） */
               scrollEnabled={!decorDragging}
@@ -1825,6 +2027,7 @@ export default function EditorScreen() {
               {result?.slides.map((s) => (
                 <View
                   key={s.index}
+                  style={fitHeight && cardW > 0 && { alignSelf: 'center', width: cardW + 36 }}
                   onLayout={(e) => cardYs.current.set(s.index, e.nativeEvent.layout.y)}
                 >
                   <SlideCard
@@ -1832,7 +2035,7 @@ export default function EditorScreen() {
                     slide={s}
                     deck={previewDeck ?? result.deck}
                     active={s.index === highlighted}
-                    width={Math.max(0, previewW - 40 - 26)}
+                    width={cardW}
                     decorations={decorBySlide.get(s.index)}
                     footer={
                       /* スライドごとのフッター（原稿の ///）はデッキ既定を置き換え、
@@ -1865,7 +2068,53 @@ export default function EditorScreen() {
             </ScrollView>
           )}
         </View>
+
+        {/* 装飾パネル。二画面では浮かせて動かせる・一画面では下端に貼り付く。
+            面の中に置くのはキーボードの余白（ルートの padding）の内側に収めるため */}
+        <DecorSheet
+          visible={decorSheetCi !== null}
+          contentIndex={decorSheetCi ?? 1}
+          decorations={design.decorations.filter((d) => d.contentIndex === decorSheetCi)}
+          deck={previewDeck ?? result?.deck ?? null}
+          selectedId={selectedDecorId}
+          onSelectItem={setSelectedDecorId}
+          markedIds={markedIds}
+          onToggleMark={handleToggleMark}
+          groups={design.groups.filter((g) => g.contentIndex === decorSheetCi)}
+          onGroupMarked={handleGroupMarked}
+          onUngroup={handleUngroup}
+          onAdd={handleAddDecor}
+          onUpdate={handleUpdateDecor}
+          onRemove={handleRemoveDecor}
+          onDuplicate={handleDuplicateDecor}
+          onReorder={handleReorderDecor}
+          onCopyToAll={handleCopyDecorToAll}
+          textSizes={design.text}
+          onUpdateTextSizes={handleUpdateTextSizes}
+          footerText={deckFooterText}
+          onUpdateFooterText={handleUpdateFooterText}
+          footerStyle={design.footer}
+          onUpdateFooterStyle={handleUpdateFooterStyle}
+          onExportDesign={handleExportDesign}
+          onImportDesign={handleImportDesign}
+          template={design.template}
+          onPickTemplate={() => void handlePickTemplate()}
+          onCycleLayout={handleCycleLayout}
+          onRemoveTemplate={handleRemoveTemplate}
+          onClose={closeDecor}
+          docked={!wide}
+          bounds={panesSize}
+          onDockedHeight={setDockedDecorH}
+        />
       </View>
+
+      {Platform.OS === 'ios' && (
+        /* キーボードと一緒に上下する Markdown ツールバー。物理キーボード接続時は
+           画面下端のバーとして出る（iOS の標準挙動） */
+        <InputAccessoryView nativeID={TOOLBAR_ID} backgroundColor="#ECEEF2">
+          <MarkdownToolbar onAction={handleToolbar} onDismiss={() => Keyboard.dismiss()} />
+        </InputAccessoryView>
+      )}
 
       <NotesEditSheet
         visible={notesSheet !== null}
@@ -1879,43 +2128,6 @@ export default function EditorScreen() {
         initialOffsets={breakSheet?.breakOffsets ?? new Set()}
         onApply={handleApplyBreaks}
         onClose={() => setBreakSheet(null)}
-      />
-      <DecorSheet
-        visible={decorSheetCi !== null}
-        contentIndex={decorSheetCi ?? 1}
-        decorations={design.decorations.filter((d) => d.contentIndex === decorSheetCi)}
-        deck={previewDeck ?? result?.deck ?? null}
-        selectedId={selectedDecorId}
-        onSelectItem={setSelectedDecorId}
-        markedIds={markedIds}
-        onToggleMark={handleToggleMark}
-        groups={design.groups.filter((g) => g.contentIndex === decorSheetCi)}
-        onGroupMarked={handleGroupMarked}
-        onUngroup={handleUngroup}
-        onAdd={handleAddDecor}
-        onUpdate={handleUpdateDecor}
-        onRemove={handleRemoveDecor}
-        onDuplicate={handleDuplicateDecor}
-        onReorder={handleReorderDecor}
-        onCopyToAll={handleCopyDecorToAll}
-        textSizes={design.text}
-        onUpdateTextSizes={handleUpdateTextSizes}
-        footerText={deckFooterText}
-        onUpdateFooterText={handleUpdateFooterText}
-        footerStyle={design.footer}
-        onUpdateFooterStyle={handleUpdateFooterStyle}
-        onExportDesign={handleExportDesign}
-        onImportDesign={handleImportDesign}
-        template={design.template}
-        onPickTemplate={() => void handlePickTemplate()}
-        onCycleLayout={handleCycleLayout}
-        onRemoveTemplate={handleRemoveTemplate}
-        onClose={() => {
-          setDecorSheetCi(null);
-          setSelectedDecorId(null);
-          setMarkedIds(new Set());
-          setDecorDragging(false);
-        }}
       />
       <SlideShow
         visible={showOpen}
@@ -1966,6 +2178,9 @@ function HeaderBar({
   busy,
   result,
   canPlay,
+  compact,
+  pane,
+  onPane,
   onOpenDocs,
   onOpenExport,
   onPlay,
@@ -1975,6 +2190,11 @@ function HeaderBar({
   result: ConvertResult | null;
   /** ▶再生はスライド形式のときだけ */
   canPlay: boolean;
+  /** iPhone 級の幅。版・計測値を畳み、余白を詰める */
+  compact: boolean;
+  /** 一画面のとき見せている面。二画面なら null（セグメントを出さない） */
+  pane: Pane | null;
+  onPane: (pane: Pane) => void;
   onOpenDocs: () => void;
   onOpenExport: () => void;
   onPlay: () => void;
@@ -2001,43 +2221,89 @@ function HeaderBar({
       break;
   }
 
+  const btn = [styles.headerBtn, compact && styles.headerBtnCompact];
   return (
-    <View style={[styles.header, status.phase === 'error' && styles.headerError]}>
-      <Text style={styles.wordmark}>Morpho</Text>
-      <Text style={styles.version}>{VERSION}</Text>
-      <Text style={styles.statusText} numberOfLines={1}>
-        {text}
-      </Text>
-      {busy && <ActivityIndicator size="small" />}
-      {result && !busy && (
-        <Text style={styles.statusMetric}>
-          {result.ms} ms · {(result.bytes / 1024).toFixed(0)} KB
-        </Text>
-      )}
-      <Pressable
-        style={({ pressed }) => [styles.headerBtn, pressed && styles.headerBtnPressed]}
-        disabled={!canPlay}
-        onPress={onPlay}
-      >
-        <Text style={[styles.headerBtnText, !canPlay && styles.headerBtnDisabled]}>▶ 再生</Text>
-      </Pressable>
-      <Pressable
-        style={({ pressed }) => [styles.headerBtn, pressed && styles.headerBtnPressed]}
-        onPress={onOpenDocs}
-      >
-        <Text style={styles.headerBtnText}>書類</Text>
-      </Pressable>
-      <Pressable
-        style={({ pressed }) => [
-          styles.headerBtn,
-          styles.headerBtnPrimary,
-          pressed && styles.headerBtnPressed,
+    <View>
+      <View
+        style={[
+          styles.header,
+          compact && styles.headerCompact,
+          status.phase === 'error' && styles.headerError,
         ]}
-        disabled={status.phase !== 'ready'}
-        onPress={onOpenExport}
       >
-        <Text style={[styles.headerBtnText, styles.headerBtnPrimaryText]}>書き出し</Text>
-      </Pressable>
+        {/* 詰めるときは銘柄と版を畳む（版は原稿ペインの右肩に出る） */}
+        {!compact && <Text style={styles.wordmark}>Morpho</Text>}
+        {!compact && <Text style={styles.version}>{VERSION}</Text>}
+        {pane !== null && (
+          <View style={styles.paneSeg}>
+            {(
+              [
+                ['editor', '原稿'],
+                ['preview', 'プレビュー'],
+              ] as Array<[Pane, string]>
+            ).map(([p, label]) => (
+              <Pressable
+                key={p}
+                style={[styles.paneSegBtn, pane === p && styles.paneSegBtnOn]}
+                onPress={() => onPane(p)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: pane === p }}
+              >
+                <Text style={[styles.paneSegText, pane === p && styles.paneSegTextOn]}>
+                  {label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
+        {!compact && (
+          <Text style={styles.statusText} numberOfLines={1}>
+            {text}
+          </Text>
+        )}
+        {compact && <View style={styles.headerSpace} />}
+        {busy && <ActivityIndicator size="small" />}
+        {result && !busy && !compact && (
+          <Text style={styles.statusMetric}>
+            {result.ms} ms · {(result.bytes / 1024).toFixed(0)} KB
+          </Text>
+        )}
+        <Pressable
+          style={({ pressed }) => [btn, pressed && styles.headerBtnPressed]}
+          disabled={!canPlay}
+          onPress={onPlay}
+          accessibilityLabel="再生"
+        >
+          <Text style={[styles.headerBtnText, !canPlay && styles.headerBtnDisabled]}>
+            {compact ? '▶' : '▶ 再生'}
+          </Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [btn, pressed && styles.headerBtnPressed]}
+          onPress={onOpenDocs}
+        >
+          <Text style={styles.headerBtnText}>書類</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [
+            btn,
+            styles.headerBtnPrimary,
+            pressed && styles.headerBtnPressed,
+          ]}
+          disabled={status.phase !== 'ready'}
+          onPress={onOpenExport}
+        >
+          <Text style={[styles.headerBtnText, styles.headerBtnPrimaryText]}>書き出し</Text>
+        </Pressable>
+      </View>
+      {/* 詰めた幅では起動状況（wasm の取得など）を 2 行目に出す。準備が済めば消える */}
+      {compact && text !== '' && (
+        <View style={[styles.bootBar, status.phase === 'error' && styles.headerError]}>
+          <Text style={styles.bootText} numberOfLines={1}>
+            {text}
+          </Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -2217,6 +2483,9 @@ const styles = StyleSheet.create({
   panes: { flex: 1 },
   panesWide: { flexDirection: 'row' },
   pane: { flex: 1 },
+  /* 一画面で見せていない面。unmount しないのは TextInput の状態（スクロール位置・
+     選択・IME）と WebView のロードを捨てないため */
+  hidden: { display: 'none' },
   editorPane: { backgroundColor: '#F7F8FA' },
   previewPane: { borderTopWidth: 1, borderTopColor: RULE },
   previewPaneWide: { borderTopWidth: 0, borderLeftWidth: 1, borderLeftColor: RULE },
@@ -2229,6 +2498,7 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     paddingBottom: 6,
   },
+  paneLabelRowCompact: { paddingHorizontal: 12, paddingTop: 8, paddingBottom: 4, gap: 10 },
   paneLabel: { fontSize: 11, letterSpacing: 0.6, color: '#666C78' },
   paneMeta: { fontSize: 11, color: '#666C78', fontVariant: ['tabular-nums'] },
   imageInsert: { fontSize: 11, color: '#1B3FE0' },
@@ -2260,6 +2530,7 @@ const styles = StyleSheet.create({
   updateDismiss: { fontSize: 13, color: '#666C78' },
 
   webPane: { flex: 1, paddingHorizontal: 20, paddingBottom: 20, gap: 12 },
+  webPaneCompact: { paddingHorizontal: 12, paddingBottom: 12 },
   webView: {
     flex: 1,
     borderRadius: 8,
@@ -2278,6 +2549,8 @@ const styles = StyleSheet.create({
     color: '#14161B',
     fontFamily: 'Menlo',
   },
+  /* iPhone: 1 行に入る字数を稼ぐ（Menlo 17pt は 390pt 幅で和文 20 字弱） */
+  editorCompact: { paddingHorizontal: 12, paddingBottom: 12, fontSize: 16, lineHeight: 25 },
 
   header: {
     flexDirection: 'row',
@@ -2289,7 +2562,28 @@ const styles = StyleSheet.create({
     borderBottomColor: RULE,
     backgroundColor: '#F7F8FA',
   },
+  headerCompact: { gap: 6, paddingHorizontal: 10, paddingVertical: 8 },
   headerError: { backgroundColor: '#F6E4E8' },
+  headerSpace: { flex: 1 },
+  bootBar: {
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    backgroundColor: '#ECEEF2',
+    borderBottomWidth: 1,
+    borderBottomColor: RULE,
+  },
+  bootText: { fontSize: 12, color: '#666C78' },
+  paneSeg: {
+    flexDirection: 'row',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: RULE,
+    overflow: 'hidden',
+  },
+  paneSegBtn: { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#FFFFFF' },
+  paneSegBtnOn: { backgroundColor: '#14161B' },
+  paneSegText: { fontSize: 13, color: '#14161B' },
+  paneSegTextOn: { color: '#FFFFFF', fontWeight: '600' },
   wordmark: { fontSize: 16, fontWeight: '700', color: '#14161B', letterSpacing: 0.2 },
   version: { fontSize: 11, color: '#666C78', fontVariant: ['tabular-nums'] },
   statusText: { flex: 1, fontSize: 13, color: '#666C78' },
@@ -2301,6 +2595,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: RULE,
   },
+  headerBtnCompact: { paddingHorizontal: 10, paddingVertical: 6 },
   headerBtnPrimary: { backgroundColor: '#1B3FE0', borderColor: '#1B3FE0' },
   headerBtnPressed: { opacity: 0.6 },
   headerBtnText: { fontSize: 14, color: '#14161B' },
@@ -2308,6 +2603,7 @@ const styles = StyleSheet.create({
   headerBtnPrimaryText: { color: '#FFFFFF', fontWeight: '600' },
 
   previewBody: { paddingHorizontal: 20, paddingBottom: 24, gap: 12 },
+  previewBodyCompact: { paddingHorizontal: 12 },
 
   diag: { padding: 12, borderRadius: 8, borderLeftWidth: 4, backgroundColor: '#F7F8FA' },
   critical: { borderLeftColor: '#B01030' },
