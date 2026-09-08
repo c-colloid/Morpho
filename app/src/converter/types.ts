@@ -120,14 +120,13 @@ export interface SlideImage {
 }
 
 /**
- * スライド上の表。
+ * スライド上の表（p:graphicFrame の a:tbl）。
  *
- * 出力に書かれているのは枠の矩形と列幅・行数だけで、罫線と塗りは
- * 組み込みの表スタイル参照になっている（pandoc 既定テンプレートでは
- * その実体がパッケージに無い。reference-doc の tableStyles.xml は
- * そのまま出力へ運ばれる。いずれも実測）。
- * v0.14 は「消えないこと」の保証だけを目的に、枠と行列数を持つ。
- * セルの中身は後の版で DocBlock.rows と同じ形で足す。
+ * 出力に書かれているのは枠の矩形・列幅・行数・セルの段落で、行高は h="0"
+ * （中身任せ）、罫線と塗りは組み込みの表スタイル参照（pandoc 既定テンプレートでは
+ * その実体がパッケージに無い。reference-doc の tableStyles.xml はそのまま出力へ
+ * 運ばれる。いずれも実測）。
+ * 0.14.0 は枠と行列数だけだったが、0.17.1 でセルの中身（rows）を足した。
  */
 export interface SlideTable {
   /** スライド座標系の EMU。継承ではなく出力に書かれた実座標（実測） */
@@ -143,6 +142,13 @@ export interface SlideTable {
    * 実測: 13 列で 139700 EMU 不足）。描画は枠内へクランプすること
    */
   colWidths: number[];
+  /**
+   * 行 → セル → 段落。セルの段落は本文と同じ Paragraph（揃えは pPr algn に
+   * 出る。実測: 原稿の `:---:` が algn="ctr"）。空セルは段落ゼロ。
+   * header は tblPr firstRow="1" の先頭行（pandoc は pipe table に必ず付ける。実測）。
+   * 古いシーンには無いので描画側は undefined を許すこと
+   */
+  rows?: Array<{ header: boolean; cells: Paragraph[][] }>;
 }
 
 export interface SlideOutline {
@@ -187,6 +193,12 @@ export interface DeckInfo {
   subTitleSz?: number;
   /** 箇条書き階層 lvl1..lvl5 の字サイズ */
   bodySz: number[];
+  /**
+   * プレースホルダに属さないテキストの既定サイズ（presentation.xml の
+   * defaultTextStyle lvl1 の sz）。表のセルはこれを継承する（実測: pandoc 既定は 1800。
+   * セルの rPr には sz が無い）。古いシーンには無い
+   */
+  defaultSz?: number;
   /** 箇条書き階層ごとの左余白（EMU）。テキストの左端 */
   bodyMarL: number[];
   /** 同・先頭行のぶら下げ（EMU、通常は負）。行頭記号の位置 = marL + indent */
@@ -371,10 +383,20 @@ export interface ConvertOptions {
   groups?: Array<{ id: string; contentIndex: number; memberIds: string[] }>;
   /**
    * 文字サイズの上書き（1/100pt）。pptx のみ。
-   * titleSz / bodySz はマスターの titleStyle / bodyStyle を書き換え、
-   * coverTitleSz は表紙スライドの ctrTitle に lstStyle を注入する
+   * 書き出しでは titleSz / bodySz がマスターの titleStyle / bodyStyle を書き換え、
+   * coverTitleSz は表紙スライドの ctrTitle に lstStyle を注入する。
+   * プレビューではマスターを書き換えない（adjustDeck が RN 側で重ねる）。
+   * どちらでも titleSz は、表・図と並ぶスライド（Content with Caption）の
+   * タイトルを狭い枠へ合わせるときの目標サイズになる（applyTitleFitZip）
    */
   textSizes?: { titleSz?: number; coverTitleSz?: number; coverSubSz?: number; bodySz?: number[] };
+  /**
+   * 表・図と並ぶスライド（Content with Caption）のタイトルの置き方。pptx のみ。
+   * 'narrow'（既定）: レイアウトの狭い枠のまま、文字だけ他のスライドに揃える。
+   * 'band': 他のスライドと同じ全幅の帯（マスターの title 枠）へ移し、
+   * 表・図と説明文をその下へ送る（装飾が完全に揃う代わりに表・図の高さが減る）
+   */
+  captionTitle?: 'narrow' | 'band';
   /**
    * フッター（出典・注釈）の帯と体裁。pptx のみ。他形式では無視される。
    * 座標は解決済みの EMU で渡す（装飾と同じ流儀 — テンプレートの帯を読むのも

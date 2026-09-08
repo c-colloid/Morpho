@@ -204,6 +204,17 @@ t('.morphodesign: 文字サイズ設定も往復し、不正値はクランプ�
   assert.equal(none.text, undefined, '有効値ゼロなら text 自体を持たない');
 });
 
+t('.morphodesign: 表・図と並ぶタイトルの置き方（band）が往復し、不正値は落ちる', () => {
+  const a = makePreset('bandTop', 1, 'a', W, H);
+  const design = { version: 1, decorations: [a], groups: [], captionTitle: 'band' };
+  assert.deepEqual(parseDesignFile(serializeDesign(design)), design);
+  const bad = parseDesignFile(JSON.stringify({
+    kind: 'morphodesign', version: 1, decorations: [a], captionTitle: 'wide',
+  }));
+  assert.equal(bad.captionTitle, undefined);
+  assert.ok(!serializeDesign({ version: 1, decorations: [a], groups: [] }).includes('captionTitle'));
+});
+
 t('nudge: 1ステップ = 寸法の1%、サイズは1%未満にならない', () => {
   const d = makePreset('accentLine', 1, 'a', W, H);
   assert.equal(nudge(d, 'x', 1, W, H).x, d.x + Math.round(W / 100));
