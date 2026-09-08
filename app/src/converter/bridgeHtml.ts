@@ -1132,7 +1132,12 @@ window.__morphoApplyTextSizes = applyTextSizes;
    縮める。下限はレイアウトの既定 — pandoc が出す大きさより小さくはしない。
    スライド側の lstStyle / bodyPr へ明示するので、プレビュー（同じ zip を解析
    する）と書き出しは同じ 1 つの結果になる。 */
-var TITLE_LINE_HEIGHT = 1.25;   /* プレビュー（SurfaceParagraph の lineHeight）と同じ倍率 */
+/* 行高と幅の見積もりは安全側に取る。プレビューの lineHeight は 1.25 だが、
+   LibreOffice の実描画（IPA ゴシック）で 22 文字を 20pt にすると 3 行に折れて
+   枠からはみ出た（1.25・余白なしの見積もりでは 2 行と数えていた）。
+   日本語フォントの行送りは欧文より大きく、折り返し位置も数 % 手前に来る */
+var TITLE_LINE_HEIGHT = 1.35;
+var TITLE_WIDTH_MARGIN = 0.9;    /* 内側幅のこの割合に収まるときだけ 1 行と数える */
 var TITLE_FIT_MIN = 1200;       /* レイアウトが既定サイズを持たないときの下限（1/100pt） */
 var EMU_PER_PT = 12700;
 
@@ -1183,7 +1188,7 @@ function fitTitleSz(lines, innerWPt, innerHPt, targetSz, floorSz) {
     var pt = sz / 100;
     var rows = 0;
     for (var i = 0; i < lines.length; i++) {
-      rows += Math.max(1, Math.ceil((textEm(lines[i]) * pt) / innerWPt));
+      rows += Math.max(1, Math.ceil((textEm(lines[i]) * pt) / (innerWPt * TITLE_WIDTH_MARGIN)));
     }
     if (rows * pt * TITLE_LINE_HEIGHT <= innerHPt) return sz;
   }

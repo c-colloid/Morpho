@@ -20,7 +20,8 @@
   設定を変えたときは再変換する（他のスライドは従来どおり即時に追従する）
 - Title and Content / 表だけ / Two Content のスライドは 1 バイトも変えない（検査で固定）
 - 検査 74 → 83 件。Open XML SDK 移植の検証器（`@ooxml-tools/validate`）で 0 errors
-- PowerPoint / iPad の実描画は未確認
+- LibreOffice の実描画で、短いタイトルが他のスライドと同じ 33pt になり、22 文字のタイトルが
+  18pt・2 行で枠に収まることを確認。PowerPoint / iPad の実描画は未確認
 
 ## 0.17.0 — 2026-09-01
 
