@@ -306,6 +306,32 @@ export default function EditorScreen() {
   /* 最後に見た選択範囲（ツールバーの行頭操作と囲み操作に使う） */
   const selectionRef = useRef<Selection>({ start: 0, end: 0 });
 
+  /* 原稿をスクロールしただけでキーボードが上がるのを止める（実機フィードバック）。
+     RN の TextInput は「押されたら focus」を内蔵していて、UITextView のスクロールは
+     RN のタッチハンドラを打ち消さない（同じビュー階層内のジェスチャなので
+     canBePreventedByGestureRecognizer が NO）。指を離した時点で onPress → focus() が
+     走るのがキーボードの正体。TextInput が focus をやめるのは editable=false のときだけ
+     なので、未フォーカスでスクロールが始まった間だけ editable を切る。
+     スクロール（慣性を含む）が止まって 250 ms で戻す。フォーカス中は触らない
+     （キーボードは既に出ていて、editable を切ると編集が終わってしまう） */
+  const [scrollLock, setScrollLock] = useState(false);
+  const scrollLockTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onEditorScroll = useCallback(() => {
+    if (editorRef.current?.isFocused()) return;
+    setScrollLock(true);
+    if (scrollLockTimer.current) clearTimeout(scrollLockTimer.current);
+    scrollLockTimer.current = setTimeout(() => {
+      scrollLockTimer.current = null;
+      setScrollLock(false);
+    }, 250);
+  }, []);
+  useEffect(
+    () => () => {
+      if (scrollLockTimer.current) clearTimeout(scrollLockTimer.current);
+    },
+    [],
+  );
+
   /* デバウンス中でも、書き込み先は必ず「その編集が起きた文書」。
      文書切替の前に必ず flush するので、ref 参照で取り違えは起きない */
   const flushSave = useCallback(async () => {
@@ -1897,6 +1923,9 @@ export default function EditorScreen() {
             value={pushed?.text}
             selection={pushed?.sel}
             multiline
+            /* スクロール中だけ false（scrollLock の説明を参照） */
+            editable={!scrollLock}
+            onScroll={onEditorScroll}
             autoCorrect={false}
             autoCapitalize="none"
             spellCheck={false}
