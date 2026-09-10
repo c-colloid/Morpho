@@ -131,6 +131,39 @@ Expo Go 版との違い:
   `set -o pipefail` を忘れると空の ipa が「成功」になる
 - 成果物の検算（実行バイナリの存在・サイズ下限）を必ず入れる
 
+## シミュレータの自動周回（0.19.2〜）
+
+GitHub Actions の macOS runner で **iOS Simulator（iPad Pro）にアプリを入れ、Maestro で操作して**
+受け入れ条件のうち機械で確かめられる項目を通す（`.github/workflows/sim-round.yml`。
+`app/e2e/**` かワークフロー自体の変更で走る。それ以外は Actions → Simulator Round → Run workflow）。
+所要 約 35 分。**実機 iPad が無くても本物の WKWebView と UITextView で回る**のが要点で、
+初回の周回で 0.18.0 の「確認 1」の実バグ（iOS でツールバー自体が出ていなかった）を捕まえた。
+
+| フロー | 見ていること |
+|---|---|
+| `01-boot` | 起動・wasm 取得・「プレビュー · N 枚」 |
+| `02-formats` | 文書 / Web / スライドの切替でエラーが出ない |
+| `03-toolbar` | 原稿をタップするとキーボードの上にツールバーが出て、字下げ・段組み・出典を押しても閉じない |
+| `04-theme-footer` | 装飾パネルのフッター位置（± と戻す）・濃さ・テーマの列比 |
+| `05-export` | 書き出しメニュー → pptx 変換 → 共有シート |
+
+実機に残るのは IME の変換候補・タッチの使用感・回転・Slide Over・外部アプリ連携
+（`../notes/development-plan-2026-09.md` 8-0 の表）。
+
+書き方の約束（実際に踏んだもの）:
+- Maestro の文字列照合は**正規表現の完全一致**。`( ) .` はエスケープし、見出しと注記が
+  一つの要素にまとまる行は前後を `.*` で受ける
+- RN の `Pressable` は子を一つのアクセシビリティ要素に畳む。中の文字を個別に当てたい
+  カード（`SlideCard`）は `accessible={false}`
+- `tapOn: id:` は `testID`（原稿は `testID="editor"`）。`accessibilityLabel` は `text:`
+- シミュレータは既定でハードウェアキーボード接続扱いになり、ソフトキーボードが出ない。
+  `defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false` を起動前に
+- 成果物（スクリーンショット・Maestro のログ）は Artifacts に上がるが、この開発環境からは
+  取れないので、**要素木は `::group::diag` としてジョブログに出す**（`e2e-diag/*.yaml` +
+  `maestro hierarchy`）。落ちたときはまずここを読む
+- iOS の `InputAccessoryView` はこの周回で表示されなかった（0.19.2 / 0.19.3 で 2 通り試して
+  要素木に出ず）。ツールバーは通常のビューで置く（「画面の形とキーボード」）
+
 ## 外部アプリ連携の実装状況
 
 **結論: 読み込み・書き出しに加えて、その場での上書き編集（open in place）も
