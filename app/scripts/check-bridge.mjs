@@ -1,86 +1,74 @@
 /**
- * ブリッジ HTML に埋めた JavaScript の構文チェック。
+ * ブリッジ（不可視 WebView の中身）の検査。
  *
- * 中身が実際に走るのは実機の WebView の中だけなので、
- * 構文エラーだけでも手元で落とせるようにしておく。
- * node --check 相当を vm.SourceTextModule なしで行うため、
- * 一度ファイルに書き出して動的 import ではなくパースだけ試す。
+ * 中身が実際に走るのは実機の WebView の中だけなので、手元で落とせるものは落とす:
+ *   1. 構文       — boot.js / main.mjs に node --check を直接かける
+ *   2. 同一性     — bridge/ を束ねた結果が、コミット済みの bridgeHtml.ts とバイト単位で等しい
+ *                   （生成物の更新忘れを CI で止める。直すには npm run build:bridge）
+ *   3. 往復       — 生成物のテンプレートリテラルを評価すると束ねた HTML に戻る
+ *                   （エスケープの取りこぼしがあればここで分かる）
+ *   4. importmap  — JSON として妥当で、必要な指定子が揃っている
  */
-import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
-const src = readFileSync(new URL('../src/converter/bridgeHtml.ts', import.meta.url), 'utf8');
+import { assembleHtml, buildBridgeTs, BRIDGE_TS, SOURCES } from './build-bridge.mjs';
 
-// 冒頭の解説コメントにもバッククォートが出るので、宣言の後ろから探す
-const decl = src.indexOf('export const BRIDGE_HTML');
-const open = decl < 0 ? -1 : src.indexOf('`', decl);
-const close = src.lastIndexOf('`');
-if (open < 0 || close <= open) {
-  console.error('BRIDGE_HTML のテンプレートリテラルが見つかりません');
-  process.exit(1);
-}
-const raw = src.slice(open + 1, close);
-
-if (raw.includes('${')) {
-  console.error('BRIDGE_HTML に ${ が混ざっています（TS 側の展開に食われます）');
-  process.exit(1);
-}
-
-/* raw はソースそのままなので \\d などが未解決。
-   テンプレートリテラルとして評価して、実際に配信される文字列にする */
-const html = new Function('return `' + raw + '`')();
-
-const blocks = [...html.matchAll(/<script(?:\s+type="module")?\s*>([\s\S]*?)<\/script>/g)]
-  .map((m) => m[1])
-  .filter((body) => !body.includes('"imports"'));
-
-if (blocks.length < 2) {
-  console.error(`script ブロックが ${blocks.length} 個しか見つかりません（2 個以上を期待）`);
-  process.exit(1);
-}
-
-const dir = mkdtempSync(join(tmpdir(), 'morpho-bridge-'));
 let failed = false;
+const fail = (msg) => {
+  failed = true;
+  console.error('  FAIL ' + msg);
+};
 
-blocks.forEach((body, i) => {
-  const isModule = body.includes('import ');
-  const file = join(dir, `block-${i}.${isModule ? 'mjs' : 'js'}`);
-  writeFileSync(file, body);
+/* 1. 構文 */
+for (const key of ['boot', 'main']) {
+  const file = fileURLToPath(SOURCES[key]);
   try {
     execFileSync(process.execPath, ['--check', file], { stdio: 'pipe' });
-    console.log(`  ok   block ${i} (${isModule ? 'module' : 'classic'}, ${body.length} bytes)`);
+    console.log(`  ok   構文 ${key} (${readFileSync(file).length} bytes)`);
   } catch (e) {
-    failed = true;
-    console.error(`  FAIL block ${i}:\n${e.stderr?.toString() ?? e.message}`);
+    fail(`構文 ${key}:\n${e.stderr?.toString() ?? e.message}`);
   }
-});
+}
 
-// importmap が JSON として妥当か
-const mapMatch = /<script type="importmap">([\s\S]*?)<\/script>/.exec(html);
-if (!mapMatch) {
-  console.error('importmap が見つかりません');
-  failed = true;
+/* 2. 同一性 */
+const built = buildBridgeTs();
+const committed = readFileSync(BRIDGE_TS, 'utf8');
+if (built === committed) {
+  console.log(`  ok   bridgeHtml.ts は bridge/ と一致 (${committed.length} bytes)`);
+} else {
+  fail('bridgeHtml.ts が bridge/ と食い違っている。npm run build:bridge を実行してコミットすること');
+}
+
+/* 3. 往復 */
+const html = assembleHtml();
+const decl = committed.indexOf('export const BRIDGE_HTML');
+const open = decl < 0 ? -1 : committed.indexOf('`', decl);
+const close = committed.lastIndexOf('`');
+if (open < 0 || close <= open) {
+  fail('BRIDGE_HTML のテンプレートリテラルが見つからない');
+} else {
+  const evaluated = new Function('return `' + committed.slice(open + 1, close) + '`')();
+  if (evaluated === html) console.log(`  ok   テンプレートリテラルの往復 (${html.length} bytes)`);
+  else fail('生成物を評価しても束ねた HTML に戻らない（エスケープの取りこぼし）');
+}
+
+/* 4. importmap */
+const im = /<script type="importmap">([\s\S]*?)<\/script>/.exec(html);
+if (!im) {
+  fail('importmap が見つからない');
 } else {
   try {
-    const map = JSON.parse(mapMatch[1]);
-    const keys = Object.keys(map.imports ?? {});
-    console.log(`  ok   importmap (${keys.join(', ')})`);
+    const map = JSON.parse(im[1]);
+    for (const spec of ['@bjorn3/browser_wasi_shim', 'fflate']) {
+      if (!map.imports?.[spec]) fail(`importmap に ${spec} が無い`);
+    }
+    if (!failed) console.log('  ok   importmap');
   } catch (e) {
-    console.error(`  FAIL importmap は JSON として不正: ${e.message}`);
-    failed = true;
+    fail('importmap が JSON として不正: ' + e.message);
   }
 }
 
-// 上りの窓口が実在するか
-for (const needle of ['window.__morphoConvert', 'window.__morphoExport', 'ReactNativeWebView.postMessage']) {
-  if (!html.includes(needle)) {
-    console.error(`  FAIL ${needle} が見つかりません`);
-    failed = true;
-  } else {
-    console.log(`  ok   ${needle}`);
-  }
-}
-
-process.exit(failed ? 1 : 0);
+if (failed) process.exit(1);
+console.log('bridge: all ok');

@@ -165,9 +165,14 @@ react-native-svg 入り ipa の配布実績で確認済み。当時の未検証�
 ```
 src/converter/  ── 変換。ここより上は pandoc を知らない
   types.ts               差し替え可能な境界。pandoc 固有の語彙を漏らさない
-  bridgeHtml.ts          不可視 WebView の中身。pandoc.wasm の起動・変換・書き出し・
+  bridge/                不可視 WebView の中身（ここを編集する）
+    shell.html           外枠。importmap と script の位置の目印
+    boot.js              起動前の見張り（classic script）
+    main.mjs             本体。pandoc.wasm の起動・変換・書き出し・
                          pptx の OOXML 解析（図形 / 段落 / ラン・座標継承・ノート）・
                          docx の三層解析（document / styles / numbering → DocBlock）
+  bridgeHtml.ts          **生成物**（`npm run build:bridge`。`npm start` でも自動生成）。
+                         bridge/ を束ねた文字列。check-bridge が bridge/ との同一性を検査する
   usePandocConverter.tsx 不可視 WebView をマウントして Converter 実装を提供する hook
   frontMatter.ts         front matter を自前で剥がす（CLAUDE.md 落とし穴 1 の回避）。
                          1 行だけの書き戻しと、読めない書き方の診断も持つ
@@ -236,10 +241,13 @@ GPL の結論次第で MIT の自前 writer に差し替えても、エディタ
 npm run check
 ```
 
+CI でも同じものが走る（`.github/workflows/check.yml`。PR と push、`app/**` の変更時）。
+検査は pandoc.wasm を `node_modules` から読むので、ネットワークは `npm ci` にしか要らない。
+
 | 検査 | 内容 |
 |---|---|
 | `tsc --noEmit` | 型チェック |
-| `check-bridge.mjs` | ブリッジに埋めた JavaScript の構文チェック（実機でしか走らないコードなので手元で落とす） |
+| `check-bridge.mjs` | ブリッジ（`bridge/`）の構文チェックと、生成物 `bridgeHtml.ts` が `bridge/` と一致すること（更新忘れを止める）。実機でしか走らないコードなので手元で落とす |
 | `check-frontmatter.mjs` | front matter の切り出し |
 | `check-scene.mjs` | pptx パーサ単体（ブリッジを vm で評価して直接叩く） |
 | `check-cursor.mjs` | カーソル位置 → スライド番号の対応 |
@@ -361,12 +369,15 @@ flex:1 の兄弟がもう1人いることが算術で確定した。
 - テーマ層（三層分離の第2層）。**コード上はまだゼロ**
 - カーソル同期の `headingSegments` 一般化（文書 / Web プレビューは同期なし）
 - 縦書き。置き場はテーマ層
-- `to: 'pdf'` が wasm で可能かの 1 回の実験（`../notes/preview-formats.md` の宿題）
+- PDF。**pandoc.wasm では出せない**（実測: PDF エンジンをサブプロセスで起動する設計で、
+  WASI に無い。`../notes/foundation-2026-09.md` D）。`to: 'typst'` は動くので、
+  Typst の WASM を第 2 のエンジンとして足す設計。v0.20 以降
 - pandoc.wasm の同梱（今は unpkg から取得。バージョンは 1.1.0 に固定済み。
   同梱化はライセンス判断とセット — CLAUDE.md「制約とリスク」）。
   **オフライン起動の挙動も未検証**（永続キャッシュが無い）
 
-**実機未検証の積み残しが 0.10.0〜0.13.0 の 4 版ぶんある。**
-受け入れ条件は `../notes/status-and-plan.md` の「v0.14 の前に置く実機周回」。
+**実機未検証の積み残しが 0.10.0〜0.18.1 に積まれている。**
+受け入れ条件は `../notes/status-and-plan.md` の「次の実機周回」と「0.18.0 の確認」、
+回す順は `../notes/development-plan-2026-09.md` 3-C。
 
 機能の中期計画は `../notes/roadmap-pptx.md`（内容 / テーマ / デザインデータの三層分離）。

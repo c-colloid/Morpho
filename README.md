@@ -42,7 +42,7 @@ Markdown で内容を書けば、PowerPoint スライドや Word 文書に刷り
 | 画像配置 | 画像の大きさ・位置をタッチで決める |
 | テーマ | 見た目の定義を原稿から切り離し、文書間で使い回せるようにする |
 | 日本語組版の続き | ルビ・傍点の先にある縦書き |
-| PDF / epub 書き出し | 日本語 PDF（Typst 経由を検討）と電子書籍 |
+| PDF / epub 書き出し | 電子書籍（epub）と日本語 PDF。PDF は pandoc の WebAssembly では出せないことが分かったので、Typst の WebAssembly を第 2 のエンジンとして足す設計 |
 
 現在地と残りの計画は [`notes/status-and-plan.md`](notes/status-and-plan.md)、
 段組みと画像配置の設計は [`notes/columns-and-images.md`](notes/columns-and-images.md)、

@@ -475,8 +475,11 @@ App Extension のメモリ上限は約 120 MB（後述）。
 （WASM 上の Lua フィルタは検証済み → `notes/findings.md` 6。
 日本語の gsub も動くが、否定文字クラスはバイト単位で壊れるので遅延量指定子を使う）
 
-- `to: 'pdf'` が wasm で原理的に可能か（1 回の実験で確定させる。`notes/preview-formats.md` の宿題）
-- Typst 経由の日本語 PDF（CJK フォントを WASM FS に配置する必要がある）— 優先度低
+- Typst 経由の日本語 PDF（CJK フォントを WASM FS に配置する必要がある）— 優先度低。
+  **前提は決着した: pandoc.wasm は PDF を出せない**（実測。`to: 'pdf'` は
+  `typst: runInteractiveProcess: unsupported operation`。PDF エンジンをサブプロセスで
+  起動する設計で WASI に無い。`to: 'typst'` の中間形式は出る）。PDF は Typst 自体の
+  WASM を第 2 のエンジンとして同梱する経路しかない — `notes/foundation-2026-09.md` D
 - 後処理（装飾注入・OOXML 書き換え）を含む端から端までの遅延。47 ms は pandoc の変換時間のみ
 - 起動時の wasm 取得がオフラインでどうなるか（永続キャッシュが無い。README の「初回のみ」は未確認）
 
@@ -642,7 +645,11 @@ notes/columns-and-images.md          段組みと画像配置の設計
 notes/v014-foundation.md             v0.14 の土台修理（設計と検証）
 notes/column-input.md                段組みの入力（+++ の記法）
 notes/footer-design.md               フッター（出典・注釈）の設計と検証
+notes/foundation-2026-09.md          足場の整理（CI・ブリッジ分割・プレビュー同期・PDF 実験）
+notes/theme-layer.md                 テーマ層に向けた組版要件の一覧（pandoc で届くか）
 scripts/init.sh                      Pages 有効化と基準出力の再生成
+.github/workflows/check.yml          PR と push で npm run check（型検査 + 自己診断）
+.github/workflows/build-ipa.yml      main への push で署名なし ipa
 ```
 
 `app/` の中身と現在地は `app/DEVELOPMENT.md`（開発者向け）と

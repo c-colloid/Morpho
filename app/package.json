@@ -1,6 +1,6 @@
 {
   "name": "morpho",
-  "version": "0.18.0",
+  "version": "0.18.1",
   "license": "MIT",
   "main": "index.ts",
   "dependencies": {
@@ -26,6 +26,8 @@
   },
   "scripts": {
     "start": "expo start",
+    "prestart": "node scripts/build-bridge.mjs",
+    "build:bridge": "node scripts/build-bridge.mjs",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",

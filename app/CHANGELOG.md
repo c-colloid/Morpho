@@ -3,6 +3,25 @@
 新しい版が上。バージョンは `app.json` の `version` で、画面上部のヘッダに出る
 （実機で見ているものがどの版か分かるようにするため、push のたびに上げる）。
 
+## 0.18.1 — 2026-09-10
+
+**内部の整理と CI。画面の動作は変えていない**（`../notes/foundation-2026-09.md`）。
+
+- **CI で `npm run check` が走る**（`.github/workflows/check.yml`。PR と push）。
+  これまで ipa のビルドだけで、型検査と自己診断は手元でしか回っていなかった
+- **ブリッジ（不可視 WebView の中身）を実ファイルに分けた。** `src/converter/bridge/`
+  （`shell.html` / `boot.js` / `main.mjs`）を編集し、`npm run build:bridge` で
+  `bridgeHtml.ts` を生成する（`npm start` でも自動生成）。テンプレートリテラルの
+  二重エスケープ（`\\n` と書く・`` ` `` と `${` を避ける）が要らなくなり、
+  `node --check` が直接かかる。配信される文字列は移行前後で sha256 が一致
+  （`e6b0a612…`、108,350 bytes）。`check-bridge` が生成物と `bridge/` の同一性を検査する
+- **プレビューの同期を `usePreviewSync` に切り出した**（`src/ui/usePreviewSync.ts`）。
+  変換の投入・結果の保持・形式の切り替え・再変換の引き金を一箇所に集め、
+  EditorScreen は 2,729 → 2,618 行。テーマ層（v0.19）が触る場所を先に作った
+- **PDF の実験を 1 回済ませた。** pandoc.wasm は PDF を出せない（PDF エンジンを
+  サブプロセスで起動する設計で、WASI に無い）。`to: 'typst'` は動く。
+  PDF は Typst の WASM を第 2 のエンジンとして足す経路に決めた（v0.20 以降）
+
 ## 0.18.0 — 2026-09-08
 
 **iPhone とソフトキーボードで使えるように画面を組み直した。** 0.17 までは

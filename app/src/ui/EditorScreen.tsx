@@ -30,7 +30,6 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { LatestOnly } from '../converter/latestOnly';
 import {
   frontMatterIssues,
   sanitizeForXml,
@@ -51,6 +50,7 @@ import {
 } from '../text/editActions.ts';
 import { cardWidthFor, layoutFor, type Pane } from './layout';
 import { useKeyboardInset } from './useKeyboardInset';
+import { usePreviewSync } from './usePreviewSync';
 import { MarkdownToolbar, type ToolbarAction } from './MarkdownToolbar';
 import { findSplitSuspects } from '../preview/slideSync.ts';
 import { usePandocConverter } from '../converter/usePandocConverter';
@@ -145,8 +145,6 @@ import { NotesEditSheet } from './NotesEditSheet';
 import { SlideShow } from './SlideShow';
 import { SlideSurface } from './SlideSurface';
 
-/** CLAUDE.md 性能設計: デッキ全体の変換は手が止まって 1.5 秒後 */
-const IDLE_MS = 1500;
 /** 自動保存は手が止まって 1 秒後。フラッシュは文書切替と background 遷移でも走る */
 const SAVE_MS = 1000;
 /** iOS: 原稿の TextInput とキーボード上のツールバーを結ぶ ID */
@@ -246,18 +244,6 @@ export default function EditorScreen() {
   }, []);
 
   const [source, setSource] = useState('');
-  const [result, setResult] = useState<SlideResult | null>(null);
-  const [webResult, setWebResult] = useState<WebResult | null>(null);
-  const [docResult, setDocResult] = useState<DocResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  /* プレビューの形式。変換はアクティブな形式だけを走らせる
-     （ブリッジは単一 FIFO 直列・中断不可のため。notes/preview-formats.md） */
-  const [previewFormat, setPreviewFormat] = useState<PreviewFormat>('slides');
-  const previewFormatRef = useRef(previewFormat);
-  previewFormatRef.current = previewFormat;
-
   /* ---------- 文書 ---------- */
   const [docs, setDocs] = useState<DocMeta[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -266,10 +252,6 @@ export default function EditorScreen() {
 
   const sourceRef = useRef(source);
   sourceRef.current = source;
-  const statusRef = useRef(status.phase);
-  statusRef.current = status.phase;
-  const resultRef = useRef<SlideResult | null>(null);
-  resultRef.current = result;
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
   const docsRef = useRef(docs);
@@ -415,6 +397,28 @@ export default function EditorScreen() {
   const [design, setDesign] = useState<DesignData>(EMPTY_DESIGN);
   const designRef = useRef(design);
   designRef.current = design;
+
+  /* ---------- プレビューの同期（変換の投入・結果・形式・再変換） ---------- */
+  const {
+    result,
+    webResult,
+    docResult,
+    error,
+    busy,
+    previewFormat,
+    previewFormatRef,
+    resultRef,
+    refreshPreview,
+    resetPreview,
+    handleFormatChange,
+  } = usePreviewSync({
+    converter,
+    ready: status.phase === 'ready',
+    activeId,
+    source,
+    design,
+    designRef,
+  });
   useEffect(() => {
     if (!activeId) return;
     /* 前の文書の装飾を非同期ロードの間だけでも見せない・書かせない。
@@ -474,10 +478,7 @@ export default function EditorScreen() {
       }
       if (!wired) converter.setReferenceDoc(null);
       /* テンプレートの有無・割り当てが変わったのでプレビューを取り直す */
-      if (statusRef.current === 'ready') {
-        setBusy(true);
-        runnerRef.current?.submit({ md: sourceRef.current, format: previewFormatRef.current });
-      }
+      refreshPreview();
     })(), 400);
     return () => {
       alive = false;
@@ -604,10 +605,7 @@ export default function EditorScreen() {
       converter.setAssets(Object.keys(map).length ? map : null);
       assetsKeyRef.current = key;
       /* 預けの前に走った変換は [画像なし] のまま — 取り直す */
-      if (statusRef.current === 'ready') {
-        setBusy(true);
-        runnerRef.current?.submit({ md: sourceRef.current, format: previewFormatRef.current });
-      }
+      refreshPreview();
     })();
   }, [activeId, source, converter]);
 
@@ -776,19 +774,12 @@ export default function EditorScreen() {
      即時に変換を投げ、強調位置とカード座標も破棄する */
   const resetPreviewFor = useCallback(
     (text: string) => {
-      setResult(null);
-      setWebResult(null);
-      setDocResult(null);
-      setError(null);
+      resetPreview(text);
       setCurrentSlide(1);
       cardYs.current.clear();
       webScrollY.current = 0;
-      if (statusRef.current === 'ready') {
-        setBusy(true);
-        runnerRef.current?.submit({ md: text, format: previewFormatRef.current });
-      }
     },
-    [],
+    [resetPreview],
   );
 
   const switchDoc = useCallback(
@@ -1101,106 +1092,6 @@ export default function EditorScreen() {
     },
     [flushSave, resetPreviewFor],
   );
-
-  /* ---------- 変換 ---------- */
-  const runner = useMemo(
-    () =>
-      new LatestOnly<{ md: string; format: PreviewFormat }, ConvertResult>(
-        (job) => {
-          // CLAUDE.md 落とし穴 1: front matter は自前で剥がして metadata で渡す
-          // 落とし穴 9: XML 非対応の制御文字は pandoc へ渡す直前に空白へ置換する
-          const { metadata, body } = sanitizeForXml(splitFrontMatter(job.md));
-          return converter.convert(body, {
-            metadata,
-            stripHtmlComments: true,
-            format: job.format,
-            useTemplate: designRef.current.template !== undefined,
-            /* 文字サイズ設定。プレビューではマスターを書き換えず（adjustDeck が
-               RN 側で重ねる）、表・図と並ぶスライドのタイトルを枠に合わせる
-               目標サイズにだけ使う（ブリッジの applyTitleFitZip） */
-            textSizes: toExportSizes(
-              designRef.current.text,
-              resultRef.current?.deck?.bodySz ?? [2400, 2100, 1800, 1500, 1500],
-            ),
-            captionTitle: designRef.current.captionTitle,
-            /* docx / Web のデッキ全体フッター。pptx は帯をアプリ側で描くので不要 */
-            docFooter: toDocFooter(metadata.footer, designRef.current.footer),
-          });
-        },
-        (r, e) => {
-          setBusy(false);
-          if (e) {
-            setError(e.message);
-          } else if (r) {
-            setError(null);
-            if (r.kind === 'web') {
-              /* HTML が同一なら state を差し替えない。WebView の再ロード
-                 （＝スクロール先頭戻り）を無駄に起こさないため */
-              setWebResult((prev) => (prev && prev.html === r.html ? prev : r));
-            } else if (r.kind === 'doc') {
-              setDocResult(r);
-            } else {
-              setResult(r);
-            }
-          }
-        },
-      ),
-    [converter],
-  );
-
-  /* resetPreviewFor は宣言順の都合で ref 経由に読む */
-  const runnerRef = useRef<typeof runner | null>(null);
-  runnerRef.current = runner;
-
-  const convTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (status.phase !== 'ready' || activeId === null) return;
-    if (convTimer.current) clearTimeout(convTimer.current);
-    convTimer.current = setTimeout(() => {
-      setBusy(true);
-      /* 形式は ref で読む。切り替え時は handleFormatChange が即時変換するので、
-         ここを previewFormat に依存させると同じ入力を二重に変換してしまう */
-      runner.submit({ md: source, format: previewFormatRef.current });
-    }, IDLE_MS);
-    return () => {
-      if (convTimer.current) clearTimeout(convTimer.current);
-    };
-  }, [source, status.phase, runner, activeId]);
-
-  /* 文字サイズ設定（と表・図と並ぶタイトルの置き方）が変わったら再変換する。表・図と並ぶスライド（Content with
-     Caption）のタイトルは、ブリッジが設定を目標に枠へ合わせて XML へ焼き込むので
-     adjustDeck だけでは追従しない。ほかのタイトルは adjustDeck が即時に反映し、
-     こちらは少し遅れて揃う。書類の切り替えは本線の効果が変換するので除く */
-  const textSizesKey = JSON.stringify([design.text ?? null, design.captionTitle ?? null]);
-  const textSizesSeen = useRef<{ id: string | null; key: string } | null>(null);
-  useEffect(() => {
-    const prev = textSizesSeen.current;
-    textSizesSeen.current = { id: activeId, key: textSizesKey };
-    if (!prev || prev.id !== activeId || prev.key === textSizesKey) return;
-    if (statusRef.current !== 'ready' || activeId === null) return;
-    const t = setTimeout(() => {
-      setBusy(true);
-      runnerRef.current?.submit({ md: sourceRef.current, format: previewFormatRef.current });
-    }, 300);
-    return () => clearTimeout(t);
-  }, [textSizesKey, activeId]);
-
-  /* 形式の切り替え。古い結果は残したまま（切り戻しで即表示）、
-     その形式の最新結果をすぐ取りに行く */
-  const handleFormatChange = useCallback((f: PreviewFormat) => {
-    setPreviewFormat(f);
-    previewFormatRef.current = f;
-    /* 直前のタイピングで武装済みのデバウンスを解除。放置すると
-       同じ入力の変換がもう一度走る（ここで即時変換するため不要） */
-    if (convTimer.current) {
-      clearTimeout(convTimer.current);
-      convTimer.current = null;
-    }
-    if (statusRef.current === 'ready') {
-      setBusy(true);
-      runnerRef.current?.submit({ md: sourceRef.current, format: f });
-    }
-  }, []);
 
   /* ---------- カーソルとプレビューの同期 ---------- */
   const [currentSlide, setCurrentSlide] = useState(1);
@@ -1766,9 +1657,7 @@ export default function EditorScreen() {
       });
       /* スライドは帯をアプリ側で描くので即時反映される。docx / Web は実出力を
          解析しているので、体裁が変わったら変換し直す */
-      if (previewFormatRef.current !== 'slides' && statusRef.current === 'ready') {
-        runnerRef.current?.submit({ md: sourceRef.current, format: previewFormatRef.current });
-      }
+      if (previewFormatRef.current !== 'slides') refreshPreview(undefined, { quiet: true });
     },
     [mutateDesign],
   );

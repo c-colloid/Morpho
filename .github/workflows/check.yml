@@ -1,0 +1,44 @@
+# 型検査と自己診断（npm run check）を PR と push で回す。
+#
+# build-ipa.yml は macOS runner で ipa を作るだけで、検査は走っていなかった。
+# 検査は pandoc.wasm を node_modules から読むので、ネットワークは npm ci にしか要らない。
+# 文書だけの変更では走らない（ipa と同じ除外）。
+name: Check
+
+on:
+  pull_request:
+    paths:
+      - 'app/**'
+      - '!app/README.md'
+      - '!app/DEVELOPMENT.md'
+      - '!app/CHANGELOG.md'
+      - '.github/workflows/check.yml'
+  push:
+    paths:
+      - 'app/**'
+      - '!app/README.md'
+      - '!app/DEVELOPMENT.md'
+      - '!app/CHANGELOG.md'
+      - '.github/workflows/check.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: 依存を入れる
+        run: npm ci
+
+      - name: 型検査と自己診断
+        run: npm run check
