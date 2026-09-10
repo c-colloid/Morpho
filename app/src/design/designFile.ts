@@ -12,6 +12,7 @@ import type { DecorGroup, DesignData } from '../store/designs';
 /* 拡張子つきで import する（node --experimental-strip-types の検査が
    拡張子なしの値 import を解決できないため。Metro はどちらも解決できる） */
 import { sanitizeFooterStyle } from './footer.ts';
+import { sanitizeThemeChoice } from '../theme/theme.ts';
 import { clampPt, type TextSizes } from './textSizes.ts';
 
 export const DESIGN_FILE_KIND = 'morphodesign';
@@ -32,6 +33,7 @@ export function serializeDesign(design: DesignData): string {
       /* フッターは体裁だけ。文言は原稿の front matter にあるので含めない */
       ...(design.footer ? { footer: design.footer } : {}),
       ...(design.captionTitle === 'band' ? { captionTitle: 'band' } : {}),
+      ...(design.theme ? { theme: design.theme } : {}),
     },
     null,
     2,
@@ -161,6 +163,8 @@ export function parseDesignFile(text: string): DesignData | null {
   const footer = sanitizeFooterStyle(o.footer);
   if (footer) out.footer = footer;
   if (o.captionTitle === 'band') out.captionTitle = 'band';
+  const theme = sanitizeThemeChoice(o.theme);
+  if (theme) out.theme = theme;
   return out;
 }
 

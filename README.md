@@ -28,7 +28,7 @@ Markdown で内容を書けば、PowerPoint スライドや Word 文書に刷り
 
 ## ステータス
 
-開発中です。現在 **v0.15.0**（[変更履歴](app/CHANGELOG.md)）。
+開発中です。現在の版は [変更履歴](app/CHANGELOG.md) の先頭を参照（`app/app.json` の `version` が正。この文書には版番号を書かない）。
 上記の特徴はすべて iPad 実機で動作しています。
 
 実装済みの主なもの: 実寸ライブプレビュー（スライド / 文書 / Web）・スライドショーと発表者ビュー・
@@ -40,9 +40,9 @@ Markdown で内容を書けば、PowerPoint スライドや Word 文書に刷り
 | 予定している主なもの | 内容 |
 |---|---|
 | 画像配置 | 画像の大きさ・位置をタッチで決める |
-| テーマ | 見た目の定義を原稿から切り離し、文書間で使い回せるようにする |
+| テーマ | 見た目の定義を原稿から切り離し、文書間で使い回せるようにする。0.19.0 で骨格（組み込みテーマ・段組みの列比・意味クラス）。共有と編集 UI はこれから |
 | 日本語組版の続き | ルビ・傍点の先にある縦書き |
-| PDF / epub 書き出し | 日本語 PDF（Typst 経由を検討）と電子書籍 |
+| PDF / epub 書き出し | 電子書籍（epub）と日本語 PDF。PDF は pandoc の WebAssembly では出せないことが分かったので、Typst の WebAssembly を第 2 のエンジンとして足す設計 |
 
 現在地と残りの計画は [`notes/status-and-plan.md`](notes/status-and-plan.md)、
 段組みと画像配置の設計は [`notes/columns-and-images.md`](notes/columns-and-images.md)、

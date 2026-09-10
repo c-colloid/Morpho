@@ -1,0 +1,10 @@
+# 診断: 書き出しメニューを開いた状態で止める（直後に maestro hierarchy を取る）
+appId: com.ccolloid.morpho
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: '.*プレビュー · [0-9]+ 枚.*'
+    timeout: 300000
+- tapOn: '書き出し'
+- takeScreenshot: diag-a-export

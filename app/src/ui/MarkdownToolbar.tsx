@@ -9,8 +9,8 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
  * 全角空白になって箇条書きごと壊れる（実測）— どちらもここで解決する。
  *
  * 見た目だけの部品。何をどう入れるかは EditorScreen（text/editActions.ts）が決める。
- * iOS では InputAccessoryView に入れてキーボードと一緒に上下し、
- * それ以外では原稿ペインの下端に置く。
+ * 原稿ペインの下端に置き、ルートの下余白（useKeyboardInset）でキーボードの上に載せる
+ * （iOS の InputAccessoryView は使わない。EditorScreen の説明を参照）。
  */
 export type ToolbarAction =
   | 'heading'

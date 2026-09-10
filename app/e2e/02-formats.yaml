@@ -1,0 +1,24 @@
+# 形式の切り替え（preview-formats.md）: 文書・Web へ切り替えてもエラーが出ず、
+# スライドへ戻すと枚数が出る。
+appId: com.ccolloid.morpho
+---
+- launchApp
+- extendedWaitUntil:
+    visible: '.*プレビュー · [0-9]+ 枚.*'
+    timeout: 300000
+- tapOn: '文書'
+- extendedWaitUntil:
+    visible: '単一ソース出版'
+    timeout: 60000
+- assertNotVisible: '変換に失敗.*'
+- takeScreenshot: 02-doc
+- tapOn: 'Web'
+- extendedWaitUntil:
+    notVisible: '.*プレビュー · [0-9]+ 枚.*'
+    timeout: 60000
+- takeScreenshot: 02-web
+- tapOn: 'スライド'
+- extendedWaitUntil:
+    visible: '.*プレビュー · [0-9]+ 枚.*'
+    timeout: 60000
+- takeScreenshot: 02-slides

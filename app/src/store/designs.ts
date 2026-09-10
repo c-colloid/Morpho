@@ -6,6 +6,7 @@
  * （原稿と違い、装飾は失われても内容は無傷という設計）。
  * 将来 .morphodesign として書き出し可能にする（Git 再現用・任意）。
  */
+import { sanitizeThemeChoice, type ThemeChoice } from '../theme/theme';
 import * as FileSystem from 'expo-file-system/legacy';
 
 import type { SlideDecoration } from '../converter/types';
@@ -50,6 +51,8 @@ export interface DesignData {
   captionTitle?: 'band';
   /** テンプレート（reference-doc）。.morphodesign には含めない（本体が別ファイル） */
   template?: TemplateMeta;
+  /** テーマ（第2層）の選択と列比の上書き。src/theme/theme.ts */
+  theme?: ThemeChoice;
 }
 
 export const EMPTY_DESIGN: DesignData = { version: 1, decorations: [], groups: [] };
@@ -78,6 +81,8 @@ export async function loadDesign(docId: string): Promise<DesignData> {
       const footer = sanitizeFooterStyle(parsed.footer);
       if (footer) out.footer = footer;
       if (parsed.captionTitle === 'band') out.captionTitle = 'band';
+      const theme = sanitizeThemeChoice(parsed.theme);
+      if (theme) out.theme = theme;
       const tpl = sanitizeTemplateMeta(parsed.template);
       if (tpl) out.template = tpl;
       return out;

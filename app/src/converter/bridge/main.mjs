@@ -1,46 +1,21 @@
 /**
- * 生成物。編集しないこと。
+ * 不可視 WebView の中身（本体）。
  *
- * 元は src/converter/bridge/（shell.html / boot.js / main.mjs）。
- * `npm run build:bridge` で束ね直す。check-bridge.mjs が同一性を検査する。
+ * CLAUDE.md:「WKWebView は不可視の計算エンジンとして使う。
+ * Markdown を渡すと描画用の JSON を返す。描画はネイティブ側」。
+ * ここは計算機に徹する。DOM も UI も持たない。
+ *
+ * 中身は docs/index.html の検証ハーネスから実証済みの経路だけを抜き出したもの。
+ * ハーネス側で確認済みの前提:
+ *   - jsdelivr は 50MB 制限で wasm 本体を配れない。unpkg に固定する
+ *   - core.js は bare specifier で wasi shim を import するので importmap が要る
+ *   - RN 側とは injectJavaScript（下り）と postMessage（上り）でやり取りする
+ *
+ * このファイルは scripts/build-bridge.mjs が shell.html に埋めて bridgeHtml.ts を生成する。
+ * この冒頭コメントは束ねるときに落とされる。中身の関数は window.__morpho* に生やしてあり、
+ * 検査スクリプト（check-scene / check-deck / check-columns / check-footer）が
+ * 生成物を vm で評価して直接叩く。
  */
-export const BRIDGE_HTML = `<!doctype html>
-<html lang="ja">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>morpho bridge</title>
-<script type="importmap">
-{
-  "imports": {
-    "@bjorn3/browser_wasi_shim": "https://cdn.jsdelivr.net/npm/@bjorn3/browser_wasi_shim@0.4.2/+esm",
-    "fflate": "https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js"
-  }
-}
-</script>
-<script>
-/* 起動前の失敗も RN に届くようにしておく。実機でしか出ない事故を黙らせないため */
-window.__rn = function (m) {
-  if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(m));
-};
-window.addEventListener('error', function (e) {
-  window.__rn({ type: 'boot-error', message: 'onerror: ' + (e.message || String(e.error || e)) });
-});
-window.addEventListener('unhandledrejection', function (e) {
-  var r = e.reason;
-  window.__rn({ type: 'boot-error', message: 'rejection: ' + String((r && r.message) || r) });
-});
-/* モジュールスクリプト自体が読めなかった場合の見張り */
-window.__booted = false;
-setTimeout(function () {
-  if (!window.__booted) {
-    window.__rn({ type: 'boot-error', message: 'module script did not start within 20s (importmap or CDN unreachable?)' });
-  }
-}, 20000);
-</script>
-</head>
-<body>
-<script type="module">
 import { createPandocInstance } from 'https://cdn.jsdelivr.net/npm/pandoc-wasm@1.1.0/src/core.js';
 import { unzipSync, zipSync, strToU8 } from 'fflate';
 
@@ -62,7 +37,7 @@ var STRIP_LUA = [
   "  if el.format == 'html' and el.text:match('^%s*<!%-%-') then return {} end",
   'end',
   ''
-].join('\\n');
+].join('\n');
 
 /* CLAUDE.md 落とし穴 8: ::: notes ::: は docx で無警告のまま本文に混入する */
 var DROP_NOTES_LUA = [
@@ -70,7 +45,7 @@ var DROP_NOTES_LUA = [
   "  if el.classes:includes('notes') then return {} end",
   'end',
   ''
-].join('\\n');
+].join('\n');
 
 /* 日本語組版: {親文字|よみ} → ルビ、《《文字》》 → 傍点（でんでんマークダウン互換）。
    docx は w:ruby / w:em（本物の組版・XSD 準拠は実測済み）、HTML は <ruby> と
@@ -83,11 +58,11 @@ var RUBY_LUA = [
   'local function rubyInline(base, rt)',
   "  if FORMAT == 'docx' then",
   "    return pandoc.RawInline('openxml',",
-  '      \\'<w:r><w:ruby><w:rubyPr><w:rubyAlign w:val="distributeSpace" />\\' ..',
-  '      \\'<w:hps w:val="12" /><w:hpsRaise w:val="22" /><w:hpsBaseText w:val="24" />\\' ..',
-  '      \\'<w:lid w:val="ja-JP" /></w:rubyPr>\\' ..',
-  '      \\'<w:rt><w:r><w:rPr><w:sz w:val="12" /></w:rPr><w:t>\\' .. esc(rt) .. \\'</w:t></w:r></w:rt>\\' ..',
-  '      \\'<w:rubyBase><w:r><w:t>\\' .. esc(base) .. \\'</w:t></w:r></w:rubyBase>\\' ..',
+  '      \'<w:r><w:ruby><w:rubyPr><w:rubyAlign w:val="distributeSpace" />\' ..',
+  '      \'<w:hps w:val="12" /><w:hpsRaise w:val="22" /><w:hpsBaseText w:val="24" />\' ..',
+  '      \'<w:lid w:val="ja-JP" /></w:rubyPr>\' ..',
+  '      \'<w:rt><w:r><w:rPr><w:sz w:val="12" /></w:rPr><w:t>\' .. esc(rt) .. \'</w:t></w:r></w:rt>\' ..',
+  '      \'<w:rubyBase><w:r><w:t>\' .. esc(base) .. \'</w:t></w:r></w:rubyBase>\' ..',
   "      '</w:ruby></w:r>')",
   "  elseif FORMAT == 'html' or FORMAT == 'html5' or FORMAT:find('^epub') then",
   "    return pandoc.RawInline('html', '<ruby>' .. esc(base) .. '<rt>' .. esc(rt) .. '</rt></ruby>')",
@@ -97,10 +72,10 @@ var RUBY_LUA = [
   'local function botenInline(text)',
   "  if FORMAT == 'docx' then",
   "    return pandoc.RawInline('openxml',",
-  '      \\'<w:r><w:rPr><w:em w:val="dot" /></w:rPr><w:t xml:space="preserve">\\' .. esc(text) .. \\'</w:t></w:r>\\')',
+  '      \'<w:r><w:rPr><w:em w:val="dot" /></w:rPr><w:t xml:space="preserve">\' .. esc(text) .. \'</w:t></w:r>\')',
   "  elseif FORMAT == 'html' or FORMAT == 'html5' or FORMAT:find('^epub') then",
   "    return pandoc.RawInline('html',",
-  '      \\'<span style="text-emphasis:filled dot;-webkit-text-emphasis:filled dot;">\\' .. esc(text) .. \\'</span>\\')',
+  '      \'<span style="text-emphasis:filled dot;-webkit-text-emphasis:filled dot;">\' .. esc(text) .. \'</span>\')',
   '  end',
   '  return pandoc.Strong({ pandoc.Str(text) })',
   'end',
@@ -133,7 +108,7 @@ var RUBY_LUA = [
   '  return out',
   'end',
   ''
-].join('\\n');
+].join('\n');
 window.__morphoRubyLua = RUBY_LUA;
 
 /* CLAUDE.md 落とし穴 1・2: リーダーは固定し、Auto 検出には頼らない。
@@ -210,14 +185,14 @@ async function fetchWasm() {
 
 var ENT = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
 function decodeXml(s) {
-  return s.replace(/&(amp|lt|gt|quot|apos|#\\d+);/g, function (m, g) {
+  return s.replace(/&(amp|lt|gt|quot|apos|#\d+);/g, function (m, g) {
     if (g.charAt(0) === '#') return String.fromCharCode(Number(g.slice(1)));
     return ENT[g] || m;
   });
 }
 
 function slideNum(name) {
-  var m = /slide(\\d+)\\.xml$/.exec(name);
+  var m = /slide(\d+)\.xml$/.exec(name);
   return m ? Number(m[1]) : 0;
 }
 
@@ -229,34 +204,34 @@ var MONO_FACE = /courier|consolas|monaco|menlo|mono/i;
 
 function parseRuns(paragraphXml) {
   var runs = [];
-  /* <a:r> だけでなく、行内改行 <a:br/>（原稿の行末 \\ / スペース2つ由来）も
+  /* <a:r> だけでなく、行内改行 <a:br/>（原稿の行末 \ / スペース2つ由来）も
      出現順に拾う。落とすとプレビューだけ改行が消える */
-  var re = /<a:r>([\\s\\S]*?)<\\/a:r>|<a:br\\s*\\/>/g;
+  var re = /<a:r>([\s\S]*?)<\/a:r>|<a:br\s*\/>/g;
   var m;
   while ((m = re.exec(paragraphXml)) !== null) {
     if (m[1] === undefined) {
-      /* <a:br/>: 直前のランに改行を継ぎ足す（RN の Text は \\n で改行する） */
-      if (runs.length) runs[runs.length - 1].text += '\\n';
-      else runs.push({ text: '\\n' });
+      /* <a:br/>: 直前のランに改行を継ぎ足す（RN の Text は \n で改行する） */
+      if (runs.length) runs[runs.length - 1].text += '\n';
+      else runs.push({ text: '\n' });
       continue;
     }
     var r = m[1];
-    var t = /<a:t>([\\s\\S]*?)<\\/a:t>/.exec(r);
+    var t = /<a:t>([\s\S]*?)<\/a:t>/.exec(r);
     if (!t) continue;
-    var rPr = /<a:rPr\\b([^>]*)>/.exec(r);
+    var rPr = /<a:rPr\b([^>]*)>/.exec(r);
     var attrs = rPr ? rPr[1] : '';
-    var latin = /<a:latin\\b[^>]*\\btypeface="([^"]*)"/.exec(r);
+    var latin = /<a:latin\b[^>]*\btypeface="([^"]*)"/.exec(r);
     var run = { text: decodeXml(t[1]) };
-    if (/\\bb="(1|true)"/.test(attrs)) run.bold = true;
-    if (/\\bi="(1|true)"/.test(attrs)) run.italic = true;
-    if (/\\bu="(sng|dbl)"/.test(attrs)) run.underline = true;
+    if (/\bb="(1|true)"/.test(attrs)) run.bold = true;
+    if (/\bi="(1|true)"/.test(attrs)) run.italic = true;
+    if (/\bu="(sng|dbl)"/.test(attrs)) run.underline = true;
     if (latin && MONO_FACE.test(latin[1])) run.mono = true;
     /* ラン単位の文字色（pandoc はコードの構文色を srgbClr で出す。実測） */
-    var clr = /<a:solidFill>\\s*<a:srgbClr\\s+val="([0-9A-Fa-f]{6})"/.exec(r);
+    var clr = /<a:solidFill>\s*<a:srgbClr\s+val="([0-9A-Fa-f]{6})"/.exec(r);
     if (clr) run.color = '#' + clr[1].toUpperCase();
     /* テーマ配色の参照（意味クラスの Lua が schemeClr で出す）。テンプレートの
        配色に追従するので、実色は parsePptxZip が deck.colors で解決する */
-    var sclr = /<a:solidFill>\\s*<a:schemeClr\\s+val="(dk1|lt1|dk2|lt2|accent[1-6])"/.exec(r);
+    var sclr = /<a:solidFill>\s*<a:schemeClr\s+val="(dk1|lt1|dk2|lt2|accent[1-6])"/.exec(r);
     if (sclr && !clr) run.colorScheme = sclr[1];
     runs.push(run);
   }
@@ -265,7 +240,7 @@ function parseRuns(paragraphXml) {
 
 function parseParagraphs(txBodyXml) {
   var out = [];
-  var re = /<a:p>([\\s\\S]*?)<\\/a:p>/g;
+  var re = /<a:p>([\s\S]*?)<\/a:p>/g;
   var m;
   while ((m = re.exec(txBodyXml)) !== null) {
     var body = m[1];
@@ -276,23 +251,23 @@ function parseParagraphs(txBodyXml) {
     var marL = null;
     var indent = null;
     var algn = null;
-    var pPr = /<a:pPr\\b([^>]*)/.exec(body);
+    var pPr = /<a:pPr\b([^>]*)/.exec(body);
     if (pPr) {
-      var lvl = /\\blvl="(\\d+)"/.exec(pPr[1]);
+      var lvl = /\blvl="(\d+)"/.exec(pPr[1]);
       if (lvl) level = Number(lvl[1]);
-      var ml = /\\bmarL="(-?\\d+)"/.exec(pPr[1]);
+      var ml = /\bmarL="(-?\d+)"/.exec(pPr[1]);
       if (ml) marL = Number(ml[1]);
-      var ind = /\\bindent="(-?\\d+)"/.exec(pPr[1]);
+      var ind = /\bindent="(-?\d+)"/.exec(pPr[1]);
       if (ind) indent = Number(ind[1]);
-      var al = /\\balgn="(\\w+)"/.exec(pPr[1]);
+      var al = /\balgn="(\w+)"/.exec(pPr[1]);
       if (al) algn = al[1];
     }
     /* pandoc は箇条書きでない段落に buNone を明示する。
        箇条書きは何も書かずレイアウトの既定（行頭記号）に任せるので、
        「buNone が無い＝箇条書き」で判定する。 */
     var bullet = 'bullet';
-    if (/<a:buNone\\s*\\/>/.test(body)) bullet = 'none';
-    else if (/<a:buAutoNum\\b/.test(body)) bullet = 'number';
+    if (/<a:buNone\s*\/>/.test(body)) bullet = 'none';
+    else if (/<a:buAutoNum\b/.test(body)) bullet = 'number';
     var runs = parseRuns(body);
     if (runs.length) out.push({ runs: runs, level: level, bullet: bullet, marL: marL, indent: indent, algn: algn });
   }
@@ -304,13 +279,13 @@ function parseParagraphs(txBodyXml) {
    ファイルを直接描く — シーンに画像バイナリを載せない */
 function parsePics(slideXml) {
   var out = [];
-  var re = /<p:pic>[\\s\\S]*?<\\/p:pic>/g;
+  var re = /<p:pic>[\s\S]*?<\/p:pic>/g;
   var m;
   while ((m = re.exec(slideXml)) !== null) {
     var pic = m[0];
     var d = /<p:cNvPr [^>]*descr="([^"]*)"/.exec(pic);
-    var off = /<a:off x="(-?\\d+)" y="(-?\\d+)"/.exec(pic);
-    var ext = /<a:ext cx="(\\d+)" cy="(\\d+)"/.exec(pic);
+    var off = /<a:off x="(-?\d+)" y="(-?\d+)"/.exec(pic);
+    var ext = /<a:ext cx="(\d+)" cy="(\d+)"/.exec(pic);
     if (!d || !off || !ext) continue;
     out.push({
       name: decodeXml(d[1]),
@@ -331,31 +306,31 @@ function parsePics(slideXml) {
    parseParagraphs をそのまま使う。先頭行がヘッダかは tblPr firstRow="1" で分かる */
 function parseTables(slideXml) {
   var out = [];
-  var re = /<p:graphicFrame\\b[^>]*>([\\s\\S]*?)<\\/p:graphicFrame>/g;
+  var re = /<p:graphicFrame\b[^>]*>([\s\S]*?)<\/p:graphicFrame>/g;
   var m;
   while ((m = re.exec(slideXml)) !== null) {
     var gf = m[1];
     /* 表以外の graphicFrame（グラフ・OLE・図表）は落とす */
-    if (!/<a:tbl\\b/.test(gf)) continue;
-    var xf = /<p:xfrm\\b[^>]*>([\\s\\S]*?)<\\/p:xfrm>/.exec(gf);
+    if (!/<a:tbl\b/.test(gf)) continue;
+    var xf = /<p:xfrm\b[^>]*>([\s\S]*?)<\/p:xfrm>/.exec(gf);
     var frame = xf ? parseXfrm(xf[1]) : null;
     if (!frame) continue;
     var cols = [];
-    var cre = /<a:gridCol\\b[^>]*\\sw="(\\d+)"/g;
+    var cre = /<a:gridCol\b[^>]*\sw="(\d+)"/g;
     var cm;
     while ((cm = cre.exec(gf)) !== null) cols.push(Number(cm[1]));
-    var firstRow = /<a:tblPr\\b[^>]*\\bfirstRow="(1|true)"/.test(gf);
+    var firstRow = /<a:tblPr\b[^>]*\bfirstRow="(1|true)"/.test(gf);
     var rows = [];
-    /* <a:tr h="0">…</a:tr>。<a:trPr> は行ではない（\\b で区別） */
-    var tre = /<a:tr\\b[^>]*>([\\s\\S]*?)<\\/a:tr>/g;
+    /* <a:tr h="0">…</a:tr>。<a:trPr> は行ではない（\b で区別） */
+    var tre = /<a:tr\b[^>]*>([\s\S]*?)<\/a:tr>/g;
     var tm;
     while ((tm = tre.exec(gf)) !== null) {
       var cells = [];
       /* 空要素 <a:tc/> と <a:tc>…</a:tc> の両方を出現順に */
-      var tce = /<a:tc\\b[^>]*\\/>|<a:tc\\b[^>]*>([\\s\\S]*?)<\\/a:tc>/g;
+      var tce = /<a:tc\b[^>]*\/>|<a:tc\b[^>]*>([\s\S]*?)<\/a:tc>/g;
       var tcm;
       while ((tcm = tce.exec(tm[1])) !== null) {
-        var tb = tcm[1] === undefined ? null : /<a:txBody>([\\s\\S]*?)<\\/a:txBody>/.exec(tcm[1]);
+        var tb = tcm[1] === undefined ? null : /<a:txBody>([\s\S]*?)<\/a:txBody>/.exec(tcm[1]);
         cells.push(tb ? parseParagraphs(tb[1]) : []);
       }
       rows.push({ header: firstRow && rows.length === 0, cells: cells });
@@ -376,11 +351,11 @@ function parseTables(slideXml) {
 window.__morphoParseTables = parseTables;
 function parseShapes(slideXml) {
   var shapes = [];
-  var re = /<p:sp>([\\s\\S]*?)<\\/p:sp>/g;
+  var re = /<p:sp>([\s\S]*?)<\/p:sp>/g;
   var m;
   while ((m = re.exec(slideXml)) !== null) {
     var sp = m[1];
-    var txBody = /<p:txBody>([\\s\\S]*?)<\\/p:txBody>/.exec(sp);
+    var txBody = /<p:txBody>([\s\S]*?)<\/p:txBody>/.exec(sp);
     if (!txBody) continue;
     var paragraphs = parseParagraphs(txBody[1]);
     if (!paragraphs.length) continue;
@@ -388,18 +363,18 @@ function parseShapes(slideXml) {
     /* <p:ph type="title"/> のように種別が入る。type 省略時は body 扱い */
     var placeholder = null;
     var phIdx = null;
-    var ph = /<p:ph\\b([^>]*)/.exec(sp);
+    var ph = /<p:ph\b([^>]*)/.exec(sp);
     if (ph) {
-      var type = /\\btype="([^"]*)"/.exec(ph[1]);
+      var type = /\btype="([^"]*)"/.exec(ph[1]);
       placeholder = type ? type[1] : 'body';
-      var idx = /\\bidx="(\\d+)"/.exec(ph[1]);
+      var idx = /\bidx="(\d+)"/.exec(ph[1]);
       if (idx) phIdx = Number(idx[1]);
     }
     /* 垂直アンカー。無ければ null（レイアウト → マスターから継承する） */
     var anchor = null;
-    var bp = /<a:bodyPr\\b([^>]*)/.exec(sp);
+    var bp = /<a:bodyPr\b([^>]*)/.exec(sp);
     if (bp) {
-      var an = /\\banchor="(\\w+)"/.exec(bp[1]);
+      var an = /\banchor="(\w+)"/.exec(bp[1]);
       if (an) anchor = an[1];
     }
     shapes.push({
@@ -419,8 +394,8 @@ window.__morphoParseShapes = parseShapes;
 
 /* <a:xfrm><a:off x= y=/><a:ext cx= cy=/></a:xfrm> を読む。無ければ null */
 function parseXfrm(xml) {
-  var off = /<a:off\\s+x="(-?\\d+)"\\s+y="(-?\\d+)"/.exec(xml);
-  var ext = /<a:ext\\s+cx="(\\d+)"\\s+cy="(\\d+)"/.exec(xml);
+  var off = /<a:off\s+x="(-?\d+)"\s+y="(-?\d+)"/.exec(xml);
+  var ext = /<a:ext\s+cx="(\d+)"\s+cy="(\d+)"/.exec(xml);
   if (!off || !ext) return null;
   return { x: Number(off[1]), y: Number(off[2]), w: Number(ext[1]), h: Number(ext[2]) };
 }
@@ -436,12 +411,12 @@ function parseXfrm(xml) {
    （単一だと八進エスケープ扱いでテンプレートリテラルが構文エラーになる。
    applyTextSizes の lvlNpPr 置換と同じ作法） */
 function parseLvlStyle(spXml) {
-  var lst = /<a:lstStyle>([\\s\\S]*?)<\\/a:lstStyle>/.exec(spXml);
+  var lst = /<a:lstStyle>([\s\S]*?)<\/a:lstStyle>/.exec(spXml);
   if (!lst) return null;
   var out = null;
   /* 対と自己閉じの両方を拾う（PowerPoint 製の reference-doc は
      <a:lvl1pPr marL="0" indent="0"/> のように自己閉じで書くことがある） */
-  var re = /<a:lvl(\\d)pPr\\b([^>]*?)(\\/>|>([\\s\\S]*?)<\\/a:lvl\\1pPr>)/g;
+  var re = /<a:lvl(\d)pPr\b([^>]*?)(\/>|>([\s\S]*?)<\/a:lvl\1pPr>)/g;
   var m;
   while ((m = re.exec(lst[1])) !== null) {
     var i = Number(m[1]) - 1;
@@ -449,15 +424,15 @@ function parseLvlStyle(spXml) {
     var attrs = m[2];
     var body = m[4] || '';
     var ent = null;
-    var sz = /<a:defRPr[^>]*\\bsz="(\\d+)"/.exec(body);
+    var sz = /<a:defRPr[^>]*\bsz="(\d+)"/.exec(body);
     if (sz) { ent = ent || {}; ent.sz = Number(sz[1]); }
-    var ml = /\\bmarL="(-?\\d+)"/.exec(attrs);
+    var ml = /\bmarL="(-?\d+)"/.exec(attrs);
     if (ml) { ent = ent || {}; ent.marL = Number(ml[1]); }
-    var ind = /\\bindent="(-?\\d+)"/.exec(attrs);
+    var ind = /\bindent="(-?\d+)"/.exec(attrs);
     if (ind) { ent = ent || {}; ent.indent = Number(ind[1]); }
-    var al = /\\balgn="(\\w+)"/.exec(attrs);
+    var al = /\balgn="(\w+)"/.exec(attrs);
     if (al) { ent = ent || {}; ent.algn = al[1]; }
-    if (/<a:buNone(\\s*\\/>|>[\\s\\S]*?<\\/a:buNone>)/.test(body)) { ent = ent || {}; ent.bullet = 'none'; }
+    if (/<a:buNone(\s*\/>|>[\s\S]*?<\/a:buNone>)/.test(body)) { ent = ent || {}; ent.bullet = 'none'; }
     if (ent) { out = out || []; out[i] = ent; }
   }
   return out;
@@ -485,17 +460,17 @@ function mergeLvlStyle(base, over) {
    reference-doc ではレイアウトが持ち得るので両方読む */
 function parsePlaceholderFrames(xml) {
   var out = [];
-  var re = /<p:sp>([\\s\\S]*?)<\\/p:sp>/g;
+  var re = /<p:sp>([\s\S]*?)<\/p:sp>/g;
   var m;
   while ((m = re.exec(xml)) !== null) {
-    var ph = /<p:ph\\b([^>]*)/.exec(m[1]);
+    var ph = /<p:ph\b([^>]*)/.exec(m[1]);
     if (!ph) continue;
-    var type = /\\btype="([^"]*)"/.exec(ph[1]);
-    var idx = /\\bidx="(\\d+)"/.exec(ph[1]);
+    var type = /\btype="([^"]*)"/.exec(ph[1]);
+    var idx = /\bidx="(\d+)"/.exec(ph[1]);
     var anchor = null;
-    var bp = /<a:bodyPr\\b([^>]*)/.exec(m[1]);
+    var bp = /<a:bodyPr\b([^>]*)/.exec(m[1]);
     if (bp) {
-      var an = /\\banchor="(\\w+)"/.exec(bp[1]);
+      var an = /\banchor="(\w+)"/.exec(bp[1]);
       if (an) anchor = an[1];
     }
     out.push({
@@ -587,7 +562,7 @@ function parseDeck(zip, dec) {
   }
   try {
     var pres = dec.decode(zip['ppt/presentation.xml']);
-    var sz = /<p:sldSz\\s+cx="(\\d+)"\\s+cy="(\\d+)"/.exec(pres);
+    var sz = /<p:sldSz\s+cx="(\d+)"\s+cy="(\d+)"/.exec(pres);
     if (sz) { deck.w = Number(sz[1]); deck.h = Number(sz[2]); }
     /* プレースホルダ外のテキスト（表のセル）の既定サイズ。pandoc 既定は 1800（実測） */
     var dts = /<p:defaultTextStyle>[sS]*?<a:lvl1pPr[sS]*?<a:defRPr([^>]*)>/.exec(pres);
@@ -596,57 +571,57 @@ function parseDeck(zip, dec) {
   } catch (e) {}
   try {
     var theme = dec.decode(zip['ppt/theme/theme1.xml']);
-    var clr = /<a:clrScheme[\\s\\S]*?<\\/a:clrScheme>/.exec(theme);
+    var clr = /<a:clrScheme[\s\S]*?<\/a:clrScheme>/.exec(theme);
     if (clr) {
-      var re = /<a:(dk1|lt1|dk2|lt2|accent[1-6]|hlink|folHlink)>[\\s\\S]*?(?:val|lastClr)="([0-9A-Fa-f]{6})"/g;
+      var re = /<a:(dk1|lt1|dk2|lt2|accent[1-6]|hlink|folHlink)>[\s\S]*?(?:val|lastClr)="([0-9A-Fa-f]{6})"/g;
       var m;
       while ((m = re.exec(clr[0])) !== null) deck.colors[m[1]] = '#' + m[2];
     }
   } catch (e) {}
   try {
     var masterName = Object.keys(zip).filter(function (n) {
-      return /^ppt\\/slideMasters\\/slideMaster\\d+\\.xml$/.test(n);
+      return /^ppt\/slideMasters\/slideMaster\d+\.xml$/.test(n);
     })[0];
     var master = dec.decode(zip[masterName]);
-    var ts = /<p:titleStyle>[\\s\\S]*?<\\/p:titleStyle>/.exec(master);
+    var ts = /<p:titleStyle>[\s\S]*?<\/p:titleStyle>/.exec(master);
     if (ts) {
-      var tsz = /sz="(\\d+)"/.exec(ts[0]);
+      var tsz = /sz="(\d+)"/.exec(ts[0]);
       if (tsz) deck.titleSz = Number(tsz[1]);
       /* pandoc 既定マスターのタイトルは algn="ctr"（実測） */
-      var tal = /<a:lvl1pPr[^>]*\\balgn="(\\w+)"/.exec(ts[0]);
+      var tal = /<a:lvl1pPr[^>]*\balgn="(\w+)"/.exec(ts[0]);
       if (tal) deck.titleAlgn = tal[1];
     }
-    var bs = /<p:bodyStyle>[\\s\\S]*?<\\/p:bodyStyle>/.exec(master);
+    var bs = /<p:bodyStyle>[\s\S]*?<\/p:bodyStyle>/.exec(master);
     if (bs) {
       var sizes = [];
-      var lre = /<a:lvl(\\d)pPr[\\s\\S]*?sz="(\\d+)"/g;
+      var lre = /<a:lvl(\d)pPr[\s\S]*?sz="(\d+)"/g;
       var lm;
       while ((lm = lre.exec(bs[0])) !== null) sizes[Number(lm[1]) - 1] = Number(lm[2]);
       for (var i2 = 0; i2 < 5; i2++) if (!sizes[i2]) sizes[i2] = deck.bodySz[i2];
       deck.bodySz = sizes.slice(0, 5);
       /* テンプレートごとの字下げ幅。lvlNpPr の属性から marL / indent を拾う */
-      var pre = /<a:lvl(\\d)pPr([^>]*)>/g;
+      var pre = /<a:lvl(\d)pPr([^>]*)>/g;
       var pm;
       while ((pm = pre.exec(bs[0])) !== null) {
         var lv = Number(pm[1]) - 1;
-        var ml2 = /\\bmarL="(-?\\d+)"/.exec(pm[2]);
+        var ml2 = /\bmarL="(-?\d+)"/.exec(pm[2]);
         if (ml2) deck.bodyMarL[lv] = Number(ml2[1]);
-        var in2 = /\\bindent="(-?\\d+)"/.exec(pm[2]);
+        var in2 = /\bindent="(-?\d+)"/.exec(pm[2]);
         if (in2) deck.bodyIndent[lv] = Number(in2[1]);
-        var al2 = /\\balgn="(\\w+)"/.exec(pm[2]);
+        var al2 = /\balgn="(\w+)"/.exec(pm[2]);
         if (al2) deck.bodyAlgn[lv] = al2[1];
       }
       /* 段落前間隔。pandoc 既定は spcPct（行高の %）だが、PowerPoint 製の
          reference-doc は spcPts（1/100 pt の絶対値）で書くことがあるので両対応 */
-      var bre = /<a:lvl(\\d)pPr[^>]*>([\\s\\S]*?)<\\/a:lvl\\1pPr>/g;
+      var bre = /<a:lvl(\d)pPr[^>]*>([\s\S]*?)<\/a:lvl\1pPr>/g;
       var bm;
       while ((bm = bre.exec(bs[0])) !== null) {
         var blv = Number(bm[1]) - 1;
-        var sp2 = /<a:spcBef>\\s*<a:spcPct\\s+val="(\\d+)"/.exec(bm[2]);
+        var sp2 = /<a:spcBef>\s*<a:spcPct\s+val="(\d+)"/.exec(bm[2]);
         if (sp2) deck.bodySpcBef[blv] = Number(sp2[1]);
-        var sp3 = /<a:spcBef>\\s*<a:spcPts\\s+val="(\\d+)"/.exec(bm[2]);
+        var sp3 = /<a:spcBef>\s*<a:spcPts\s+val="(\d+)"/.exec(bm[2]);
         if (sp3) deck.bodySpcBefPts[blv] = Number(sp3[1]);
-        var bu = /<a:buChar\\s+char="([^"]*)"/.exec(bm[2]);
+        var bu = /<a:buChar\s+char="([^"]*)"/.exec(bm[2]);
         if (bu) deck.bodyBuChar[blv] = decodeXml(bu[1]);
       }
     }
@@ -658,7 +633,7 @@ function parseDeck(zip, dec) {
     deck.ftrBand = findFtrBand(deck.masterPh);
     if (!deck.ftrBand) {
       var layoutNames = Object.keys(zip).filter(function (n) {
-        return /^ppt\\/slideLayouts\\/slideLayout\\d+\\.xml$/.test(n);
+        return /^ppt\/slideLayouts\/slideLayout\d+\.xml$/.test(n);
       });
       for (var fi = 0; fi < layoutNames.length && !deck.ftrBand; fi++) {
         deck.ftrBand = findFtrBand(parsePlaceholderFrames(dec.decode(zip[layoutNames[fi]])));
@@ -679,15 +654,15 @@ function findFtrBand(phList) {
 function parsePptxZip(zip) {
   var dec = new TextDecoder();
   var names = Object.keys(zip).filter(function (n) {
-    return /^ppt\\/slides\\/slide\\d+\\.xml$/.test(n);
+    return /^ppt\/slides\/slide\d+\.xml$/.test(n);
   }).sort(function (a, b) { return slideNum(a) - slideNum(b); });
 
   var deck = parseDeck(zip, dec);
   var layoutPhCache = {};
   var layoutPhOf = function (slidePath) {
-    var hit = /Target="([^"]*slideLayout\\d+\\.xml)"/.exec(relsOf(slidePath));
+    var hit = /Target="([^"]*slideLayout\d+\.xml)"/.exec(relsOf(slidePath));
     if (!hit) return [];
-    var target = hit[1].replace(/^\\.\\.\\//, 'ppt/');
+    var target = hit[1].replace(/^\.\.\//, 'ppt/');
     if (!(target in layoutPhCache)) {
       layoutPhCache[target] = zip[target]
         ? parsePlaceholderFrames(dec.decode(zip[target]))
@@ -697,18 +672,18 @@ function parsePptxZip(zip) {
   };
 
   var relsOf = function (slidePath) {
-    var relPath = slidePath.replace(/^ppt\\/slides\\//, 'ppt/slides/_rels/') + '.rels';
+    var relPath = slidePath.replace(/^ppt\/slides\//, 'ppt/slides/_rels/') + '.rels';
     return zip[relPath] ? dec.decode(zip[relPath]) : '';
   };
 
   /* レイアウト名は theme ではなく slideLayout の p:cSld@name に入っている */
   var layoutName = function (slidePath) {
     try {
-      var hit = /Target="([^"]*slideLayout\\d+\\.xml)"/.exec(relsOf(slidePath));
+      var hit = /Target="([^"]*slideLayout\d+\.xml)"/.exec(relsOf(slidePath));
       if (!hit) return null;
-      var target = hit[1].replace(/^\\.\\.\\//, 'ppt/');
+      var target = hit[1].replace(/^\.\.\//, 'ppt/');
       if (!zip[target]) return null;
-      var cSld = /<p:cSld\\b[^>]*\\sname="([^"]*)"/.exec(dec.decode(zip[target]));
+      var cSld = /<p:cSld\b[^>]*\sname="([^"]*)"/.exec(dec.decode(zip[target]));
       return cSld ? decodeXml(cSld[1]) : null;
     } catch (e) { return null; }
   };
@@ -717,9 +692,9 @@ function parsePptxZip(zip) {
      notesSlide の本文は type="body"。sldImg / sldNum は除外する */
   var notesFor = function (slidePath) {
     try {
-      var hit = /Target="([^"]*notesSlide\\d+\\.xml)"/.exec(relsOf(slidePath));
+      var hit = /Target="([^"]*notesSlide\d+\.xml)"/.exec(relsOf(slidePath));
       if (!hit) return [];
-      var target = hit[1].replace(/^\\.\\.\\//, 'ppt/');
+      var target = hit[1].replace(/^\.\.\//, 'ppt/');
       if (!zip[target]) return [];
       var shapes = parseShapes(dec.decode(zip[target]));
       var out = [];
@@ -816,7 +791,7 @@ function warnText(w) {
 function classify(warnings, stderr, extra) {
   var all = (warnings || []).map(warnText);
   if (stderr) {
-    stderr.split(/\\r?\\n/).forEach(function (l) { if (l.trim()) all.push(l); });
+    stderr.split(/\r?\n/).forEach(function (l) { if (l.trim()) all.push(l); });
   }
   var buckets = [];
   var byLabel = {};
@@ -949,7 +924,7 @@ function applyDecorations(bytes, decorations, titleOffset, groups) {
     var xml = dec2.decode(zip[name]);
     /* cNvPr id はスライド内で一意。既存の最大値の続きから振る */
     var maxId = 0;
-    var idRe = /\\bid="(\\d+)"/g;
+    var idRe = /\bid="(\d+)"/g;
     var im;
     while ((im = idRe.exec(xml)) !== null) {
       if (Number(im[1]) > maxId) maxId = Number(im[1]);
@@ -1037,7 +1012,7 @@ function applyFootersZip(zip, footer, perSlide) {
   if (!footer) return zip;
   var dec2 = new TextDecoder();
   var names = Object.keys(zip).filter(function (n) {
-    return /^ppt\\/slides\\/slide\\d+\\.xml$/.test(n);
+    return /^ppt\/slides\/slide\d+\.xml$/.test(n);
   });
   names.forEach(function (name) {
     var xml = dec2.decode(zip[name]);
@@ -1063,7 +1038,7 @@ function applyFootersZip(zip, footer, perSlide) {
     var at = xml.indexOf('</p:spTree>');
     if (at < 0) return;
     var maxId = 0;
-    var idRe = /\\bid="(\\d+)"/g;
+    var idRe = /\bid="(\d+)"/g;
     var im;
     while ((im = idRe.exec(xml)) !== null) {
       if (Number(im[1]) > maxId) maxId = Number(im[1]);
@@ -1093,29 +1068,29 @@ function applyTextSizes(bytes, sizes) {
   var zip = unzipSync(bytes);
   var dec2 = new TextDecoder();
   var masterName = Object.keys(zip).filter(function (n) {
-    return /^ppt\\/slideMasters\\/slideMaster\\d+\\.xml$/.test(n);
+    return /^ppt\/slideMasters\/slideMaster\d+\.xml$/.test(n);
   })[0];
   if (masterName && (sizes.titleSz != null || sizes.bodySz)) {
     var xml = dec2.decode(zip[masterName]);
     if (sizes.titleSz != null) {
       /* 置換は必ずブロック内に限定する（sz を持たないテンプレートで
          隣のスタイルへ食い込まないように）。sz が無ければ何もしない */
-      var tsB = /<p:titleStyle>[\\s\\S]*?<\\/p:titleStyle>/.exec(xml);
+      var tsB = /<p:titleStyle>[\s\S]*?<\/p:titleStyle>/.exec(xml);
       if (tsB) {
-        var tBlock = tsB[0].replace(/(<a:defRPr[^>]*\\bsz=")\\d+/, '$1' + Math.round(sizes.titleSz));
+        var tBlock = tsB[0].replace(/(<a:defRPr[^>]*\bsz=")\d+/, '$1' + Math.round(sizes.titleSz));
         xml = xml.slice(0, tsB.index) + tBlock + xml.slice(tsB.index + tsB[0].length);
       }
     }
     if (sizes.bodySz) {
-      var bs = /<p:bodyStyle>[\\s\\S]*?<\\/p:bodyStyle>/.exec(xml);
+      var bs = /<p:bodyStyle>[\s\S]*?<\/p:bodyStyle>/.exec(xml);
       if (bs) {
         /* 各 lvlNpPr ブロックの中でだけ sz を書き換える */
         var block = bs[0].replace(
-          /<a:lvl(\\d)pPr[\\s\\S]*?<\\/a:lvl\\1pPr>/g,
+          /<a:lvl(\d)pPr[\s\S]*?<\/a:lvl\1pPr>/g,
           function (lvlBlock, num) {
             var v = sizes.bodySz[Number(num) - 1];
             if (v == null) return lvlBlock;
-            return lvlBlock.replace(/(<a:defRPr[^>]*\\bsz=")\\d+/, '$1' + Math.round(v));
+            return lvlBlock.replace(/(<a:defRPr[^>]*\bsz=")\d+/, '$1' + Math.round(v));
           },
         );
         xml = xml.slice(0, bs.index) + block + xml.slice(bs.index + bs[0].length);
@@ -1128,17 +1103,17 @@ function applyTextSizes(bytes, sizes) {
       return '<a:lstStyle><a:lvl1pPr><a:defRPr sz="' + Math.round(sz) + '"/></a:lvl1pPr></a:lstStyle>';
     };
     Object.keys(zip).forEach(function (n) {
-      if (!/^ppt\\/slides\\/slide\\d+\\.xml$/.test(n)) return;
+      if (!/^ppt\/slides\/slide\d+\.xml$/.test(n)) return;
       var sx = dec2.decode(zip[n]);
       if (sx.indexOf('type="ctrTitle"') < 0) return;
-      var out = sx.replace(/<p:sp>[\\s\\S]*?<\\/p:sp>/g, function (sp) {
+      var out = sx.replace(/<p:sp>[\s\S]*?<\/p:sp>/g, function (sp) {
         if (sizes.coverTitleSz != null && sp.indexOf('type="ctrTitle"') >= 0) {
-          return sp.replace(/<a:lstStyle\\s*\\/>/, lstOf(sizes.coverTitleSz));
+          return sp.replace(/<a:lstStyle\s*\/>/, lstOf(sizes.coverTitleSz));
         }
         /* サブタイトル（著者・日付も subTitle の段落）。サイズはマスターの
            bodyStyle を継承しているため、独立に変えるにはここへ注入する（実測） */
         if (sizes.coverSubSz != null && sp.indexOf('type="subTitle"') >= 0) {
-          return sp.replace(/<a:lstStyle\\s*\\/>/, lstOf(sizes.coverSubSz));
+          return sp.replace(/<a:lstStyle\s*\/>/, lstOf(sizes.coverSubSz));
         }
         return sp;
       });
@@ -1195,13 +1170,13 @@ function textEm(s) {
 /* txBody の行（段落と a:br で分ける）の文字列 */
 function titleTextLines(txBodyXml) {
   var lines = [];
-  var pre = /<a:p>([\\s\\S]*?)<\\/a:p>/g;
+  var pre = /<a:p>([\s\S]*?)<\/a:p>/g;
   var pm;
   while ((pm = pre.exec(txBodyXml)) !== null) {
-    var parts = pm[1].split(/<a:br\\b[^>]*\\/>|<a:br\\b[^>]*>[\\s\\S]*?<\\/a:br>/);
+    var parts = pm[1].split(/<a:br\b[^>]*\/>|<a:br\b[^>]*>[\s\S]*?<\/a:br>/);
     for (var i = 0; i < parts.length; i++) {
       var text = '';
-      var tre = /<a:t>([\\s\\S]*?)<\\/a:t>/g;
+      var tre = /<a:t>([\s\S]*?)<\/a:t>/g;
       var tm;
       while ((tm = tre.exec(parts[i])) !== null) text += decodeXml(tm[1]);
       lines.push(text);
@@ -1228,20 +1203,20 @@ window.__morphoFitTitleSz = fitTitleSz;
 
 /* <p:ph type="title"> を持つ <p:sp> の文字列（無ければ null） */
 function titleSpOf(xml) {
-  var re = /<p:sp>[\\s\\S]*?<\\/p:sp>/g;
+  var re = /<p:sp>[\s\S]*?<\/p:sp>/g;
   var m;
   while ((m = re.exec(xml)) !== null) {
-    if (/<p:ph\\b[^>]*\\btype="title"/.test(m[0])) return m[0];
+    if (/<p:ph\b[^>]*\btype="title"/.test(m[0])) return m[0];
   }
   return null;
 }
 function bodyPrAttrs(spXml) {
-  var m = /<a:bodyPr\\b([^>]*?)\\s*\\/?>/.exec(spXml || '');
+  var m = /<a:bodyPr\b([^>]*?)\s*\/?>/.exec(spXml || '');
   return m ? m[1] : null;
 }
 function attrOf(attrs, name) {
   if (attrs == null) return null;
-  var m = new RegExp('\\\\b' + name + '="([^"]*)"').exec(attrs);
+  var m = new RegExp('\\b' + name + '="([^"]*)"').exec(attrs);
   return m ? m[1] : null;
 }
 
@@ -1255,12 +1230,12 @@ function attrOf(attrs, name) {
 function lowerCaptionContent(xml, layout, bandTop) {
   var layoutFrameOf = function (idx) {
     if (!layout.xml) return null;
-    var re = /<p:sp>[\\s\\S]*?<\\/p:sp>/g;
+    var re = /<p:sp>[\s\S]*?<\/p:sp>/g;
     var m;
     while ((m = re.exec(layout.xml)) !== null) {
-      var ph = /<p:ph\\b([^>]*)/.exec(m[0]);
+      var ph = /<p:ph\b([^>]*)/.exec(m[0]);
       if (!ph) continue;
-      var id = /\\bidx="(\\d+)"/.exec(ph[1]);
+      var id = /\bidx="(\d+)"/.exec(ph[1]);
       if (id && Number(id[1]) === idx) return parseXfrm(m[0]);
     }
     return null;
@@ -1276,8 +1251,8 @@ function lowerCaptionContent(xml, layout, bandTop) {
     return { x: f.x, y: bandTop, w: f.w, h: h };
   };
   /* 表: 自前の <p:xfrm> を持つ */
-  xml = xml.replace(/<p:graphicFrame\\b[\\s\\S]*?<\\/p:graphicFrame>/g, function (gf) {
-    var xf = /<p:xfrm\\b[^>]*>([\\s\\S]*?)<\\/p:xfrm>/.exec(gf);
+  xml = xml.replace(/<p:graphicFrame\b[\s\S]*?<\/p:graphicFrame>/g, function (gf) {
+    var xf = /<p:xfrm\b[^>]*>([\s\S]*?)<\/p:xfrm>/.exec(gf);
     var nf = xf ? lower(parseXfrm(xf[1]), false) : null;
     if (!nf) return gf;
     return gf.replace(xf[0], function () {
@@ -1285,26 +1260,26 @@ function lowerCaptionContent(xml, layout, bandTop) {
     });
   });
   /* 画像: spPr の <a:xfrm>。縦横比を保って縮める */
-  xml = xml.replace(/<p:pic>[\\s\\S]*?<\\/p:pic>/g, function (pic) {
-    var xf = /<a:xfrm>[\\s\\S]*?<\\/a:xfrm>/.exec(pic);
+  xml = xml.replace(/<p:pic>[\s\S]*?<\/p:pic>/g, function (pic) {
+    var xf = /<a:xfrm>[\s\S]*?<\/a:xfrm>/.exec(pic);
     var nf = xf ? lower(parseXfrm(xf[0]), true) : null;
     if (!nf) return pic;
     return pic.replace(xf[0], function () { return xfrmXml(nf); });
   });
   /* 説明文: idx=2 の sp。座標はレイアウトから継承しているので明示する */
-  xml = xml.replace(/<p:sp>[\\s\\S]*?<\\/p:sp>/g, function (sp) {
-    var ph = /<p:ph\\b([^>]*)/.exec(sp);
-    if (!ph || /\\btype="title"/.test(ph[1])) return sp;
-    var id = /\\bidx="(\\d+)"/.exec(ph[1]);
+  xml = xml.replace(/<p:sp>[\s\S]*?<\/p:sp>/g, function (sp) {
+    var ph = /<p:ph\b([^>]*)/.exec(sp);
+    if (!ph || /\btype="title"/.test(ph[1])) return sp;
+    var id = /\bidx="(\d+)"/.exec(ph[1]);
     if (!id) return sp;
     var cur = parseXfrm(sp) || layoutFrameOf(Number(id[1]));
     var nf = lower(cur, false);
     if (!nf) return sp;
-    if (/<a:xfrm>[\\s\\S]*?<\\/a:xfrm>/.test(sp)) {
-      return sp.replace(/<a:xfrm>[\\s\\S]*?<\\/a:xfrm>/, function () { return xfrmXml(nf); });
+    if (/<a:xfrm>[\s\S]*?<\/a:xfrm>/.test(sp)) {
+      return sp.replace(/<a:xfrm>[\s\S]*?<\/a:xfrm>/, function () { return xfrmXml(nf); });
     }
-    if (/<p:spPr\\s*\\/>/.test(sp)) {
-      return sp.replace(/<p:spPr\\s*\\/>/, function () { return '<p:spPr>' + xfrmXml(nf) + '</p:spPr>'; });
+    if (/<p:spPr\s*\/>/.test(sp)) {
+      return sp.replace(/<p:spPr\s*\/>/, function () { return '<p:spPr>' + xfrmXml(nf) + '</p:spPr>'; });
     }
     return sp.replace(/<p:spPr>/, function () { return '<p:spPr>' + xfrmXml(nf); });
   });
@@ -1317,10 +1292,10 @@ function xfrmXml(f) {
 }
 /* <p:ph type="body"> を持つ <p:sp>（マスターの本文枠）。無ければ null */
 function bodySpOf(xml) {
-  var re = /<p:sp>[\\s\\S]*?<\\/p:sp>/g;
+  var re = /<p:sp>[\s\S]*?<\/p:sp>/g;
   var m;
   while ((m = re.exec(xml)) !== null) {
-    if (/<p:ph\\b[^>]*\\btype="body"/.test(m[0])) return m[0];
+    if (/<p:ph\b[^>]*\btype="body"/.test(m[0])) return m[0];
   }
   return null;
 }
@@ -1335,16 +1310,16 @@ function applyTitleFitZip(zip, titleSzOverride, mode) {
   var shrunk = [];
   var band = mode === 'band';
   var masterName = Object.keys(zip).filter(function (n) {
-    return /^ppt\\/slideMasters\\/slideMaster\\d+\\.xml$/.test(n);
+    return /^ppt\/slideMasters\/slideMaster\d+\.xml$/.test(n);
   })[0];
   if (!masterName) return shrunk;
   var master = dec2.decode(zip[masterName]);
-  var ts = /<p:titleStyle>[\\s\\S]*?<\\/p:titleStyle>/.exec(master);
-  var tsLvl = ts ? /<a:lvl1pPr\\b([^>]*)>([\\s\\S]*?)<\\/a:lvl1pPr>/.exec(ts[0]) : null;
-  var masterSz = tsLvl ? attrOf((/<a:defRPr\\b([^>]*)/.exec(tsLvl[2]) || [])[1], 'sz') : null;
+  var ts = /<p:titleStyle>[\s\S]*?<\/p:titleStyle>/.exec(master);
+  var tsLvl = ts ? /<a:lvl1pPr\b([^>]*)>([\s\S]*?)<\/a:lvl1pPr>/.exec(ts[0]) : null;
+  var masterSz = tsLvl ? attrOf((/<a:defRPr\b([^>]*)/.exec(tsLvl[2]) || [])[1], 'sz') : null;
   var targetSz = titleSzOverride != null ? Number(titleSzOverride) : masterSz ? Number(masterSz) : 3300;
   var masterAlgn = tsLvl ? attrOf(tsLvl[1], 'algn') : null;
-  var masterBold = tsLvl ? attrOf((/<a:defRPr\\b([^>]*)/.exec(tsLvl[2]) || [])[1], 'b') : null;
+  var masterBold = tsLvl ? attrOf((/<a:defRPr\b([^>]*)/.exec(tsLvl[2]) || [])[1], 'b') : null;
   var masterTitleSp = titleSpOf(master);
   var masterBodyPr = bodyPrAttrs(masterTitleSp);
   var masterAnchor = attrOf(masterBodyPr, 'anchor');
@@ -1358,16 +1333,16 @@ function applyTitleFitZip(zip, titleSzOverride, mode) {
 
   var layoutCache = {};
   var layoutOf = function (slidePath) {
-    var relPath = slidePath.replace(/^ppt\\/slides\\//, 'ppt/slides/_rels/') + '.rels';
+    var relPath = slidePath.replace(/^ppt\/slides\//, 'ppt/slides/_rels/') + '.rels';
     if (!zip[relPath]) return null;
-    var hit = /Target="([^"]*slideLayout\\d+\\.xml)"/.exec(dec2.decode(zip[relPath]));
+    var hit = /Target="([^"]*slideLayout\d+\.xml)"/.exec(dec2.decode(zip[relPath]));
     if (!hit) return null;
-    var target = hit[1].replace(/^\\.\\.\\//, 'ppt/');
+    var target = hit[1].replace(/^\.\.\//, 'ppt/');
     if (!(target in layoutCache)) {
       if (!zip[target]) { layoutCache[target] = null; }
       else {
         var lx = dec2.decode(zip[target]);
-        var cSld = /<p:cSld\\b[^>]*\\sname="([^"]*)"/.exec(lx);
+        var cSld = /<p:cSld\b[^>]*\sname="([^"]*)"/.exec(lx);
         layoutCache[target] = { name: cSld ? decodeXml(cSld[1]) : null, titleSp: titleSpOf(lx), xml: lx };
       }
     }
@@ -1375,14 +1350,14 @@ function applyTitleFitZip(zip, titleSzOverride, mode) {
   };
 
   Object.keys(zip).forEach(function (name) {
-    if (!/^ppt\\/slides\\/slide\\d+\\.xml$/.test(name)) return;
+    if (!/^ppt\/slides\/slide\d+\.xml$/.test(name)) return;
     var layout = layoutOf(name);
     if (!layout || layout.name !== 'Content with Caption') return;
     var xml = dec2.decode(zip[name]);
     var sp = titleSpOf(xml);
     if (!sp) return;
     /* スライド側に既に階層既定があれば触らない（pandoc は空で出す。実測） */
-    if (!/<a:lstStyle\\s*\\/>/.test(sp)) return;
+    if (!/<a:lstStyle\s*\/>/.test(sp)) return;
     var frame = band ? masterTitleFrame
       : parseXfrm(sp) || (layout.titleSp ? parseXfrm(layout.titleSp) : null) || masterTitleFrame;
     if (!frame) return;
@@ -1401,7 +1376,7 @@ function applyTitleFitZip(zip, titleSzOverride, mode) {
     var innerW = (frame.w - ins('lIns', 91440) - ins('rIns', 91440)) / EMU_PER_PT;
     var innerH = (frame.h - ins('tIns', 45720) - ins('bIns', 45720)) / EMU_PER_PT;
     if (!(innerW > 0) || !(innerH > 0)) return;
-    var tx = /<p:txBody>([\\s\\S]*?)<\\/p:txBody>/.exec(sp);
+    var tx = /<p:txBody>([\s\S]*?)<\/p:txBody>/.exec(sp);
     var lines = titleTextLines(tx ? tx[1] : '');
     /* 帯モードは枠が他のスライドと同じなので縮めない（同じ条件 = 同じ大きさ） */
     var sz = band ? targetSz : fitTitleSz(lines, innerW, innerH, targetSz, floorSz);
@@ -1409,18 +1384,18 @@ function applyTitleFitZip(zip, titleSzOverride, mode) {
     var out = sp;
     if (band) {
       /* 枠をマスターの title 枠へ。スライド側に xfrm があれば置換、無ければ spPr に足す */
-      if (/<a:xfrm>[\\s\\S]*?<\\/a:xfrm>/.test(out)) {
-        out = out.replace(/<a:xfrm>[\\s\\S]*?<\\/a:xfrm>/, xfrmXml(frame));
+      if (/<a:xfrm>[\s\S]*?<\/a:xfrm>/.test(out)) {
+        out = out.replace(/<a:xfrm>[\s\S]*?<\/a:xfrm>/, xfrmXml(frame));
       } else {
-        out = out.replace(/<p:spPr\\s*\\/>/, '<p:spPr>' + xfrmXml(frame) + '</p:spPr>')
+        out = out.replace(/<p:spPr\s*\/>/, '<p:spPr>' + xfrmXml(frame) + '</p:spPr>')
           .replace(/<p:spPr>(?!<a:xfrm>)/, '<p:spPr>' + xfrmXml(frame));
       }
     }
     /* 垂直アンカー: スライドに無ければマスターの title 枠の値を明示する
        （レイアウトの anchor="b" を上書きする） */
     if (attrOf(bodyPrAttrs(sp), 'anchor') == null && masterAnchor) {
-      out = out.replace(/<a:bodyPr\\b([^>]*?)\\s*(\\/?)>/, function (all, attrs, close) {
-        return '<a:bodyPr' + (attrs ? ' ' + attrs.replace(/^\\s+/, '') : '') +
+      out = out.replace(/<a:bodyPr\b([^>]*?)\s*(\/?)>/, function (all, attrs, close) {
+        return '<a:bodyPr' + (attrs ? ' ' + attrs.replace(/^\s+/, '') : '') +
           ' anchor="' + masterAnchor + '"' + (close ? '/>' : '>');
       });
     }
@@ -1429,7 +1404,7 @@ function applyTitleFitZip(zip, titleSzOverride, mode) {
     var lvl = '<a:lvl1pPr' + (masterAlgn ? ' algn="' + masterAlgn + '"' : '') + '>' +
       '<a:defRPr sz="' + Math.round(sz) + '" b="' + (masterBold === '1' ? '1' : '0') + '"/>' +
       '</a:lvl1pPr>';
-    out = out.replace(/<a:lstStyle\\s*\\/>/, '<a:lstStyle>' + lvl + '</a:lstStyle>');
+    out = out.replace(/<a:lstStyle\s*\/>/, '<a:lstStyle>' + lvl + '</a:lstStyle>');
     /* 置換は関数で渡す（タイトル本文の $& や $' を置換パターンとして読まないように） */
     if (out !== sp) xml = xml.replace(sp, function () { return out; });
     if (band) xml = lowerCaptionContent(xml, layout, bandTop);
@@ -1544,30 +1519,30 @@ async function doConvertWeb(id, md, opts) {
    焼き込む — 描画側にスタイル表を持ち込まない */
 function parseDocxStyles(xml) {
   var raw = {};
-  var re = /<w:style [^>]*w:styleId="([^"]+)"[^>]*>([\\s\\S]*?)<\\/w:style>/g;
+  var re = /<w:style [^>]*w:styleId="([^"]+)"[^>]*>([\s\S]*?)<\/w:style>/g;
   var m;
   while ((m = re.exec(xml)) !== null) {
     var body = m[2];
     /* 段落スタイルの pPr 内の rPr に反応しないよう、pPr を除いてから拾う */
-    var cleaned = body.replace(/<w:pPr>[\\s\\S]*?<\\/w:pPr>/g, '');
-    var rpr = /<w:rPr>([\\s\\S]*?)<\\/w:rPr>/.exec(cleaned);
+    var cleaned = body.replace(/<w:pPr>[\s\S]*?<\/w:pPr>/g, '');
+    var rpr = /<w:rPr>([\s\S]*?)<\/w:rPr>/.exec(cleaned);
     var rb = rpr ? rpr[1] : '';
     var e = { basedOn: null, b: false, i: false, color: null, mono: false, szHalf: null };
     var bo = /<w:basedOn w:val="([^"]+)"/.exec(body);
     if (bo) e.basedOn = bo[1];
-    if (/<w:b\\s*\\/>/.test(rb)) e.b = true;
-    if (/<w:i\\s*\\/>/.test(rb)) e.i = true;
+    if (/<w:b\s*\/>/.test(rb)) e.b = true;
+    if (/<w:i\s*\/>/.test(rb)) e.i = true;
     var c = /<w:color w:val="([0-9A-Fa-f]{6})"/.exec(rb);
     if (c) e.color = '#' + c[1].toUpperCase();
     var f = /<w:rFonts[^>]*w:ascii="([^"]+)"/.exec(rb);
     if (f && /Consolas|Courier|Mono/i.test(f[1])) e.mono = true;
-    var sz = /<w:sz w:val="(\\d+)"/.exec(rb);
+    var sz = /<w:sz w:val="(\d+)"/.exec(rb);
     if (sz) e.szHalf = Number(sz[1]);
     raw[m[1]] = e;
   }
   /* 既定サイズは docDefaults ブロックの中だけから読む（無ければ 24 半 pt = 12pt） */
-  var ddB = /<w:docDefaults>[\\s\\S]*?<\\/w:docDefaults>/.exec(xml);
-  var dd = ddB ? /<w:sz w:val="(\\d+)"/.exec(ddB[0]) : null;
+  var ddB = /<w:docDefaults>[\s\S]*?<\/w:docDefaults>/.exec(xml);
+  var dd = ddB ? /<w:sz w:val="(\d+)"/.exec(ddB[0]) : null;
   var baseHalf = dd ? Number(dd[1]) : 24;
   var cache = {};
   function resolve(id) {
@@ -1602,29 +1577,29 @@ function parseDocxStyles(xml) {
    - w:num 内の startOverride は「4) 」等の開始番号（実測） */
 function parseDocxNumbering(xml) {
   var fmts = {};
-  var re = /<w:abstractNum w:abstractNumId="(\\d+)">([\\s\\S]*?)<\\/w:abstractNum>/g;
+  var re = /<w:abstractNum w:abstractNumId="(\d+)">([\s\S]*?)<\/w:abstractNum>/g;
   var m;
   while ((m = re.exec(xml)) !== null) {
     var byLvl = {};
-    var lr = /<w:lvl w:ilvl="(\\d+)">([\\s\\S]*?)<\\/w:lvl>/g;
+    var lr = /<w:lvl w:ilvl="(\d+)">([\s\S]*?)<\/w:lvl>/g;
     var lm;
     while ((lm = lr.exec(m[2])) !== null) {
       var fm = /<w:numFmt w:val="([^"]+)"/.exec(lm[2]);
       var lt = /<w:lvlText w:val="([^"]*)"/.exec(lm[2]);
       byLvl[lm[1]] = {
         fmt: fm ? fm[1] : null,
-        blank: lt != null && lt[1].replace(/\\s/g, '') === ''
+        blank: lt != null && lt[1].replace(/\s/g, '') === ''
       };
     }
     fmts[m[1]] = byLvl;
   }
   var map = {};
   var starts = {};
-  var nr = /<w:num w:numId="(\\d+)">([\\s\\S]*?)<\\/w:num>/g;
+  var nr = /<w:num w:numId="(\d+)">([\s\S]*?)<\/w:num>/g;
   while ((m = nr.exec(xml)) !== null) {
-    var ab = /<w:abstractNumId w:val="(\\d+)"/.exec(m[2]);
+    var ab = /<w:abstractNumId w:val="(\d+)"/.exec(m[2]);
     if (ab) map[m[1]] = ab[1];
-    var so = /<w:startOverride w:val="(\\d+)"/.exec(m[2]);
+    var so = /<w:startOverride w:val="(\d+)"/.exec(m[2]);
     if (so) starts[m[1]] = Number(so[1]);
   }
   return function (numId, ilvl) {
@@ -1640,18 +1615,18 @@ function parseDocxNumbering(xml) {
 }
 
 /* w:p の中身 → TextRun[]。行内改行（w:br。同一 w:p 内。実測）は
-   \\n として同じランの流れに埋め込む。脚注参照（footnoteReference。
+   \n として同じランの流れに埋め込む。脚注参照（footnoteReference。
    w:t を持たない）は fnMap に出現順で番号を採り、[n] のテキストにする */
 function parseDocxRuns(pXml, styles, fnMap) {
   /* w:ruby は w:r の中に w:r が入れ子になる唯一の形。ランの走査前に
      「親文字（よみ）」の平文ランへ潰す（RN にルビ描画は無いため近似。
      出力そのものには本物の w:ruby が入っている） */
-  pXml = pXml.replace(/<w:r><w:ruby>[\\s\\S]*?<\\/w:ruby><\\/w:r>/g, function (rb) {
-    var rt = /<w:rt>([\\s\\S]*?)<\\/w:rt>/.exec(rb);
-    var base = /<w:rubyBase>([\\s\\S]*?)<\\/w:rubyBase>/.exec(rb);
+  pXml = pXml.replace(/<w:r><w:ruby>[\s\S]*?<\/w:ruby><\/w:r>/g, function (rb) {
+    var rt = /<w:rt>([\s\S]*?)<\/w:rt>/.exec(rb);
+    var base = /<w:rubyBase>([\s\S]*?)<\/w:rubyBase>/.exec(rb);
     var pick = function (xml) {
       var out = '';
-      var tr = /<w:t[^>]*>([\\s\\S]*?)<\\/w:t>/g;
+      var tr = /<w:t[^>]*>([\s\S]*?)<\/w:t>/g;
       var tm;
       while ((tm = tr.exec(xml || '')) !== null) out += tm[1];
       return out;
@@ -1662,12 +1637,12 @@ function parseDocxRuns(pXml, styles, fnMap) {
     return '<w:r><w:t>' + baseT + (rtT ? '（' + rtT + '）' : '') + '</w:t></w:r>';
   });
   var runs = [];
-  var re = /<w:r>([\\s\\S]*?)<\\/w:r>/g;
+  var re = /<w:r>([\s\S]*?)<\/w:r>/g;
   var m;
   while ((m = re.exec(pXml)) !== null) {
     var body = m[1];
     if (fnMap) {
-      var fr = /<w:footnoteReference w:id="(\\d+)"/.exec(body);
+      var fr = /<w:footnoteReference w:id="(\d+)"/.exec(body);
       if (fr) {
         if (!(fr[1] in fnMap.ord)) {
           fnMap.ids.push(fr[1]);
@@ -1677,22 +1652,22 @@ function parseDocxRuns(pXml, styles, fnMap) {
         continue;
       }
     }
-    var rpr = /<w:rPr>([\\s\\S]*?)<\\/w:rPr>/.exec(body);
+    var rpr = /<w:rPr>([\s\S]*?)<\/w:rPr>/.exec(body);
     var rb = rpr ? rpr[1] : '';
     var st = /<w:rStyle w:val="([^"]+)"/.exec(rb);
     var base = st ? styles.resolve(st[1]) : null;
     var text = '';
-    var tr = /<w:t[^>]*>([\\s\\S]*?)<\\/w:t>|<w:br\\s*\\/>/g;
+    var tr = /<w:t[^>]*>([\s\S]*?)<\/w:t>|<w:br\s*\/>/g;
     var tm;
     while ((tm = tr.exec(body)) !== null) {
-      text += tm[1] != null ? decodeXml(tm[1]) : '\\n';
+      text += tm[1] != null ? decodeXml(tm[1]) : '\n';
     }
     if (!text) continue;
     var run = { text: text };
-    if ((base && base.b) || /<w:b\\s*\\/>/.test(rb)) run.bold = true;
-    if ((base && base.i) || /<w:i\\s*\\/>/.test(rb)) run.italic = true;
+    if ((base && base.b) || /<w:b\s*\/>/.test(rb)) run.bold = true;
+    if ((base && base.i) || /<w:i\s*\/>/.test(rb)) run.italic = true;
     if (/<w:u /.test(rb)) run.underline = true;
-    if (/<w:strike\\s*\\/>/.test(rb)) run.strike = true;
+    if (/<w:strike\s*\/>/.test(rb)) run.strike = true;
     /* 傍点（w:em）。RN に圏点描画は無いため太字で近似（出力には本物が入る） */
     if (/<w:em /.test(rb)) run.bold = true;
     if (base && base.mono) run.mono = true;
@@ -1706,20 +1681,20 @@ function parseDocxRuns(pXml, styles, fnMap) {
    表は丸ごと1ブロックで先に食う（中の w:p を二重に拾わない）。
    連続する SourceCode 段落は 1 つのコードブロック（1段落 = 1行。実測） */
 function parseDocxBlocks(xml, styles, markerOf, fnMap) {
-  var bodyM = /<w:body>([\\s\\S]*?)<\\/w:body>/.exec(xml);
+  var bodyM = /<w:body>([\s\S]*?)<\/w:body>/.exec(xml);
   var body = bodyM ? bodyM[1] : xml;
   var blocks = [];
-  var re = /<w:tbl>[\\s\\S]*?<\\/w:tbl>|<w:p>[\\s\\S]*?<\\/w:p>/g;
+  var re = /<w:tbl>[\s\S]*?<\/w:tbl>|<w:p>[\s\S]*?<\/w:p>/g;
   var m;
   while ((m = re.exec(body)) !== null) {
     var chunk = m[0];
     if (chunk.charAt(3) === 't') {
       var rows = [];
-      var trR = /<w:tr>([\\s\\S]*?)<\\/w:tr>/g;
+      var trR = /<w:tr>([\s\S]*?)<\/w:tr>/g;
       var trM;
       while ((trM = trR.exec(chunk)) !== null) {
         var cells = [];
-        var tcR = /<w:tc>([\\s\\S]*?)<\\/w:tc>/g;
+        var tcR = /<w:tc>([\s\S]*?)<\/w:tc>/g;
         var tcM;
         while ((tcM = tcR.exec(trM[1])) !== null) {
           cells.push(parseDocxRuns(tcM[1], styles, fnMap));
@@ -1739,7 +1714,7 @@ function parseDocxBlocks(xml, styles, markerOf, fnMap) {
     var pendingImage = null;
     if (chunk.indexOf('<w:drawing>') >= 0) {
       var pd = /<pic:cNvPr [^>]*descr="([^"]*)"/.exec(chunk);
-      var pe = /<wp:extent cx="(\\d+)" cy="(\\d+)"/.exec(chunk);
+      var pe = /<wp:extent cx="(\d+)" cy="(\d+)"/.exec(chunk);
       if (pd) {
         pendingImage = {
           kind: 'image',
@@ -1751,9 +1726,9 @@ function parseDocxBlocks(xml, styles, markerOf, fnMap) {
     }
     var ps = /<w:pStyle w:val="([^"]+)"/.exec(chunk);
     var sid = ps ? ps[1] : '';
-    var np = /<w:numPr>[\\s\\S]*?<w:ilvl w:val="(\\d+)"[\\s\\S]*?<w:numId w:val="(\\d+)"/.exec(chunk);
+    var np = /<w:numPr>[\s\S]*?<w:ilvl w:val="(\d+)"[\s\S]*?<w:numId w:val="(\d+)"/.exec(chunk);
     var runs = parseDocxRuns(chunk, styles, fnMap);
-    var hm = /^Heading(\\d)$/.exec(sid);
+    var hm = /^Heading(\d)$/.exec(sid);
     if (np) {
       var mk = markerOf(np[2], Number(np[1]));
       var item = { kind: 'listItem', level: Number(np[1]), ordered: mk.ordered, runs: runs };
@@ -1810,7 +1785,7 @@ function parseDocx(u8) {
     var fx = dec.decode(zip['word/footnotes.xml']);
     blocks.push({ kind: 'hr' });
     for (var fi = 0; fi < fnMap.ids.length; fi++) {
-      var fb = new RegExp('<w:footnote w:id="' + fnMap.ids[fi] + '">([\\\\s\\\\S]*?)</w:footnote>').exec(fx);
+      var fb = new RegExp('<w:footnote w:id="' + fnMap.ids[fi] + '">([\\s\\S]*?)</w:footnote>').exec(fx);
       if (!fb) continue;
       var fruns = parseDocxRuns(fb[1], styles, null);
       /* footnotes.xml は footnoteRef の直後に区切りの空白ランを持つ（実測）。
@@ -1827,9 +1802,9 @@ function parseDocx(u8) {
     var relsXml = dec.decode(zip['word/_rels/document.xml.rels'] || empty);
     var rel = new RegExp('<Relationship [^>]*Id="' + fref[1] + '"[^>]*Target="([^"]+)"').exec(relsXml) ||
       new RegExp('<Relationship [^>]*Target="([^"]+)"[^>]*Id="' + fref[1] + '"').exec(relsXml);
-    var part = rel && zip['word/' + rel[1].replace(/^\\/?(?:word\\/)?/, '')];
+    var part = rel && zip['word/' + rel[1].replace(/^\/?(?:word\/)?/, '')];
     if (part) {
-      var pm = /<w:p[ >][\\s\\S]*?<\\/w:p>/.exec(dec.decode(part));
+      var pm = /<w:p[ >][\s\S]*?<\/w:p>/.exec(dec.decode(part));
       if (pm) {
         var jcm = /<w:jc w:val="([^"]+)"/.exec(pm[0]);
         var jc = jcm ? jcm[1] : 'left';
@@ -1878,13 +1853,13 @@ function applyDocxFooter(bytes, f) {
   var doc = dec.decode(zip['word/document.xml'] || empty);
   var rels = dec.decode(zip['word/_rels/document.xml.rels'] || empty);
   var ct = dec.decode(zip['[Content_Types].xml'] || empty);
-  var sect = /<w:sectPr(?=[\\s/>])/.exec(doc);
+  var sect = /<w:sectPr(?=[\s/>])/.exec(doc);
   var relEnd = rels.lastIndexOf('</Relationships>');
   var ctEnd = ct.lastIndexOf('</Types>');
   if (!sect || relEnd < 0 || ctEnd < 0 || doc.indexOf('<w:footerReference') >= 0) return bytes;
   var close = doc.indexOf('>', sect.index);
   var maxId = 0;
-  var idRe = /Id="rId(\\d+)"/g;
+  var idRe = /Id="rId(\d+)"/g;
   var m;
   while ((m = idRe.exec(rels)) !== null) {
     if (Number(m[1]) > maxId) maxId = Number(m[1]);
@@ -1994,17 +1969,17 @@ window.__morphoSetTemplate = function (b64) {
    COL_SEP は src/text/columns.ts と同じ正規表現。ブリッジは WebView 用の
    文字列なので import できず、二重に持っている。食い違うと原稿とプレビューで
    列の切れ目がずれるので、scripts/check-columns.mjs が一致を検証している。 */
-var COL_SEP = /^[ \\t]*[+＋]([ \\t]*[+＋]){2,}[ \\t]*$/;
-var COL_H1 = /^#[ \\t]/;
-var COL_HR = /^ {0,3}([*_-])(?:[ \\t]*\\1){2,}[ \\t]*$/;
+var COL_SEP = /^[ \t]*[+＋]([ \t]*[+＋]){2,}[ \t]*$/;
+var COL_H1 = /^#[ \t]/;
+var COL_HR = /^ {0,3}([*_-])(?:[ \t]*\1){2,}[ \t]*$/;
 /* 柵の追跡。規則の原本は src/text/columns.ts で、ここはその写し。
    4 つの正規表現と scanFences の本文が原本と一致することを check-columns.mjs が
    検証している（片方だけ直すと落ちる）。閉じ柵は直近の開き柵と対なので、
    ノートの中に入れ子の div があっても、ノートが終わるのは深さが戻ったときだけ */
-var CODE_FENCE = /^ {0,3}(\`\`\`|~~~)/;
-var DIV_FENCE = /^[ \\t]*(?:>[ \\t]*)*:::+/;
-var DIV_CLOSE = /^[ \\t]*(?:>[ \\t]*)*:::+[ \\t]*$/;
-var NOTES_OPEN = /^[ \\t]*(?:>[ \\t]*)*:::+[ \\t]*(?:\\{[^}]*\\.notes[^}]*\\}|notes\\b)/;
+var CODE_FENCE = /^ {0,3}(```|~~~)/;
+var DIV_FENCE = /^[ \t]*(?:>[ \t]*)*:::+/;
+var DIV_CLOSE = /^[ \t]*(?:>[ \t]*)*:::+[ \t]*$/;
+var NOTES_OPEN = /^[ \t]*(?:>[ \t]*)*:::+[ \t]*(?:\{[^}]*\.notes[^}]*\}|notes\b)/;
 
 function scanFences(lines) {
   const code = [];
@@ -2049,8 +2024,8 @@ function scanFences(lines) {
 window.__morphoScanFences = scanFences;
 
 /* 段落 1 つぶんの画像 / パイプ表の先頭行 */
-var COL_IMAGE = /^[ \\t]*!\\[[^\\]]*\\]\\([^)]*\\)[ \\t]*$/;
-var COL_TABLE = /^[ \\t]*\\|/;
+var COL_IMAGE = /^[ \t]*!\[[^\]]*\]\([^)]*\)[ \t]*$/;
+var COL_TABLE = /^[ \t]*\|/;
 
 /* 列の先頭ブロックの種別と、その後ろにブロックが続くか。
    CLAUDE.md 落とし穴 13: 列の先頭が画像か表だと後続ブロックが全部消える */
@@ -2070,16 +2045,16 @@ function colHead(colLines) {
 }
 
 function expandColumns(md) {
-  /* CRLF 原稿（Windows 由来の .md）では各行末に \\r が残り、COL_SEP / COL_HR /
+  /* CRLF 原稿（Windows 由来の .md）では各行末に \r が残り、COL_SEP / COL_HR /
      COL_DIV_CLOSE が一致せず、段組みが無警告で 1 段のまま出ていた（実測:
      scripts/check-deck.mjs）。ここは変換器へ渡す派生テキストしか作らないので、
-     行末の \\r を丸ごと落として LF に正規化する。pandoc は CRLF でも LF と同じ
+     行末の \r を丸ごと落として LF に正規化する。pandoc は CRLF でも LF と同じ
      出力を返す（実測）ので結果は変わらない。原稿側のオフセット系
      （splitFrontMatter / cursorSlide.ts）には適用しない — 長さが変わる。
      src/text/lineEnding.ts と同じ規約（ブリッジは import できないので自前） */
-  var lines = md.split('\\n');
+  var lines = md.split('\n');
   for (var n = 0; n < lines.length; n++) {
-    if (lines[n].slice(-1) === '\\r') lines[n] = lines[n].slice(0, -1);
+    if (lines[n].slice(-1) === '\r') lines[n] = lines[n].slice(0, -1);
   }
   var diags = [];
   var segs = [];
@@ -2172,19 +2147,19 @@ function expandColumns(md) {
     out.push('::: {.columns}');
     for (var q = 0; q < cols.length; q++) {
       out.push('::: {.column}');
-      var inner = cols[q].join('\\n').replace(/^\\n+|\\n+$/g, '');
-      if (inner) out = out.concat(inner.split('\\n'));
+      var inner = cols[q].join('\n').replace(/^\n+|\n+$/g, '');
+      if (inner) out = out.concat(inner.split('\n'));
       out.push(':::');
     }
     out.push(':::');
     out = out.concat(seg.slice(tail));
   }
-  return { md: out.join('\\n'), diags: diags };
+  return { md: out.join('\n'), diags: diags };
 }
 window.__morphoExpandColumns = expandColumns;
 
 /* ---------- スライドごとのフッター（notes/footer-design.md 0.17.0 v2） ----------
-   内容層の記法（\`/// 文言\` と \`::: footer\` 柵）を走査し、形式ごとに実現する。
+   内容層の記法（`/// 文言` と `::: footer` 柵）を走査し、形式ごとに実現する。
      pptx : 直前の「文字が乗るブロック」の末尾へ 目印 U+E001 文言 U+E002 を埋め、
             pandoc の実出力（slideN.xml）から切り出して原状復帰する。
             どのスライドに載るかは数えずに pandoc に決めさせる
@@ -2195,44 +2170,44 @@ window.__morphoExpandColumns = expandColumns;
    判定式は src/text/footerBlocks.ts と同じもの（ブリッジは import できない。
    scripts/check-footer.mjs が一致を常時検証する）。 */
 
-var FT_OPEN = '\\uE001';
-var FT_CLOSE = '\\uE002';
+var FT_OPEN = '\uE001';
+var FT_CLOSE = '\uE002';
 /* 1 行形。3 個以上・全角可・間の空白は不可・行頭タブ不可・字下げは半角 3 まで
    （4 以上はインデントコードブロック。空白入りは pandoc で見える失敗なので救わない） */
-var FT_LINE = /^ {0,3}[/／]{3,}[ \\t]*(.*)$/;
-/* 柵形（正規化後に照合）。\`::: footer\` / \`::: {.footer …}\` / \`::: 出典\` / \`::: 注釈\`。
-   JS の \\b は CJK 直後で成立しないので明示の境界を使う（\`::: 出典追記\` は一致しない） */
-var FT_FENCE = /^ {0,3}:::+[ \\t]*(?:\\{[ \\t]*\\.?(?:footer|出典|注釈)(?:[ \\t][^}]*)?\\}|(?:footer|出典|注釈)(?=[ \\t]|$))[ \\t]*(.*)$/i;
-var FT_CODE = /^ {0,3}(\`\`\`|~~~)/;
-var FT_HEADING = /^ {0,3}#{1,6}[ \\t]/;
-var FT_HR = /^ {0,3}([*_-])(?:[ \\t]*\\1){2,}[ \\t]*$/;
-var FT_COL_SEP = /^[ \\t]*[+＋]([ \\t]*[+＋]){2,}[ \\t]*$/;
-var FT_DIV_OPEN = /^ {0,3}:::+[ \\t]*\\S/;
-var FT_DIV_CLOSE = /^ {0,3}:::+[ \\t]*$/;
-var FT_NOTES = /^ {0,3}:::+[ \\t]*(?:\\{[^}]*\\.notes[^}]*\\}|notes(?=[ \\t]|$))/;
-var FT_TABLE = /^ {0,3}\\|/;
-var FT_IMAGE_ONLY = /^ {0,3}!\\[[^\\]]*\\]\\(([^)]*)\\)[ \\t]*$/;
-var FT_MATH = /^ {0,3}\\$\\$/;
+var FT_LINE = /^ {0,3}[/／]{3,}[ \t]*(.*)$/;
+/* 柵形（正規化後に照合）。`::: footer` / `::: {.footer …}` / `::: 出典` / `::: 注釈`。
+   JS の \b は CJK 直後で成立しないので明示の境界を使う（`::: 出典追記` は一致しない） */
+var FT_FENCE = /^ {0,3}:::+[ \t]*(?:\{[ \t]*\.?(?:footer|出典|注釈)(?:[ \t][^}]*)?\}|(?:footer|出典|注釈)(?=[ \t]|$))[ \t]*(.*)$/i;
+var FT_CODE = /^ {0,3}(```|~~~)/;
+var FT_HEADING = /^ {0,3}#{1,6}[ \t]/;
+var FT_HR = /^ {0,3}([*_-])(?:[ \t]*\1){2,}[ \t]*$/;
+var FT_COL_SEP = /^[ \t]*[+＋]([ \t]*[+＋]){2,}[ \t]*$/;
+var FT_DIV_OPEN = /^ {0,3}:::+[ \t]*\S/;
+var FT_DIV_CLOSE = /^ {0,3}:::+[ \t]*$/;
+var FT_NOTES = /^ {0,3}:::+[ \t]*(?:\{[^}]*\.notes[^}]*\}|notes(?=[ \t]|$))/;
+var FT_TABLE = /^ {0,3}\|/;
+var FT_IMAGE_ONLY = /^ {0,3}!\[[^\]]*\]\(([^)]*)\)[ \t]*$/;
+var FT_MATH = /^ {0,3}\$\$/;
 /* 文字に見えて出力に文字を作らない（別の場所に作る）行。目印を置くと出典が消える・
    rels に漏れる・スライドが割れる（実測） */
-var FT_NOT_TARGET = /^ {0,3}(?:\\[[^\\]]+\\]:[ \\t]|\\[\\^[^\\]]+\\]:|<|(?:=+|-+)[ \\t]*$)/;
-var FT_LIST = /^[ \\t]*(?:[-*+]|\\d+[.)])[ \\t]/;
+var FT_NOT_TARGET = /^ {0,3}(?:\[[^\]]+\]:[ \t]|\[\^[^\]]+\]:|<|(?:=+|-+)[ \t]*$)/;
+var FT_LIST = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]/;
 
 function ftNormalizeFence(line) {
   return line.replace(/：/g, ':').replace(/　/g, ' ').replace(/｛/g, '{').replace(/｝/g, '}');
 }
 
 /* East Asian Width が W / F か（かな・漢字・全角約物・全角英数）。半角カナは含めない */
-var FT_WIDE = /[\\u1100-\\u115F\\u2E80-\\u303E\\u3041-\\u33FF\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uA000-\\uA4CF\\uAC00-\\uD7A3\\uF900-\\uFAFF\\uFE30-\\uFE4F\\uFF00-\\uFF60\\uFFE0-\\uFFE6]/;
+var FT_WIDE = /[\u1100-\u115F\u2E80-\u303E\u3041-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA000-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/;
 /* 複数行の連結。pandoc の east_asian_line_breaks と同じく「両側が全角なら区切りなし」。
    pandoc は装飾の中身の文字で幅を判定する（stringify）ので、境界の記号を剥がして見る */
 function ftEdgeChar(s, tail) {
   var t = s;
   if (tail) {
-    t = t.replace(/\\]\\([^)]*\\)$/, '').replace(/[*_\`\\]]+$/, '');
+    t = t.replace(/\]\([^)]*\)$/, '').replace(/[*_`\]]+$/, '');
     return t.slice(-1);
   }
-  t = t.replace(/^!?\\[/, '').replace(/^[*_\`]+/, '');
+  t = t.replace(/^!?\[/, '').replace(/^[*_`]+/, '');
   return t.charAt(0);
 }
 function ftJoin(lines) {
@@ -2255,7 +2230,7 @@ function ftDiag(kind, label, hint, text) {
 /* 走査。原稿は書き換えず、行の列と「ここにフッターがあった」を返す。
    tokens[i] は { line: string } か { footer: { text, empty, from } } */
 function scanFooters(md) {
-  var lines = String(md).split('\\n');
+  var lines = String(md).split('\n');
   var tokens = [];
   var diags = [];
   var inCode = false;
@@ -2271,8 +2246,8 @@ function scanFooters(md) {
     footer = null;
   };
   for (var i = 0; i < lines.length; i++) {
-    /* CRLF 原稿: 判定も出力も \\r を落とす（派生テキストなので長さを変えてよい） */
-    var raw = lines[i].slice(-1) === '\\r' ? lines[i].slice(0, -1) : lines[i];
+    /* CRLF 原稿: 判定も出力も \r を落とす（派生テキストなので長さを変えてよい） */
+    var raw = lines[i].slice(-1) === '\r' ? lines[i].slice(0, -1) : lines[i];
     if (FT_CODE.test(raw)) {
       if (footer) {
         diags.push(ftDiag('design', 'フッターの柵が閉じていません',
@@ -2353,44 +2328,44 @@ function realizeFooterDivs(tokens, format) {
     if (out.length && out[out.length - 1] !== '') out.push('');
     out.push(open, tk.footer.text, ':::', '');
   }
-  return out.join('\\n');
+  return out.join('\n');
 }
 
 /* ---- 実現: pptx は目印を埋める ---- */
 
-/* 行末のハードブレイク記号（\`\\\` / 空白 2 個以上）・ATX 閉じ \`#\`・末尾属性 \`{#id}\` の前に入れる */
+/* 行末のハードブレイク記号（`\` / 空白 2 個以上）・ATX 閉じ `#`・末尾属性 `{#id}` の前に入れる */
 function ftInsertAtLineEnd(line, mark, isHeading) {
-  var m = /([ \\t]*\\\\|[ \\t]{2,}|[ \\t]+)$/.exec(line);
+  var m = /([ \t]*\\|[ \t]{2,}|[ \t]+)$/.exec(line);
   var tail = m ? m[0] : '';
   var head = m ? line.slice(0, line.length - tail.length) : line;
   if (isHeading) {
-    var attr = /[ \\t]+\\{[^{}]*\\}[ \\t]*$/.exec(head);
+    var attr = /[ \t]+\{[^{}]*\}[ \t]*$/.exec(head);
     if (attr) { tail = attr[0] + tail; head = head.slice(0, head.length - attr[0].length); }
-    var closeH = /[ \\t]+#+[ \\t]*$/.exec(head);
+    var closeH = /[ \t]+#+[ \t]*$/.exec(head);
     if (closeH) { tail = closeH[0] + tail; head = head.slice(0, head.length - closeH[0].length); }
   }
   return head + mark + tail;
 }
 
-/* 表の最後のセルへ。\`|\` はセルを割るのでエスケープ（コード行には使わない） */
+/* 表の最後のセルへ。`|` はセルを割るのでエスケープ（コード行には使わない） */
 function ftInsertIntoTableRow(line, text) {
-  var mark = FT_OPEN + text.replace(/\\|/g, '\\\\|') + FT_CLOSE;
-  var m = /[ \\t]*\\|[ \\t]*$/.exec(line);
+  var mark = FT_OPEN + text.replace(/\|/g, '\\|') + FT_CLOSE;
+  var m = /[ \t]*\|[ \t]*$/.exec(line);
   if (m) return line.slice(0, line.length - m[0].length) + mark + m[0];
   return line + mark;
 }
 
-/* 画像の title 属性へ。\`"\` \`\\\` はエスケープ、デリミタは二重引用符に固定
-   （奇数個の \`"\` や単引用符 + アポストロフィは画像ごと無警告で消える。実測） */
+/* 画像の title 属性へ。`"` `\` はエスケープ、デリミタは二重引用符に固定
+   （奇数個の `"` や単引用符 + アポストロフィは画像ごと無警告で消える。実測） */
 function ftInsertIntoImage(line, text) {
-  var esc = text.replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
+  var esc = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   var mark = FT_OPEN + esc + FT_CLOSE;
-  var m = /^( {0,3}!\\[[^\\]]*\\]\\()([^)]*)(\\)[ \\t]*)$/.exec(line);
+  var m = /^( {0,3}!\[[^\]]*\]\()([^)]*)(\)[ \t]*)$/.exec(line);
   if (!m) return line + mark;
   var inner = m[2];
-  var tm = /^(.*?)[ \\t]+"((?:[^"\\\\]|\\\\.)*)"[ \\t]*$/.exec(inner);
+  var tm = /^(.*?)[ \t]+"((?:[^"\\]|\\.)*)"[ \t]*$/.exec(inner);
   if (tm) return m[1] + tm[1] + ' "' + tm[2] + mark + '"' + m[3];
-  return m[1] + inner.replace(/[ \\t]+$/, '') + ' "' + mark + '"' + m[3];
+  return m[1] + inner.replace(/[ \t]+$/, '') + ' "' + mark + '"' + m[3];
 }
 
 /**
@@ -2422,8 +2397,8 @@ function ftFindTarget(lines, pos) {
       }
       if (inCode) { if (step < 0 && codeLast < 0 && l.trim() !== '') codeLast = i; continue; }
       if (FT_MATH.test(l)) {
-        /* \`$$\` だけの行は状態を反転、\`$$…$$\` の 1 行は丸ごと除外 */
-        if (!/^ {0,3}\\$\\$.*\\$\\$[ \\t]*$/.test(l)) inMath = !inMath;
+        /* `$$` だけの行は状態を反転、`$$…$$` の 1 行は丸ごと除外 */
+        if (!/^ {0,3}\$\$.*\$\$[ \t]*$/.test(l)) inMath = !inMath;
         continue;
       }
       if (inMath) continue;
@@ -2436,7 +2411,7 @@ function ftFindTarget(lines, pos) {
       if (FT_COL_SEP.test(l) || FT_DIV_OPEN.test(l) || FT_DIV_CLOSE.test(l) || FT_LINE.test(l)) continue;
       if (FT_NOT_TARGET.test(l)) {
         /* setext の下線なら、その上の行が見出しの本文 */
-        if (step < 0 && /^ {0,3}(=+|-+)[ \\t]*$/.test(l) && i > 0 && lines[i - 1].trim() !== '' &&
+        if (step < 0 && /^ {0,3}(=+|-+)[ \t]*$/.test(l) && i > 0 && lines[i - 1].trim() !== '' &&
             !FT_NOT_TARGET.test(lines[i - 1]) && !FT_TABLE.test(lines[i - 1])) {
           return { at: i - 1, how: 'heading' };
         }
@@ -2493,14 +2468,14 @@ function realizeFooterMarks(tokens, diags) {
       continue;
     }
     var l = lines[tg.at];
-    /* 文言の末尾の \`\\\` は閉じ目印をエスケープして飲む（\`\\\` + 目印は pandoc の escape。実測）。
-       コード行以外では \`\\\\\`（リテラルの \\）に逃がす */
-    var text = tg.how === 'code' ? mk.text : mk.text.replace(/\\\\$/, '\\\\\\\\');
+    /* 文言の末尾の `\` は閉じ目印をエスケープして飲む（`\` + 目印は pandoc の escape。実測）。
+       コード行以外では `\\`（リテラルの \）に逃がす */
+    var text = tg.how === 'code' ? mk.text : mk.text.replace(/\\$/, '\\\\');
     if (tg.how === 'table') lines[tg.at] = ftInsertIntoTableRow(l, text);
     else if (tg.how === 'image') lines[tg.at] = ftInsertIntoImage(l, mk.text);
     else {
       /* 段落・見出し・コード行。未閉じの書式記号で終わる行は目印を書式に飲まれる */
-      if (tg.how === 'text' && /(?:^|[^\\\\])(?:\\*\\*?|__?|\`+|\\]\\()$/.test(l.replace(/[ \\t]+$/, ''))) {
+      if (tg.how === 'text' && /(?:^|[^\\])(?:\*\*?|__?|`+|\]\()$/.test(l.replace(/[ \t]+$/, ''))) {
         diags.push(ftDiag('design', 'フッターの直前の行が書式記号で終わっています',
           '* や ** やバッククォート、リンクの途中で終わる行の直後にフッターを置くと本文の書式が崩れます。空行を挟んでください',
           (tg.at + 1) + ' 行目'));
@@ -2509,7 +2484,7 @@ function realizeFooterMarks(tokens, diags) {
     }
     count++;
   }
-  return { md: lines.join('\\n'), count: count };
+  return { md: lines.join('\n'), count: count };
 }
 
 /**
@@ -2525,7 +2500,7 @@ function extractFooters(md, format, opts) {
   for (var i = 0; i < sc.tokens.length; i++) {
     if (sc.tokens[i].footer) { any = true; if (sc.tokens[i].footer.empty) empties++; }
   }
-  if (!any) return { md: md.split('\\n').map(function (l) { return l.slice(-1) === '\\r' ? l.slice(0, -1) : l; }).join('\\n'), diags: diags, count: 0 };
+  if (!any) return { md: md.split('\n').map(function (l) { return l.slice(-1) === '\r' ? l.slice(0, -1) : l; }).join('\n'), diags: diags, count: 0 };
   if (empties && opts.hasDeckFooter && format === 'pptx') {
     diags.push(ftDiag('info', '空のフッターがデッキ全体の出典を消しています',
       '文言の無い /// は、そのスライドだけデッキ全体の出典を出しません。出したいなら行ごと消してください',
@@ -2545,7 +2520,7 @@ function ftRunPrBefore(xml, at) {
   var start = xml.lastIndexOf('<a:r>', at);
   if (start < 0) return '<a:rPr lang="ja-JP"/>';
   var seg = xml.slice(start, at);
-  var m = /<a:rPr\\b[^>]*\\/>|<a:rPr\\b[^>]*>[\\s\\S]*?<\\/a:rPr>/.exec(seg);
+  var m = /<a:rPr\b[^>]*\/>|<a:rPr\b[^>]*>[\s\S]*?<\/a:rPr>/.exec(seg);
   return m ? m[0] : '<a:rPr lang="ja-JP"/>';
 }
 
@@ -2557,7 +2532,7 @@ function harvestFooters(zip) {
   var names = Object.keys(zip);
   for (var n = 0; n < names.length; n++) {
     var name = names[n];
-    var sm = /^ppt\\/slides\\/slide(\\d+)\\.xml$/.exec(name);
+    var sm = /^ppt\/slides\/slide(\d+)\.xml$/.exec(name);
     if (!sm) continue;
     var xml = dec.decode(zip[name]);
     if (xml.indexOf(FT_OPEN) < 0 && xml.indexOf(FT_CLOSE) < 0) continue;
@@ -2576,15 +2551,15 @@ function harvestFooters(zip) {
     }
     if (xml.indexOf(FT_CLOSE) >= 0) { mismatch++; xml = xml.split(FT_CLOSE).join(''); }
     /* 画像 title に埋めた場合、descr の先頭に改行 2 個が残る（実測: title + LF LF + ファイル名） */
-    xml = xml.replace(/descr="(?:\\n\\n|&#10;&#10;|&#xA;&#xA;)/g, 'descr="');
+    xml = xml.replace(/descr="(?:\n\n|&#10;&#10;|&#xA;&#xA;)/g, 'descr="');
     zip[name] = strToU8(xml);
     slides[Number(sm[1])] = { parts: parts, suppress: suppress && !parts.length };
   }
   /* 漏れの掃除: スライド以外（rels・notesSlide 等）に残った目印は出荷しない */
   var leaked = 0;
   for (var k = 0; k < names.length; k++) {
-    if (/^ppt\\/slides\\/slide\\d+\\.xml$/.test(names[k])) continue;
-    if (!/\\.(xml|rels)$/.test(names[k])) continue;
+    if (/^ppt\/slides\/slide\d+\.xml$/.test(names[k])) continue;
+    if (!/\.(xml|rels)$/.test(names[k])) continue;
     var x = dec.decode(zip[names[k]]);
     if (x.indexOf(FT_OPEN) < 0 && x.indexOf(FT_CLOSE) < 0) continue;
     leaked++;
@@ -2602,12 +2577,12 @@ function harvestFooters(zip) {
 function ftFragToRuns(part) {
   var xml = '<a:r>' + part.rPr + '<a:t>' + part.frag + '</a:t></a:r>';
   /* 空のラン（目印が run の端にあった名残）は落とす */
-  xml = xml.replace(/<a:r>(?:<a:rPr\\b[^>]*\\/>|<a:rPr\\b[^>]*>[\\s\\S]*?<\\/a:rPr>)?<a:t><\\/a:t><\\/a:r>/g, '');
+  xml = xml.replace(/<a:r>(?:<a:rPr\b[^>]*\/>|<a:rPr\b[^>]*>[\s\S]*?<\/a:rPr>)?<a:t><\/a:t><\/a:r>/g, '');
   var opens = (xml.match(/<a:r>/g) || []).length;
-  var closes = (xml.match(/<\\/a:r>/g) || []).length;
+  var closes = (xml.match(/<\/a:r>/g) || []).length;
   var tOpen = (xml.match(/<a:t>/g) || []).length;
-  var tClose = (xml.match(/<\\/a:t>/g) || []).length;
-  if (opens !== closes || tOpen !== tClose || /<\\/?a:p\\b|<\\/?p:/.test(xml)) {
+  var tClose = (xml.match(/<\/a:t>/g) || []).length;
+  if (opens !== closes || tOpen !== tClose || /<\/?a:p\b|<\/?p:/.test(xml)) {
     var text = part.frag.replace(/<[^>]*>/g, '');
     return { xml: '<a:r><a:rPr lang="ja-JP"/><a:t>' + text + '</a:t></a:r>', ok: false, text: text };
   }
@@ -2616,11 +2591,11 @@ function ftFragToRuns(part) {
 
 /* 帯の体裁を各ランへ。sz は属性、色は solidFill を rPr の先頭（latin / hlinkClick より前） */
 function ftStyleRuns(runsXml, f) {
-  return runsXml.replace(/<a:rPr\\b([^>]*?)(\\/?)>/g, function (_m, attrs, selfClose) {
-    var a = attrs.replace(/\\ssz="\\d+"/, '') + ' sz="' + Math.round(f.sz) + '"';
-    if (!/\\blang=/.test(a)) a = ' lang="ja-JP"' + a;
+  return runsXml.replace(/<a:rPr\b([^>]*?)(\/?)>/g, function (_m, attrs, selfClose) {
+    var a = attrs.replace(/\ssz="\d+"/, '') + ' sz="' + Math.round(f.sz) + '"';
+    if (!/\blang=/.test(a)) a = ' lang="ja-JP"' + a;
     return '<a:rPr' + a + '>' + footerColorXml(f.color) + (selfClose ? '</a:rPr>' : '');
-  }).replace(/(<a:rPr\\b[^>]*>(?:<a:solidFill>[\\s\\S]*?<\\/a:solidFill>))(<a:solidFill>[\\s\\S]*?<\\/a:solidFill>)/g, '$1');
+  }).replace(/(<a:rPr\b[^>]*>(?:<a:solidFill>[\s\S]*?<\/a:solidFill>))(<a:solidFill>[\s\S]*?<\/a:solidFill>)/g, '$1');
 }
 
 /* 取り出した断片をプレビューのシーンへ載せる（再 zip しない） */
@@ -2654,39 +2629,39 @@ window.__morphoAttachSlideFooters = attachSlideFooters;
    テーマ CSS に任せる。pandoc.utils.stringify は使わない（落とし穴 16: RawInline を
    捨てる）。Span の中身は自前で歩き、ルビ等の RawInline はそのまま並べる */
 function buildThemeLua(classes) {
-  var lua = 'local C = {}\\n';
+  var lua = 'local C = {}\n';
   for (var i = 0; i < classes.length; i++) {
     var c = classes[i];
     if (!/^[A-Za-z][A-Za-z0-9]*$/.test(c.name)) continue;
     lua += 'C[' + luaQuote(c.name) + '] = { hex = ' + luaQuote(String(c.hex || '7F7F7F').replace('#', '').toUpperCase()) +
       ', scheme = ' + (c.scheme ? luaQuote(c.scheme) : 'nil') +
-      ', bold = ' + (c.bold ? 'true' : 'false') + ' }\\n';
+      ', bold = ' + (c.bold ? 'true' : 'false') + ' }\n';
   }
   lua += [
     'local function esc(s)',
     "  return (s:gsub('&', '&amp;'):gsub('<', '&lt;'):gsub('>', '&gt;'))",
     'end',
     'local function pptxRun(text, cls, bold)',
-    "  local rpr = '<a:rPr lang=\\"ja-JP\\"' .. ((bold or cls.bold) and ' b=\\"1\\"' or '') .. '>'",
+    "  local rpr = '<a:rPr lang=\"ja-JP\"' .. ((bold or cls.bold) and ' b=\"1\"' or '') .. '>'",
     '  if cls.scheme then',
-    "    rpr = rpr .. '<a:solidFill><a:schemeClr val=\\"' .. cls.scheme .. '\\"/></a:solidFill>'",
+    "    rpr = rpr .. '<a:solidFill><a:schemeClr val=\"' .. cls.scheme .. '\"/></a:solidFill>'",
     '  else',
-    "    rpr = rpr .. '<a:solidFill><a:srgbClr val=\\"' .. cls.hex .. '\\"/></a:solidFill>'",
+    "    rpr = rpr .. '<a:solidFill><a:srgbClr val=\"' .. cls.hex .. '\"/></a:solidFill>'",
     '  end',
     "  return pandoc.RawInline('openxml', '<a:r>' .. rpr .. '</a:rPr><a:t>' .. esc(text) .. '</a:t></a:r>')",
     'end',
     'local function docxRun(text, cls, bold)',
-    "  local rpr = '<w:rPr>' .. ((bold or cls.bold) and '<w:b/>' or '') .. '<w:color w:val=\\"' .. cls.hex .. '\\"'",
-    "  if cls.scheme then rpr = rpr .. ' w:themeColor=\\"' .. cls.scheme .. '\\"' end",
+    "  local rpr = '<w:rPr>' .. ((bold or cls.bold) and '<w:b/>' or '') .. '<w:color w:val=\"' .. cls.hex .. '\"'",
+    "  if cls.scheme then rpr = rpr .. ' w:themeColor=\"' .. cls.scheme .. '\"' end",
     "  rpr = rpr .. '/></w:rPr>'",
-    "  return pandoc.RawInline('openxml', '<w:r>' .. rpr .. '<w:t xml:space=\\"preserve\\">' .. esc(text) .. '</w:t></w:r>')",
+    "  return pandoc.RawInline('openxml', '<w:r>' .. rpr .. '<w:t xml:space=\"preserve\">' .. esc(text) .. '</w:t></w:r>')",
     'end',
     '-- Span の中身を歩いて、文字の連なりごとに 1 ランへ。RawInline（ルビ等）は素通し',
     'local function walk(inlines, cls, bold, out, buf)',
     '  for _, il in ipairs(inlines) do',
     "    if il.t == 'Str' then buf.text = buf.text .. il.text",
     "    elseif il.t == 'Space' or il.t == 'SoftBreak' then buf.text = buf.text .. ' '",
-    "    elseif il.t == 'LineBreak' then buf.text = buf.text .. '\\\\n'",
+    "    elseif il.t == 'LineBreak' then buf.text = buf.text .. '\\n'",
     "    elseif il.t == 'Strong' then",
     "      if buf.text ~= '' then table.insert(out, { text = buf.text, bold = bold }); buf.text = '' end",
     '      walk(il.content, cls, true, out, buf)',
@@ -2720,7 +2695,7 @@ function buildThemeLua(classes) {
     '  return out',
     'end',
     ''
-  ].join('\\n');
+  ].join('\n');
   return lua;
 }
 window.__morphoBuildThemeLua = buildThemeLua;
@@ -2737,25 +2712,25 @@ function applyColumnRatioZip(zip, ratio) {
   if (Math.abs(ratio[0] - ratio[1]) < 1e-9) return result;
   var dec = new TextDecoder();
   var names = Object.keys(zip).filter(function (n) {
-    return /^ppt\\/slideLayouts\\/slideLayout\\d+\\.xml$/.test(n);
+    return /^ppt\/slideLayouts\/slideLayout\d+\.xml$/.test(n);
   });
   for (var i = 0; i < names.length; i++) {
     var xml = dec.decode(zip[names[i]]);
-    var cSld = /<p:cSld\\b[^>]*\\sname="([^"]*)"/.exec(xml);
+    var cSld = /<p:cSld\b[^>]*\sname="([^"]*)"/.exec(xml);
     var lname = cSld ? decodeXml(cSld[1]) : '';
     if (lname !== 'Two Content' && lname !== 'Comparison') continue;
     /* 列の枠: type が無い（= body）か body のプレースホルダで、座標を持つもの */
     var sps = [];
-    var re = /<p:sp>[\\s\\S]*?<\\/p:sp>/g;
+    var re = /<p:sp>[\s\S]*?<\/p:sp>/g;
     var m;
     while ((m = re.exec(xml)) !== null) {
       var sp = m[0];
-      var ph = /<p:ph\\b([^>]*)\\/?>/.exec(sp);
+      var ph = /<p:ph\b([^>]*)\/?>/.exec(sp);
       if (!ph) continue;
-      var type = /\\btype="([^"]*)"/.exec(ph[1]);
+      var type = /\btype="([^"]*)"/.exec(ph[1]);
       if (type && type[1] !== 'body') continue;
-      var off = /<a:off\\s+x="(\\d+)"\\s+y="(\\d+)"/.exec(sp);
-      var ext = /<a:ext\\s+cx="(\\d+)"\\s+cy="(\\d+)"/.exec(sp);
+      var off = /<a:off\s+x="(\d+)"\s+y="(\d+)"/.exec(sp);
+      var ext = /<a:ext\s+cx="(\d+)"\s+cy="(\d+)"/.exec(sp);
       if (!off || !ext) continue;
       sps.push({ start: m.index, end: m.index + sp.length, xml: sp, x: Number(off[1]), cx: Number(ext[1]) });
     }
@@ -2781,8 +2756,8 @@ function applyColumnRatioZip(zip, ratio) {
       var nx = s0.x === leftX ? leftX : rightX;
       var ncx = s0.x === leftX ? leftCx : rightCx;
       var nsp = s0.xml
-        .replace(/<a:off\\s+x="\\d+"/, '<a:off x="' + nx + '"')
-        .replace(/<a:ext\\s+cx="\\d+"/, '<a:ext cx="' + ncx + '"');
+        .replace(/<a:off\s+x="\d+"/, '<a:off x="' + nx + '"')
+        .replace(/<a:ext\s+cx="\d+"/, '<a:ext cx="' + ncx + '"');
       xml = xml.slice(0, s0.start) + nsp + xml.slice(s0.end);
     }
     zip[names[i]] = strToU8(xml);
@@ -2868,7 +2843,7 @@ window.__morphoSetAssets = function (map) {
 };
 
 function luaQuote(sName) {
-  return "'" + String(sName).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'") + "'";
+  return "'" + String(sName).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
 }
 
 /* 見つからない画像参照をプレースホルダへ置き換えるガード（名前一覧から生成） */
@@ -2877,12 +2852,12 @@ function buildImageGuardLua(names) {
   for (var k = 0; k < names.length; k++) {
     lua += '[' + luaQuote(names[k]) + '] = true,';
   }
-  lua += '}\\n' +
-    'function Image(el)\\n' +
-    '  if not ok[el.src] then\\n' +
-    "    return pandoc.Str('[画像なし: ' .. el.src .. ']')\\n" +
-    '  end\\n' +
-    'end\\n';
+  lua += '}\n' +
+    'function Image(el)\n' +
+    '  if not ok[el.src] then\n' +
+    "    return pandoc.Str('[画像なし: ' .. el.src .. ']')\n" +
+    '  end\n' +
+    'end\n';
   return lua;
 }
 window.__morphoImageGuardLua = buildImageGuardLua;
@@ -3114,6 +3089,3 @@ window.__morphoExport = function (id, md, opts, format) { exportFile(id, md, opt
     RN({ type: 'boot-error', message: String((e && e.message) || e) });
   }
 })();
-</script>
-</body>
-</html>`;

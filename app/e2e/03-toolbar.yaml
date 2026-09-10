@@ -1,0 +1,38 @@
+# 0.18.0 の確認 1・4: ソフトキーボードの上にツールバーが出て、「字下げ」「段組み」を
+# 押してもキーボード（＝ツールバー）が閉じないこと（remount 廃止の主目的）。
+# 原稿は TextInput の testID="editor" で掴む（座標だと見出し行やペインの境目に当たり得る）。
+# シミュレータはハードウェアキーボードを外して起動する（sim-round.yml）。
+# 0.19.3 まで iOS ではツールバー自体が出ていなかった（InputAccessoryView。0.19.4 で通常のビューに。CHANGELOG）。
+appId: com.ccolloid.morpho
+---
+- launchApp
+- extendedWaitUntil:
+    visible: '.*プレビュー · [0-9]+ 枚.*'
+    timeout: 300000
+- tapOn:
+    id: 'editor'
+# 1 回目のタップで focus が入らなかったときの保険（もう一度）
+- runFlow:
+    when:
+      notVisible: '字下げ'
+    commands:
+      - tapOn:
+          id: 'editor'
+- extendedWaitUntil:
+    visible: '字下げ'
+    timeout: 20000
+- takeScreenshot: 03-keyboard
+- tapOn: '字下げ'
+- assertVisible: '字下げ'
+- tapOn: '段組み'
+- assertVisible: '段組み'
+- tapOn: '出典'
+- assertVisible: '出典'
+- takeScreenshot: 03-after-insert
+# 挿入が原稿に入り、手が止まったあとプレビューが取り直されてもエラーが出ない
+- extendedWaitUntil:
+    visible: '.*プレビュー · [0-9]+ 枚.*'
+    timeout: 60000
+- assertNotVisible: '変換に失敗.*'
+- tapOn: 'キーボードを閉じる'
+- takeScreenshot: 03-dismissed

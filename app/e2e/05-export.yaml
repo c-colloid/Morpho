@@ -1,0 +1,19 @@
+# 書き出しメニューが開き、pptx の変換が走る（受け入れ条件 7 の前半）。
+# 共有先の選択は iOS のシートなので、開いたことだけを確かめる。
+# Maestro の文字列照合は正規表現の完全一致なので ( ) . はエスケープし、行の見出しと注記が
+# 一つの要素にまとまっても当たるよう前後を .* で受ける。
+appId: com.ccolloid.morpho
+---
+- launchApp
+- extendedWaitUntil:
+    visible: '.*プレビュー · [0-9]+ 枚.*'
+    timeout: 300000
+- tapOn: '書き出し'
+- assertVisible: '.*スライド \(\.pptx\).*'
+- assertVisible: '.*文書 \(\.docx\).*'
+- tapOn: '.*スライド \(\.pptx\).*'
+- extendedWaitUntil:
+    notVisible: '変換中…'
+    timeout: 120000
+- takeScreenshot: 05-share
+- assertNotVisible: '書き出せませんでした.*'

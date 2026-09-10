@@ -1,0 +1,44 @@
+# 0.19.0 / 0.19.1: 装飾パネルのテーマ（列比）とフッター（位置・文字色）。
+# 値を変えたあとプレビューが取り直され、エラーが出ないこと。
+# 装飾パネルは二画面ではプレビューペイン（右半分）に浮かぶ。縦持ちの iPad なら
+# 全項目が収まる見込みだが、収まらないときはパネルの上をスワイプして送る。
+appId: com.ccolloid.morpho
+---
+- launchApp
+- extendedWaitUntil:
+    visible: '.*プレビュー · [0-9]+ 枚.*'
+    timeout: 300000
+- tapOn:
+    text: '装飾'
+    index: 0
+- extendedWaitUntil:
+    visible: 'テーマ（見た目の定義・文書全体）'
+    timeout: 15000
+- takeScreenshot: 04-sheet
+# フッターの「位置」（大きさ・位置・余白の順に並ぶ 2 つ目の＋）で下へ 1%
+- assertVisible: '.*位置 上から .*（テンプレートの帯）'
+- tapOn:
+    text: '＋'
+    index: 1
+- assertNotVisible: '.*位置 上から .*（テンプレートの帯）'
+- assertVisible: '位置をテンプレートの帯に戻す'
+- tapOn: '濃さ 100%'
+- takeScreenshot: 04-footer-moved
+- tapOn: '位置をテンプレートの帯に戻す'
+- assertVisible: '.*位置 上から .*（テンプレートの帯）'
+# テーマの列比
+- runFlow:
+    when:
+      notVisible: '2 : 1'
+    commands:
+      - swipe:
+          start: '70%,80%'
+          end: '70%,30%'
+- tapOn: '2 : 1'
+- takeScreenshot: 04-ratio-2-1
+- extendedWaitUntil:
+    visible: '.*プレビュー · [0-9]+ 枚.*'
+    timeout: 60000
+- assertNotVisible: '変換に失敗.*'
+- tapOn: '1 : 1'
+- takeScreenshot: 04-done

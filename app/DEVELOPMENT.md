@@ -131,6 +131,39 @@ Expo Go 版との違い:
   `set -o pipefail` を忘れると空の ipa が「成功」になる
 - 成果物の検算（実行バイナリの存在・サイズ下限）を必ず入れる
 
+## シミュレータの自動周回（0.19.2〜）
+
+GitHub Actions の macOS runner で **iOS Simulator（iPad Pro）にアプリを入れ、Maestro で操作して**
+受け入れ条件のうち機械で確かめられる項目を通す（`.github/workflows/sim-round.yml`。
+`app/e2e/**` かワークフロー自体の変更で走る。それ以外は Actions → Simulator Round → Run workflow）。
+所要 約 35 分。**実機 iPad が無くても本物の WKWebView と UITextView で回る**のが要点で、
+初回の周回で 0.18.0 の「確認 1」の実バグ（iOS でツールバー自体が出ていなかった）を捕まえた。
+
+| フロー | 見ていること |
+|---|---|
+| `01-boot` | 起動・wasm 取得・「プレビュー · N 枚」 |
+| `02-formats` | 文書 / Web / スライドの切替でエラーが出ない |
+| `03-toolbar` | 原稿をタップするとキーボードの上にツールバーが出て、字下げ・段組み・出典を押しても閉じない |
+| `04-theme-footer` | 装飾パネルのフッター位置（± と戻す）・濃さ・テーマの列比 |
+| `05-export` | 書き出しメニュー → pptx 変換 → 共有シート |
+
+実機に残るのは IME の変換候補・タッチの使用感・回転・Slide Over・外部アプリ連携
+（`../notes/development-plan-2026-09.md` 8-0 の表）。
+
+書き方の約束（実際に踏んだもの）:
+- Maestro の文字列照合は**正規表現の完全一致**。`( ) .` はエスケープし、見出しと注記が
+  一つの要素にまとまる行は前後を `.*` で受ける
+- RN の `Pressable` は子を一つのアクセシビリティ要素に畳む。中の文字を個別に当てたい
+  カード（`SlideCard`）は `accessible={false}`
+- `tapOn: id:` は `testID`（原稿は `testID="editor"`）。`accessibilityLabel` は `text:`
+- シミュレータは既定でハードウェアキーボード接続扱いになり、ソフトキーボードが出ない。
+  `defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false` を起動前に
+- 成果物（スクリーンショット・Maestro のログ）は Artifacts に上がるが、この開発環境からは
+  取れないので、**要素木は `::group::diag` としてジョブログに出す**（`e2e-diag/*.yaml` +
+  `maestro hierarchy`）。落ちたときはまずここを読む
+- iOS の `InputAccessoryView` はこの周回で表示されなかった（0.19.2 / 0.19.3 で 2 通り試して
+  要素木に出ず）。ツールバーは通常のビューで置く（「画面の形とキーボード」）
+
 ## 外部アプリ連携の実装状況
 
 **結論: 読み込み・書き出しに加えて、その場での上書き編集（open in place）も
@@ -165,13 +198,22 @@ react-native-svg 入り ipa の配布実績で確認済み。当時の未検証�
 ```
 src/converter/  ── 変換。ここより上は pandoc を知らない
   types.ts               差し替え可能な境界。pandoc 固有の語彙を漏らさない
-  bridgeHtml.ts          不可視 WebView の中身。pandoc.wasm の起動・変換・書き出し・
+  bridge/                不可視 WebView の中身（ここを編集する）
+    shell.html           外枠。importmap と script の位置の目印
+    boot.js              起動前の見張り（classic script）
+    main.mjs             本体。pandoc.wasm の起動・変換・書き出し・
                          pptx の OOXML 解析（図形 / 段落 / ラン・座標継承・ノート）・
                          docx の三層解析（document / styles / numbering → DocBlock）
+  bridgeHtml.ts          **生成物**（`npm run build:bridge`。`npm start` でも自動生成）。
+                         bridge/ を束ねた文字列。check-bridge が bridge/ との同一性を検査する
   usePandocConverter.tsx 不可視 WebView をマウントして Converter 実装を提供する hook
   frontMatter.ts         front matter を自前で剥がす（CLAUDE.md 落とし穴 1 の回避）。
                          1 行だけの書き戻しと、読めない書き方の診断も持つ
   latestOnly.ts          待機枠を1件だけ持つ変換キュー
+
+src/theme/      ── テーマ層（三層分離の第2層）
+  theme.ts               テーマの型・組み込みテーマ・文書側の選択との合成（resolveTheme）・
+                         変換器の語彙へのコンパイル（compileTheme: 列比と意味クラスの色）
 
 src/preview/    ── 原稿とスライドの対応（純関数）
   cursorSlide.ts         スライド境界の判定。カーソル位置 → スライド番号、区間一覧
@@ -236,10 +278,13 @@ GPL の結論次第で MIT の自前 writer に差し替えても、エディタ
 npm run check
 ```
 
+CI でも同じものが走る（`.github/workflows/check.yml`。PR と push、`app/**` の変更時）。
+検査は pandoc.wasm を `node_modules` から読むので、ネットワークは `npm ci` にしか要らない。
+
 | 検査 | 内容 |
 |---|---|
 | `tsc --noEmit` | 型チェック |
-| `check-bridge.mjs` | ブリッジに埋めた JavaScript の構文チェック（実機でしか走らないコードなので手元で落とす） |
+| `check-bridge.mjs` | ブリッジ（`bridge/`）の構文チェックと、生成物 `bridgeHtml.ts` が `bridge/` と一致すること（更新忘れを止める）。実機でしか走らないコードなので手元で落とす |
 | `check-frontmatter.mjs` | front matter の切り出し |
 | `check-scene.mjs` | pptx パーサ単体（ブリッジを vm で評価して直接叩く） |
 | `check-cursor.mjs` | カーソル位置 → スライド番号の対応 |
@@ -255,6 +300,7 @@ npm run check
 | `check-deck.mjs` | **統合検査**: 本物の pandoc.wasm で pptx / html / docx を作り、座標・配色・字サイズ・字下げ・改行・ノート・Web の CSS 注入・docx のノート除去までを確認 |
 | `check-layout.mjs` | 画面の形 → レイアウト様式（iPad / iPhone 縦横 / Slide Over）・キーボードの重なり・横持ちのカード幅 |
 | `check-edit-actions.mjs` | ツールバーの編集操作（行頭マークのトグル・複数行・字下げ・囲み / 外し・改行固定・CRLF・選択範囲の追随） |
+| `check-theme.mjs` | テーマ層: コンパイラの単体、意味クラスの 3 形式の実出力（pptx の schemeClr ラン / docx の w:color / html のクラス + CSS）、列比のレイアウト枠の書き換えとプレビューの一致、整形式 |
 
 ### pandoc の実出力を見る
 
@@ -334,9 +380,11 @@ flex:1 の兄弟がもう1人いることが算術で確定した。
   直後の `useLayoutEffect` で外す（`pushed`）。RN の TextInput は value 付きレンダーの
   layout effect で `setTextAndSelection` を 1 回発行し、eventCount が食い違えば
   native が捨てる（`RCTTextInputComponentView.mm`）。remount は文書切替のときだけ
-- ツールバーは iOS では `InputAccessoryView`（`inputAccessoryViewID` で原稿の
-  TextInput にだけ結ぶ。ノート欄・装飾パネルの入力には付かない）。物理キーボード
-  接続時は iOS の標準挙動で画面下端のバーになる。Android は原稿ペインの下端に描く
+- ツールバーは原稿ペインの下端に置き、ルートの下余白（`useKeyboardInset`）で
+  キーボードの上に載せる（iOS も Android も同じ）。**iOS の `InputAccessoryView` は
+  使わない**: RN（Fabric）の実装は window に入った瞬間に 1 回だけ `nativeID` で
+  TextInput を探して結び、以後は結び直さない。key を揃える・1 コミット遅らせるの
+  2 通りを試してもシミュレータでツールバーが出なかった（0.19.2 / 0.19.3）
 - **iPhone 実機では未検証**（手元に無い）。確認項目は `../notes/status-and-plan.md`
 
 ## バージョン
@@ -352,21 +400,24 @@ flex:1 の兄弟がもう1人いることが算術で確定した。
 
 棚卸しの全体像は `../notes/status-and-plan.md`。ここでは開発者向けの要点だけ。
 
-- **段組みの列幅が変えられない。** 0.15.0 で `+++` の記法と挿入 UI は入ったが、
-  列の比率はレイアウト（reference-doc）が決めるので、テーマ層（次の版）の担当。
-  設計は `../notes/columns-and-images.md`
+- 段組みの列比は 0.19.0 で変えられるようになった（テーマ層）。1 枚だけの上書き
+  （slide 経路）と docx の「並置を保つ」は未実装。設計は `../notes/columns-and-images.md`
 - **pandoc ネイティブ記法の打ち間違いを救う正規化**（全角波括弧・ドット忘れなど）は未実装。
   設計と実測は `../notes/column-input.md`。`+++` を使えば踏まないので優先度は下げた
 - 画像の大きさ・位置を指定する手段（pandoc が全部決めている。`{width=}` は pptx で無視される）
-- テーマ層（三層分離の第2層）。**コード上はまだゼロ**
+- テーマ層（三層分離の第2層）は 0.19.0 で骨格が入った（組み込み 2 本・列比・意味クラス）。
+  テーマファイルの共有・編集 UI・文字サイズと配線盤の移設（v0.22）は未
 - カーソル同期の `headingSegments` 一般化（文書 / Web プレビューは同期なし）
 - 縦書き。置き場はテーマ層
-- `to: 'pdf'` が wasm で可能かの 1 回の実験（`../notes/preview-formats.md` の宿題）
+- PDF。**pandoc.wasm では出せない**（実測: PDF エンジンをサブプロセスで起動する設計で、
+  WASI に無い。`../notes/foundation-2026-09.md` D）。`to: 'typst'` は動くので、
+  Typst の WASM を第 2 のエンジンとして足す設計。v0.20 以降
 - pandoc.wasm の同梱（今は unpkg から取得。バージョンは 1.1.0 に固定済み。
   同梱化はライセンス判断とセット — CLAUDE.md「制約とリスク」）。
   **オフライン起動の挙動も未検証**（永続キャッシュが無い）
 
-**実機未検証の積み残しが 0.10.0〜0.13.0 の 4 版ぶんある。**
-受け入れ条件は `../notes/status-and-plan.md` の「v0.14 の前に置く実機周回」。
+**実機未検証の積み残しが 0.10.0〜0.18.1 に積まれている。**
+受け入れ条件は `../notes/status-and-plan.md` の「次の実機周回」と「0.18.0 の確認」、
+回す順は `../notes/development-plan-2026-09.md` 3-C。未実装の作業単位（WP-1〜11）は同 8 節。
 
 機能の中期計画は `../notes/roadmap-pptx.md`（内容 / テーマ / デザインデータの三層分離）。
