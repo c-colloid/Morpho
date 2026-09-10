@@ -73,8 +73,12 @@ jobs:
             console.log(pick.udid);
           ')
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          # ハードウェアキーボードを外す（既定は接続扱いで、ソフトキーボードもその上の
+          # ツールバーも出ない。0.18.0 の確認 1 はソフトキーボードが前提）
+          defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
+          open -a Simulator --args -CurrentDeviceUDID "$UDID" || true
 
       - name: シミュレータ向けにビルド（署名なし・Release = JS バンドル同梱）
         run: |

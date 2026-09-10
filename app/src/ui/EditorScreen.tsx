@@ -2359,6 +2359,9 @@ function SlideCard({
     <Pressable
       style={[styles.slide, active && styles.slideActive]}
       onPress={() => onSelect(slide.index)}
+      /* カードは容器。中の「装飾」「ノート」ボタンを VoiceOver / 自動周回（Maestro）が
+         個別の要素として見つけられるよう、カード自体は一つの要素にまとめない */
+      accessible={false}
     >
       <View style={styles.slideHead}>
         <Text style={styles.slideNum}>{slide.index}</Text>
