@@ -149,7 +149,7 @@ v0.19 の着手は **3-C の 1〜3 が緑になってから**。2〜4 週間の�
 
 ---
 
-## 7. 未実装機能の計画（0.19.1 時点の棚卸し）
+## 7. 未実装機能の計画（0.19.1 時点の棚卸し。作業単位への分解は 8 節）
 
 0.18.1〜0.19.1 で 3-B / 3-D（PDF）/ 3-E とテーマ層の骨格・フッターの位置と色が入った。
 残りの未実装を**版ごとに**まとめる。各行の「規模」は 0.6〜0.17 の実績（1 版 ≒ 500 行前後 +
@@ -250,3 +250,171 @@ v0.19 の着手は **3-C の 1〜3 が緑になってから**。2〜4 週間の�
 1. v0.23 の縦書き実験 3 件と v0.20 の epub 実験（合わせて 2 日。すべて Node の実測で決着する）
 2. v0.20 の劣化告知・正規化・`headingSegments`・docx 並置（1〜2 週間）
 3. v0.21 の `Placement` と xfrm 注入・slide 経路の列比（後処理の骨格。UI は実機待ち）
+
+---
+
+## 8. 未実装の実装計画（0.19.2 時点・作業単位に分解）
+
+7 節は「版ごとに何が残っているか」の棚卸し。ここでは**着手できる順に作業単位（WP）へ分解**し、
+触るファイル・手順・受け入れ条件・検証を書く。次の「実装して」はこの WP の番号で指せる。
+
+### 8-0. 前提の更新 — シミュレータの自動周回ができた
+
+0.19.2 で `.github/workflows/sim-round.yml`（macOS runner の iPad シミュレータ + Maestro）が動き、
+3-C の一部は**機械で回せる**ようになった。初回の周回で 0.18.0 の「確認 1」の実バグ
+（InputAccessoryView の結び直し漏れ。iOS でツールバー自体が出ていなかった）を捕まえている。
+
+| 3-C の項目 | シミュレータで | 実機に残る理由 |
+|---|---|---|
+| 0.18.0 確認 1（ツールバーが出る・押しても閉じない） | **回る**（`e2e/03-toolbar.yaml`） | — |
+| 0.18.0 確認 2（物理キーボードのバー） | 回せる（`ConnectHardwareKeyboard` を true にした 2 本目のジョブ。未作成） | Magic Keyboard の実物での見え方 |
+| 0.18.0 確認 4（書き戻しでキャレットが飛ばない） | 部分的（`inputText` 後の要素木で本文を照合。キャレット位置は取れない） | キャレットと IME の確定前文字列 |
+| 0.18.0 確認 5（スクロールで focus しない） | 回せる（`swipe` 後にキーボードの要素が無いこと。未作成） | 慣性スクロールの感触 |
+| 受け入れ 7（書き出し → 共有シート） | **回る**（`05-export.yaml`） | PowerPoint / Word で開いた見え方 |
+| 受け入れ 8・9（段組み・`+++`・診断） | 回せる（原稿に `+++` を流し込んで枚数と診断文を照合。未作成） | — |
+| 0.19.0 / 0.19.1（列比・フッター位置と色） | **回る**（`04-theme-footer.yaml`。値が変わってエラーが出ないこと） | 描画の見た目そのもの |
+| 受け入れ 1（bookmark 再接続）・3・4（スライドショー・回転・Slide Over） | 回らない | 外部アプリと OS の機能 |
+| 3-D 端から端までの遅延 | **回せる**（ヘッダの「N ms · M KB」を要素木から読む。WP-7 で内訳を出す） | 実機の CPU |
+
+**着手条件の見直し:** 「v0.20 以降は 3-C の 1〜3 が緑になってから」は、
+**シミュレータで回る分が緑なら着手してよい**に緩める。実機でしか出ない差（IME・感触・回転）は
+実機周回のときに patch で吸収する。この環境で進められる WP は下の順で進める。
+
+### 8-1. 今すぐ進められる WP（この環境で完結。順に）
+
+#### WP-1 実験 5 件（各半日。Node で決着。結果はノートに書き、スキーマを確定する）
+
+| # | 実験 | 判定 | 結果の行き先 |
+|---|---|---|---|
+| 1a | `to: 'epub'` が wasm で zip を組めるか。`page-progression-direction` を出せるか | `result.files` に epub が出て、`@ooxml-tools` 相当の代わりに zip 展開で `content.opf` を読む | `theme-layer.md` 4 節・WP-6 の可否 |
+| 1b | pptx `a:bodyPr vert="eaVert"` の後処理で縦組みになるか（LibreOffice で描画して確認。PowerPoint は実機） | 出力 xml が検証器を通る + 描画で縦に並ぶ | `Theme.writingMode` の pptx 経路 |
+| 1c | docx `w:sectPr/w:textDirection w:val="tbRlV"` | 同上（LibreOffice） | 同 docx 経路 |
+| 1d | 傍点の pptx 近似を「親文字の上に `•` の図形」で置けるか（位置は run の文字幅の近似） | 検証器 0 件・描画で重なる | `theme-layer.md` 1 節・WP-10 |
+| 1e | Typst の WASM（typst.ts）を Node で動かし、pandoc の `to: 'typst'` 出力から PDF を組む。CJK フォントを載せたときのサイズ | PDF が出る・日本語が豆腐でない | WP-11 の規模見積もり |
+
+検証は `app/scripts/dump-*.mjs` と同じ作法の使い捨てスクリプトでよい（常時検査には入れない）。
+
+#### WP-2 書き出し前の劣化告知（v0.20・小・1〜2 日）
+
+- 目的: 「段組みは Word では 1 本の流れ」「3 列目はスライドに出ない」「列頭が画像/表の列は後続が消える」を
+  **書き出しメニューの形式の行に**注記として出す（`columns-and-images.md` v0.17）
+- 触る: 新規 `app/src/text/exportNotices.ts`（純関数 `exportNotices(body, format): Notice[]`。
+  `columns.ts` の `columnRangeAt` / `separatorLines` と落とし穴 11・13 の判定を再利用）、`app/src/ui/ExportMenu.tsx`
+- 受け入れ: 段組みを含む原稿で docx の行に注記が出る。含まない原稿では何も出ない。pptx の行には 3 列超過だけ出る
+- 検証: 新規 `check-export-notices.mjs`（原稿 8 通り × 形式 3 通りの期待表）。`npm run check` に登録
+
+#### WP-3 pandoc ネイティブ記法の正規化（v0.20・中・3 日）
+
+- 目的: 全角波括弧・全角コロン・ドット忘れなどの打ち間違いを変換直前に吸収する（`column-input.md`「救済」。
+  試作で 62 通り中 26 件を修復・壊したもの 0・誤爆 10 ケース無変更・465 行で 0.29 ms）
+- 決めること（この WP で決める）: 置き場は**変換器の内側**（`sanitizeForXml` の隣。落とし穴 9 と同じ作法）。
+  原稿ファイルは書き換えない。書き出しだけの分岐は作らない
+- 触る: 新規 `app/src/text/normalizeNative.ts`（純関数。コードフェンス内は `scanFences` で除外）、
+  `app/src/converter/bridge/main.mjs`（同じ関数を写す。`check-columns.mjs` と同じく**関数本文の一致を検査**する）、
+  `app/src/converter/usePandocConverter.tsx`（適用点）
+- 受け入れ: 試作の 62 + 10 ケースがそのまま通る。`fixtures/` と `notes/` の .md 13 本で 1 バイトも変わらない。
+  1 文字 → 1 文字の置換に限る（本文オフセットを保つ。長さが変わる修復は診断だけ出して直さない）
+- 検証: 新規 `check-normalize.mjs`（72 ケース + オフセット保存 + 本文一致）
+
+#### WP-4 `headingSegments`（v0.20・中・3〜4 日）
+
+- 目的: 文書・Web プレビューにもカーソル同期を付ける（`preview-formats.md`）。段組み挿入 UI を
+  スライド以外のプレビューでも出せるようにする前提
+- 触る: `app/src/preview/cursorSlide.ts`（`headingSegments(body, level)` を足し、`slideSegments` はその特殊形にする）、
+  `app/src/ui/DocumentSurface.tsx`（見出しごとに `onLayout` で y を記録し、カーソルの区間へスクロール）、
+  `app/src/ui/usePreviewSync.ts`（形式ごとの同期先）
+- 受け入れ: 文書プレビューでカーソルを動かすと該当見出しへスクロールする。逆（プレビューのタップで原稿へ）は範囲外
+- 検証: `check-cursor.mjs` に見出しレベル 1・2 の区間 + `slideSegments` との一致（水平線あり/なし）
+
+#### WP-5 docx の「並置を保つ」（v0.20・小〜中・2 日）
+
+- 目的: 段組みを Word で 1×N の罫線なし表として残す**明示オプション**（既定は「流す」のまま。
+  `columns-and-images.md` docx。テーマの「順序に触らない」不変条件の唯一の例外）
+- 触る: `app/src/theme/theme.ts`（`Theme.docxColumns: 'flow' | 'table'`、`compileTheme`）、
+  `main.mjs` の `buildThemeLua`（`FORMAT == 'docx'` のときだけ `Div.columns` → `pandoc.Table`）、
+  `DecorSheet.tsx` テーマ節にトグル
+- 受け入れ: 選んだ文書だけ `word/document.xml` に `w:tbl` が 1 つ出て、`w:tblBorders` が無い。pptx / html は不変
+- 検証: `check-theme.mjs` に docx の表の有無（両モード）。`@ooxml-tools/validate` 0 件
+
+#### WP-6 epub 書き出し（v0.20・小・1 日。**WP-1a が通ったら**）
+
+- 触る: `ExportMenu.tsx` に「電子書籍 (.epub)」の行、`main.mjs` の `doExport`（`to: 'epub'`。
+  `::: notes` 除去と `ruby.lua` は docx と同じ組）、`app/src/store/exportShare.ts`（MIME `application/epub+zip`）
+- 受け入れ: 共有シートまで出る。`check-deck.mjs` に epub の zip 展開と `content.opf` の存在
+
+#### WP-7 遅延の内訳（v0.21 の前提・小・1 日）
+
+- 目的: 47 ms は pandoc だけの値。後処理（列比・装飾・フッター）・展開・解析を分けて測り、
+  hot path に画像配置（WP-8）を足す前に数字を持つ
+- 触る: `main.mjs`（`doConvert` が `timings: { pandoc, post, unzip, parse }` を返す）、`types.ts`、
+  `EditorScreen.tsx` のヘッダ（「1199 ms · 33 KB」を長押しで内訳。通常表示は合計のまま）
+- 受け入れ: シミュレータ周回の要素木からヘッダの値が読める（`sim-round.yml` の診断に 1 行足す）。
+  実機の数字は 3-D で取る
+- 検証: `check-scene.mjs` に `timings` の形（数値・非負）
+
+#### WP-8 画像配置の骨格（v0.21・中・1 週間。UI は実機待ちだが、シートまではシミュレータで回る）
+
+- 決めること（この WP で決める）: **アンカーは案 A**（見出しに `{#s-xxxx}` を自動付与。`Placement.slideKey` が
+  既にこの前提）。スライド寸法が変わったときの扱いは**寸法に対する割合**で持つ（テンプレート差し替えで壊れない）
+- 触る: `app/src/design/designFile.ts`（`Placement` 型・サニタイザ・`parseDesignFile` / `serializeDesign`）、
+  `app/src/store/designs.ts`（`loadDesign`。**3 箇所すべて**に足さないと無警告で消える）、
+  `main.mjs` に `applyPlacementsZip`（`descr` の最終行 = ファイル名 + 出現順で `p:pic` を特定し `a:xfrm` を上書き。
+  `front` なら spTree 末尾へ。`applyColumnRatioZip` と同じ位置で `doConvert` / `doExport` の両方）、
+  同じ経路で **1 枚だけの列比**（`p:ph idx` を特定して `a:xfrm` 注入）
+- 受け入れ: 保存 → 読み込みで一致。注入後の pptx が検証器 0 件。プレビューが上書き後の座標を描く（同じ zip を解析するので自動）
+- 検証: `check-design.mjs`（往復・サニタイズ）、`check-deck.mjs`（注入後の解析で座標一致）、`check-theme.mjs`（1 枚だけの列比）
+- 実機に残す: 画像の当たり判定（`DecorEditLayer` の一般化）と全画面の配置モード（ピンチ）。
+  0.6.3 で保留した「全画面の装飾編集モードを作るか」はここで決着させる
+
+#### WP-9 テーマの共有（v0.22・中・1〜2 週間）
+
+1. `.morphotheme`（JSON）の書き出し・読み込み（`exportShare.ts` + `@react-native-documents/picker`。
+   `sanitizeThemeChoice` を通す）— 小
+2. テーマ編集 UI（列比・意味クラスの色と太字・名前・`docxColumns`）。ヘッダに「テーマ」の入口 — 中
+3. 文字サイズ・帯モード・配線盤・フッター体裁を**テーマ側へも**置けるようにする（文書側の値が上書き）— 中
+4. `rules[]`（「タイトルスライドに帯」「h1 下にアクセント線」を `presets.ts` から生成）— 中
+5. `patchBody` の 1 段 Undo と楽観ロックの共通化（インスペクタ v1 の前提）— 小〜中
+6. インスペクタ v1（プレビューの語をタップして `[語]{.accent}`）— **実機必須**（IME との同居）
+
+検証は `check-theme.mjs`（往復・rules の展開）と `check-design.mjs`（上書きの優先順位）。
+
+### 8-2. 実験の結果を待って着手する WP
+
+#### WP-10 縦書き（v0.23・大。WP-1b/1c/1d の後）
+
+- `Theme.writingMode` を 3 形式へ落とす（T 経路。実験で確定した XML をそのまま後処理に）— 中
+- 圏点の種類（`emphasis.dotStyle`）・ルビの揃え（`ruby.align`）・縦中横（Lua の属性）— 小〜中
+- 字下げ（段落頭 1 字）と禁則の近似（プレビューの折り返し）— 中
+- **プレビューの縦組み描画**（`SlideSurface` / `DocumentSurface`。RN の `Text` は縦書き不可 → 1 字ずつ置く。
+  句読点・長音の向き）— **大。実機で見る**
+- 検証: `check-theme.mjs`（3 形式の XML）、`check-scene.mjs`（縦組みのシーン）。描画は実機
+
+#### WP-11 PDF（v0.24・中〜大。WP-1e の後）
+
+- Typst の WASM を同じ WebView に第 2 のエンジンとして載せる（`Converter` の内側に閉じる。
+  `bridge/` に `typst.mjs` を足し `build-bridge.mjs` で束ねる）
+- CJK フォントの同梱（サイズとライセンス）。縦書き PDF は **未検証**
+- 受け入れ: 書き出しメニューに「PDF」。日本語が出る。オフラインで動く（フォントも同梱）
+
+### 8-3. 版に紐づかない宿題（判断とセット）
+
+| 宿題 | 引き金 | 判断 |
+|---|---|---|
+| pandoc.wasm の同梱（`WKURLSchemeHandler`）。オフライン起動 | 3-D のオフライン計測（シミュレータで機内モード相当 = ネットワークを切った runner で回せる） | GPL と App Store（CLAUDE.md「ship 時の選択肢」）。同梱した瞬間にリポジトリの MIT が成り立たなくなる |
+| シミュレータ周回の拡張 | 03 が緑になったら | 8-0 の表の「回せる（未作成）」4 本を足す。物理キーボードは 2 本目のジョブ |
+| iPhone 実機（0.18.0） | 実機 | — |
+| 全画面の装飾編集モード（0.6.3 保留） | WP-8 | 配置モードと統合するか |
+
+### 8-4. 順番と目安
+
+```
+週 1     WP-1（実験 5 件）→ WP-2（劣化告知）
+週 2     WP-3（正規化）→ WP-6（epub。1a 次第）
+週 3〜4  WP-4（headingSegments）→ WP-5（docx 並置）        …… ここまでで v0.20
+週 5     WP-7（遅延の内訳）→ WP-8（画像配置の骨格）          …… v0.21 の土台
+週 6〜7  WP-9 の 1〜5                                        …… v0.22（インスペクタは実機待ち）
+以降     WP-10 / WP-11（実験の結果で規模が決まる）
+```
+
+版の切り方は 4 節のまま。**各 WP は `npm run check` が緑・シミュレータ周回が緑で閉じる**。
+実機でしか出ない差は、実機周回のときに 0.x.y の patch で吸収する（3-C の見積もりどおり）。
