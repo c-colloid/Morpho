@@ -1858,6 +1858,8 @@ export default function EditorScreen() {
           <TextInput
             ref={editorRef}
             key={editorEpoch}
+            /* 自動周回（app/e2e）が座標ではなく id で原稿を掴むため */
+            testID="editor"
             defaultValue={source}
             onChangeText={onChangeSource}
             onSelectionChange={onSelectionChange}

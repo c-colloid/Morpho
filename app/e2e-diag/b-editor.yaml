@@ -1,10 +1,12 @@
-# 診断: 原稿をタップした状態で止める（直後に maestro hierarchy を取る）
+# 診断: 原稿をタップした状態で止める（直後に maestro hierarchy を取る）。
+# 座標ではなく testID="editor" で掴む。キーボードが出ていれば要素木にキーが並ぶはず。
 appId: com.ccolloid.morpho
 ---
-- launchApp
+- launchApp:
+    clearState: true
 - extendedWaitUntil:
     visible: '.*プレビュー · [0-9]+ 枚.*'
     timeout: 300000
 - tapOn:
-    point: '18%,55%'
+    id: 'editor'
 - takeScreenshot: diag-b-editor

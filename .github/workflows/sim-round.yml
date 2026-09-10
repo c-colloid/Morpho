@@ -76,6 +76,7 @@ jobs:
           # ハードウェアキーボードを外す（既定は接続扱いで、ソフトキーボードもその上の
           # ツールバーも出ない。0.18.0 の確認 1 はソフトキーボードが前提）
           defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
+          defaults read com.apple.iphonesimulator ConnectHardwareKeyboard
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
           open -a Simulator --args -CurrentDeviceUDID "$UDID" || true
@@ -135,13 +136,13 @@ jobs:
                 if (!n) return;
                 const a = n.attributes || {};
                 const t = a.text || a["accessibilityText"] || a.label || a.title || a.value || "";
-                if (t && String(t).trim()) out.push(`${"  ".repeat(depth)}${JSON.stringify(String(t).slice(0, 60))} ${a.bounds || ""} vis=${a.visible ?? ""} ${a.resource-id || a["resource-id"] || ""}`);
+                if (t && String(t).trim()) out.push(`${"  ".repeat(depth)}${JSON.stringify(String(t).slice(0, 60))} ${a.bounds || ""} vis=${a.visible ?? ""} ${a["resource-id"] || ""}`);
                 (n.children || []).forEach((c) => walk(c, depth + 1));
               };
               walk(root, 0);
               console.log(out.slice(0, 250).join("\n"));
               console.log(`(${out.length} text elements)`);
-            ' "e2e-out/hierarchy-$f.json"
+            ' "e2e-out/hierarchy-$f.json" || true
             echo "::endgroup::"
           done
 
