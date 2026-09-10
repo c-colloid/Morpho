@@ -200,4 +200,4 @@ WASI にプロセス生成が無い（iOS と同じ理由）。これは原理�
   | `resetPreviewFor` | `[resetPreview]`（安定） | 結果の破棄と即時変換を hook 側へ。カード座標・強調位置の破棄は EditorScreen に残した |
   | `statusRef` | 削除 | hook 化で読み手がいなくなった |
 
-- [ ] **Actions の `check` が緑** — push 後に確認する（この環境からは見られない）
+- [x] **Actions の `check` が緑** — 初回 run（#1、コミット 10b5559）が success。所要 52 秒（npm ci を含む）
