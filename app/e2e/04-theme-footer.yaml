@@ -1,0 +1,40 @@
+# 0.19.0 / 0.19.1: 装飾パネルのテーマ（列比）とフッター（位置・文字色）。
+# 値を変えたあとプレビューが取り直され、エラーが出ないこと。
+appId: com.ccolloid.morpho
+---
+- launchApp
+- extendedWaitUntil:
+    visible: '.*プレビュー · [0-9]+ 枚.*'
+    timeout: 300000
+- tapOn:
+    text: '装飾'
+    index: 0
+- extendedWaitUntil:
+    visible: 'テーマ（見た目の定義・文書全体）'
+    timeout: 15000
+- scrollUntilVisible:
+    element: '2 : 1'
+    direction: DOWN
+- tapOn: '2 : 1'
+- takeScreenshot: 04-ratio-2-1
+- scrollUntilVisible:
+    element: '.*位置 上から.*'
+    direction: UP
+- assertVisible: '.*位置 上から .*（テンプレートの帯）'
+# フッターの「位置」の＋（大きさ・位置・余白の順に並ぶ 2 つ目）で下へ 1%
+- tapOn:
+    text: '＋'
+    index: 1
+- assertNotVisible: '.*位置 上から .*（テンプレートの帯）'
+- assertVisible: '位置をテンプレートの帯に戻す'
+- tapOn:
+    id: '白'
+- tapOn: '濃さ 100%'
+- takeScreenshot: 04-footer-moved
+- tapOn: '位置をテンプレートの帯に戻す'
+- assertVisible: '.*位置 上から .*（テンプレートの帯）'
+- extendedWaitUntil:
+    visible: '.*プレビュー · [0-9]+ 枚.*'
+    timeout: 60000
+- assertNotVisible: '変換に失敗.*'
+- takeScreenshot: 04-done

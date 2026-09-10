@@ -1,0 +1,33 @@
+# 0.18.0 の確認 1・4: ソフトキーボードの上にツールバーが出て、「字下げ」「段組み」を
+# 押してもキーボード（＝ツールバー）が閉じないこと（remount 廃止の主目的）。
+# 原稿ペインは iPad の二画面レイアウトで左側にあるので座標でタップする。
+appId: com.ccolloid.morpho
+---
+- launchApp
+- extendedWaitUntil:
+    visible: '.*プレビュー · [0-9]+ 枚.*'
+    timeout: 300000
+- tapOn:
+    point: '18%,60%'
+- extendedWaitUntil:
+    visible: '字下げ'
+    timeout: 15000
+- takeScreenshot: 03-keyboard
+- tapOn:
+    id: '字下げ'
+- assertVisible: '字下げ'
+- tapOn:
+    id: '段組み'
+- assertVisible: '段組み'
+- tapOn:
+    id: '出典'
+- assertVisible: '出典'
+- takeScreenshot: 03-after-insert
+# 挿入が原稿に入り、手が止まったあとプレビューが取り直されてもエラーが出ない
+- extendedWaitUntil:
+    visible: '.*プレビュー · [0-9]+ 枚.*'
+    timeout: 60000
+- assertNotVisible: '変換に失敗.*'
+- tapOn:
+    id: 'キーボードを閉じる'
+- takeScreenshot: 03-dismissed

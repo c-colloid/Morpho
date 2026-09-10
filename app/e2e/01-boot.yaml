@@ -1,0 +1,11 @@
+# 起動 → pandoc.wasm の取得（CDN・55.9 MB）→ 初回変換 → プレビューに枚数が出る。
+# status-and-plan.md「オフライン起動」は対象外（runner はオンライン）。
+appId: com.ccolloid.morpho
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: '.*プレビュー · [0-9]+ 枚.*'
+    timeout: 300000
+- assertNotVisible: '起動に失敗.*'
+- takeScreenshot: 01-boot

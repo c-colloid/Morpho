@@ -1,0 +1,134 @@
+# iOS Simulator での自動周回（notes/development-plan-2026-09.md 3-C の機械で回せる部分）。
+#
+# 実機 iPad の代わりに、macOS runner の iOS Simulator（本物の WKWebView と UITextView）で
+# アプリを起動し、Maestro のフロー（app/e2e/*.yaml）で受け入れ条件のうち機械で確かめられる
+# 項目を通す: 起動と wasm 取得、プレビューの枚数、形式切替、ツールバー挿入でキーボードが
+# 閉じないこと、テーマの列比、フッターの位置、書き出しメニュー。
+# IME の変換候補・タッチの使用感・回転は対象外（実機の周回に残る）。
+#
+# 使い方: Actions → Simulator Round → Run workflow。成果物にスクリーンショットと Maestro のログ。
+name: Simulator Round
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'app/e2e/**'
+      - '.github/workflows/sim-round.yml'
+
+jobs:
+  sim:
+    runs-on: macos-26
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Xcode を確認（26 未満なら最新を選ぶ）
+        run: |
+          MAJOR=$(xcodebuild -version | awk 'NR==1{print int($2)}')
+          if [ "$MAJOR" -lt 26 ]; then
+            NEWEST=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+            test -n "$NEWEST" || { echo "Xcode 26 が見つからない"; exit 1; }
+            sudo xcode-select -s "$NEWEST"
+          fi
+          xcodebuild -version
+
+      - name: 依存を入れる
+        run: npm ci
+
+      - name: ネイティブプロジェクトを生成 (expo prebuild)
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: CocoaPods
+        run: npx pod-install ios
+
+      - name: SPM 依存を解決
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -workspace ios/Morpho.xcworkspace \
+            -scheme Morpho \
+            -clonedSourcePackagesDirPath SourcePackages
+
+      - name: iPad シミュレータを選んで起動
+        id: sim
+        run: |
+          xcrun simctl list devices available -j > devices.json
+          UDID=$(node -e '
+            const d = require("./devices.json").devices;
+            const all = Object.entries(d).flatMap(([rt, list]) => list.map((x) => ({ ...x, rt })));
+            const ipads = all.filter((x) => x.isAvailable && /iPad/.test(x.name) && /iOS/.test(x.rt));
+            ipads.sort((a, b) => b.rt.localeCompare(a.rt, undefined, { numeric: true }));
+            const pick = ipads.find((x) => /Pro/.test(x.name)) || ipads[0];
+            if (!pick) { console.error("iPad シミュレータが無い"); process.exit(1); }
+            console.error("device:", pick.name, pick.rt);
+            console.log(pick.udid);
+          ')
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+
+      - name: シミュレータ向けにビルド（署名なし・Release = JS バンドル同梱）
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace ios/Morpho.xcworkspace \
+            -scheme Morpho \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build \
+            -clonedSourcePackagesDirPath SourcePackages \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build | xcbeautify --renderer github-actions
+          APP=$(find build/Build/Products/Release-iphonesimulator -maxdepth 1 -name '*.app' | head -1)
+          test -n "$APP" && test -f "$APP/Morpho"
+          test -f "$APP/main.jsbundle" || { echo "main.jsbundle が無い（Metro 無しでは起動できない）"; exit 1; }
+          echo "APP=$APP" >> "$GITHUB_ENV"
+
+      - name: アプリを入れる
+        run: xcrun simctl install "${{ steps.sim.outputs.udid }}" "$APP"
+
+      - name: Maestro を入れる
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+          "$HOME/.maestro/bin/maestro" --version
+
+      - name: フローを回す
+        env:
+          MAESTRO_DRIVER_STARTUP_TIMEOUT: '240000'
+        run: |
+          mkdir -p e2e-out
+          maestro --device "${{ steps.sim.outputs.udid }}" test \
+            --format junit --output e2e-out/report.xml \
+            --debug-output e2e-out/debug \
+            e2e
+
+      - name: シミュレータのログ（失敗時の手がかり）
+        if: always()
+        run: |
+          xcrun simctl spawn "${{ steps.sim.outputs.udid }}" log show --last 30m \
+            --predicate 'process == "Morpho"' --style compact > e2e-out/app.log 2>&1 || true
+          xcrun simctl io "${{ steps.sim.outputs.udid }}" screenshot e2e-out/final.png || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sim-round
+          path: |
+            app/e2e-out
+            app/*.png
+          retention-days: 14
