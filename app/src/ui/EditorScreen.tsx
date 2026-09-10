@@ -10,7 +10,6 @@ import {
   ActivityIndicator,
   Alert,
   AppState,
-  InputAccessoryView,
   Keyboard,
   Linking,
   Platform,
@@ -149,7 +148,6 @@ import { SlideSurface } from './SlideSurface';
 /** 自動保存は手が止まって 1 秒後。フラッシュは文書切替と background 遷移でも走る */
 const SAVE_MS = 1000;
 /** iOS: 原稿の TextInput とキーボード上のツールバーを結ぶ ID */
-const TOOLBAR_ID = 'morpho-markdown-toolbar';
 /** 発表者ノートの空ブロック。キャレットは中の空行に置く（末尾の `\n:::` の手前） */
 const NOTES_BLOCK = '::: notes\n\n:::';
 /** カードの枠（左右）。カードの padding 16×2 + 枠線 2×2。previewBody の余白は別に足す */
@@ -271,18 +269,6 @@ export default function EditorScreen() {
      プログラム的に原稿を差し替える時だけ epoch を上げて remount で反映する */
   const editorRef = useRef<TextInput>(null);
   const [editorEpoch, setEditorEpoch] = useState(0);
-  /* iOS のツールバー（InputAccessoryView）は TextInput より 1 コミット遅れて mount する。
-     RN（Fabric）の InputAccessoryView は window に入った瞬間に 1 回だけ nativeID で
-     TextInput を探して結び、以後は結び直さない（RCTInputAccessoryComponentView.mm の
-     didMoveToWindow）。remount を同じ key で揃えても、Fabric は根に近い挿入を先に
-     流すので、ツールバーが window に入る時点で新しい TextInput はまだ無く、結びに
-     失敗したまま二度と結ばれない（シミュレータの要素木で実測: 0.19.2 でも
-     キーボードは出るのにツールバーの要素が無い）。epoch が変わったコミットでは
-     ツールバーを外し、effect で追いついてから mount する */
-  const [toolbarEpoch, setToolbarEpoch] = useState(-1);
-  useEffect(() => {
-    setToolbarEpoch(editorEpoch);
-  }, [editorEpoch]);
   const setSourceProgrammatic = useCallback((text: string) => {
     setSource(text);
     setEditorEpoch((e) => e + 1);
@@ -1887,9 +1873,16 @@ export default function EditorScreen() {
             spellCheck={false}
             style={[styles.editor, layout.compact && styles.editorCompact]}
             textAlignVertical="top"
-            inputAccessoryViewID={Platform.OS === 'ios' ? TOOLBAR_ID : undefined}
           />
-          {Platform.OS !== 'ios' && keyboardInset > 0 && (
+          {/* キーボードが出ている間だけ原稿ペインの下端に置く Markdown ツールバー。
+              ルートの paddingBottom が keyboardInset ぶん上がるので、キーボードの
+              すぐ上に来る（物理キーボードの短いバーの上も同じ規則）。
+              iOS の InputAccessoryView は使わない: RN（Fabric）の実装は window に
+              入った瞬間に 1 回だけ nativeID で TextInput を探して結び、以後は結び直さない。
+              key を揃える・1 コミット遅らせるの 2 通りを試してもシミュレータの要素木に
+              ツールバーが出なかった（0.19.2 / 0.19.3。キーボードは出ている）ため、
+              Android と同じ通常のビューに統一した */}
+          {keyboardInset > 0 && (
             <MarkdownToolbar onAction={handleToolbar} onDismiss={() => Keyboard.dismiss()} />
           )}
         </View>
@@ -2105,15 +2098,6 @@ export default function EditorScreen() {
           onDockedHeight={setDockedDecorH}
         />
       </View>
-
-      {Platform.OS === 'ios' && toolbarEpoch === editorEpoch && (
-        /* キーボードと一緒に上下する Markdown ツールバー。物理キーボード接続時は
-           画面下端のバーとして出る（iOS の標準挙動）。TextInput の remount より
-           1 コミット遅らせて mount する理由は toolbarEpoch の説明を参照 */
-        <InputAccessoryView key={toolbarEpoch} nativeID={TOOLBAR_ID} backgroundColor="#ECEEF2">
-          <MarkdownToolbar onAction={handleToolbar} onDismiss={() => Keyboard.dismiss()} />
-        </InputAccessoryView>
-      )}
 
       <NotesEditSheet
         visible={notesSheet !== null}

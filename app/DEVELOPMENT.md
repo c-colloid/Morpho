@@ -347,9 +347,11 @@ flex:1 の兄弟がもう1人いることが算術で確定した。
   直後の `useLayoutEffect` で外す（`pushed`）。RN の TextInput は value 付きレンダーの
   layout effect で `setTextAndSelection` を 1 回発行し、eventCount が食い違えば
   native が捨てる（`RCTTextInputComponentView.mm`）。remount は文書切替のときだけ
-- ツールバーは iOS では `InputAccessoryView`（`inputAccessoryViewID` で原稿の
-  TextInput にだけ結ぶ。ノート欄・装飾パネルの入力には付かない）。物理キーボード
-  接続時は iOS の標準挙動で画面下端のバーになる。Android は原稿ペインの下端に描く
+- ツールバーは原稿ペインの下端に置き、ルートの下余白（`useKeyboardInset`）で
+  キーボードの上に載せる（iOS も Android も同じ）。**iOS の `InputAccessoryView` は
+  使わない**: RN（Fabric）の実装は window に入った瞬間に 1 回だけ `nativeID` で
+  TextInput を探して結び、以後は結び直さない。key を揃える・1 コミット遅らせるの
+  2 通りを試してもシミュレータでツールバーが出なかった（0.19.2 / 0.19.3）
 - **iPhone 実機では未検証**（手元に無い）。確認項目は `../notes/status-and-plan.md`
 
 ## バージョン
