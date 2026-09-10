@@ -3,6 +3,22 @@
 新しい版が上。バージョンは `app.json` の `version` で、画面上部のヘッダに出る
 （実機で見ているものがどの版か分かるようにするため、push のたびに上げる）。
 
+## 0.19.2 — 2026-09-10
+
+**iOS でキーボードの上の Markdown ツールバーが出ていなかったのを直した。** シミュレータの
+自動周回（下記）で見つかった。RN（Fabric）の `InputAccessoryView` は window に入った最初の
+1 回だけ `nativeID` で TextInput を探して結び、以後は結び直さない。Morpho は文書読み込みで
+TextInput を remount する（`key={editorEpoch}`）ので、起動直後のサンプル読み込みの時点で
+結びが古い TextInput に残り、以後ツールバーが付かなかった（要素木でキーボードは出ているのに
+ツールバーの要素が無い）。`InputAccessoryView` にも同じ key を付けて一緒に remount する。
+0.18.0 の「確認 1」がこれで初めて機械で確かめられる。
+
+- **シミュレータの自動周回**（`.github/workflows/sim-round.yml`）。macOS runner の iPad
+  シミュレータでアプリを起動し、Maestro のフロー（`e2e/*.yaml`）で起動と wasm 取得・
+  形式切替・ツールバー挿入・テーマの列比とフッター・書き出しメニューを通す。
+  実機の周回に残るのは IME の変換候補・タッチの使用感・回転（`DEVELOPMENT.md`）
+- 原稿の TextInput に `testID="editor"`（周回が座標ではなく id で掴むため）
+
 ## 0.19.1 — 2026-09-10
 
 **フッター（出典・注釈）の位置と文字色を変えられるようにした。** 装飾の「下の帯」などと

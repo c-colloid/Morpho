@@ -2096,8 +2096,14 @@ export default function EditorScreen() {
 
       {Platform.OS === 'ios' && (
         /* キーボードと一緒に上下する Markdown ツールバー。物理キーボード接続時は
-           画面下端のバーとして出る（iOS の標準挙動） */
-        <InputAccessoryView nativeID={TOOLBAR_ID} backgroundColor="#ECEEF2">
+           画面下端のバーとして出る（iOS の標準挙動）。
+           key を原稿の TextInput と揃えるのは、RN（Fabric）の InputAccessoryView が
+           window に入った最初の 1 回だけ nativeID で TextInput を探して結び、以後は
+           結び直さないため（RCTInputAccessoryComponentView.mm の didMoveToWindow）。
+           文書読み込みで TextInput が remount されると結びが古い方に残り、
+           新しい TextInput にはツールバーが付かない（シミュレータの要素木で実測:
+           キーボードは出るのにツールバーの要素が無い）。一緒に remount して結び直す */
+        <InputAccessoryView key={editorEpoch} nativeID={TOOLBAR_ID} backgroundColor="#ECEEF2">
           <MarkdownToolbar onAction={handleToolbar} onDismiss={() => Keyboard.dismiss()} />
         </InputAccessoryView>
       )}

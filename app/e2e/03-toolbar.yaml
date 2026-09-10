@@ -2,6 +2,7 @@
 # 押してもキーボード（＝ツールバー）が閉じないこと（remount 廃止の主目的）。
 # 原稿は TextInput の testID="editor" で掴む（座標だと見出し行やペインの境目に当たり得る）。
 # シミュレータはハードウェアキーボードを外して起動する（sim-round.yml）。
+# 0.19.2 まで iOS ではツールバー自体が出ていなかった（InputAccessoryView の結び直し。CHANGELOG）。
 appId: com.ccolloid.morpho
 ---
 - launchApp
