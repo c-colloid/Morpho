@@ -22,9 +22,36 @@ export interface FooterStyle {
    * yPct/hPct はスライド高さ、marginPct は左右の余白（スライド幅）に対する %
    */
   band: { yPct: number; hPct: number; marginPct: number };
+  /**
+   * 帯の出どころ（0.19.1）。'template' はテンプレートの ftr 帯を借りる（無ければ比率）。
+   * 'custom' は常に band の比率を使う — 装飾と重なったときに帯を上下へ逃がすため
+   */
+  bandSource: 'template' | 'custom';
   /** 表紙（ctrTitle を持つスライド）にも出す */
   onCover: boolean;
 }
+
+/** 文字色の選択肢（UI）。dk1 = 本文色、lt1 = 白（濃い装飾の上に載せる） */
+export const FOOTER_COLOR_SCHEMES: Array<{ scheme: NonNullable<ThemeColor['scheme']>; label: string }> = [
+  { scheme: 'dk1', label: '本文' },
+  { scheme: 'lt1', label: '白' },
+  { scheme: 'accent1', label: 'A1' },
+  { scheme: 'accent2', label: 'A2' },
+  { scheme: 'accent3', label: 'A3' },
+  { scheme: 'accent4', label: 'A4' },
+  { scheme: 'accent5', label: 'A5' },
+  { scheme: 'accent6', label: 'A6' },
+];
+
+/** 濃さ（tint）の選択肢。100% = そのまま、小さいほど地色へ寄る */
+export const FOOTER_TINTS: Array<{ tint: number; label: string }> = [
+  { tint: 100000, label: '100%' },
+  { tint: 75000, label: '75%' },
+  { tint: 50000, label: '50%' },
+];
+
+/** 帯を 1 段動かす幅（スライド高さの %） */
+export const FOOTER_STEP_PCT = 1;
 
 /**
  * 既定値。
@@ -38,6 +65,7 @@ export const DEFAULT_FOOTER_STYLE: FooterStyle = {
   sizePt: 9,
   color: { scheme: 'dk1', tint: 75000 },
   band: { yPct: 92.69, hPct: 5.32, marginPct: 5 },
+  bandSource: 'template',
   onCover: false,
 };
 
@@ -57,6 +85,7 @@ export function withFooterDefaults(s: Partial<FooterStyle> | undefined): FooterS
       : DEFAULT_FOOTER_STYLE.sizePt,
     color: s.color ?? DEFAULT_FOOTER_STYLE.color,
     band: s.band ?? DEFAULT_FOOTER_STYLE.band,
+    bandSource: s.bandSource ?? DEFAULT_FOOTER_STYLE.bandSource,
     onCover: s.onCover ?? DEFAULT_FOOTER_STYLE.onCover,
   };
 }
@@ -72,12 +101,39 @@ export function resolveFooterBand(style: FooterStyle, deck: DeckInfo): Frame {
   const margin = Math.round((deck.w * style.band.marginPct) / 100);
   const w = Math.max(1, deck.w - margin * 2);
   const b = deck.ftrBand;
-  if (b && b.h > 0) return { x: margin, y: b.y, w, h: b.h };
+  if (style.bandSource !== 'custom' && b && b.h > 0) return { x: margin, y: b.y, w, h: b.h };
+  const h = Math.max(1, Math.round((deck.h * style.band.hPct) / 100));
+  /* 帯はスライドの中に収める（上下へ動かしても端からはみ出さない） */
+  const y = Math.max(0, Math.min(deck.h - h, Math.round((deck.h * style.band.yPct) / 100)));
+  return { x: margin, y, w, h };
+}
+
+/**
+ * いま解決されている帯の位置と高さを比率で返す（UI の「上へ / 下へ」の起点）。
+ * テンプレートの帯を借りているときも、その位置から動かし始められる
+ */
+export function footerBandPct(
+  style: Partial<FooterStyle> | undefined,
+  deck: DeckInfo,
+): { yPct: number; hPct: number } {
+  const band = resolveFooterBand(withFooterDefaults(style), deck);
+  return { yPct: (band.y / deck.h) * 100, hPct: (band.h / deck.h) * 100 };
+}
+
+/** 帯を上下へ動かした体裁を返す。動かした時点で帯の出どころは custom になる */
+export function shiftFooterBand(
+  style: Partial<FooterStyle> | undefined,
+  deck: DeckInfo,
+  deltaPct: number,
+): Partial<FooterStyle> {
+  const st = withFooterDefaults(style);
+  const cur = footerBandPct(style, deck);
+  const maxY = Math.max(0, 100 - cur.hPct);
+  const yPct = Math.max(0, Math.min(maxY, Math.round((cur.yPct + deltaPct) * 100) / 100));
   return {
-    x: margin,
-    y: Math.round((deck.h * style.band.yPct) / 100),
-    w,
-    h: Math.max(1, Math.round((deck.h * style.band.hPct) / 100)),
+    ...style,
+    bandSource: 'custom',
+    band: { yPct, hPct: Math.round(cur.hPct * 100) / 100, marginPct: st.band.marginPct },
   };
 }
 
@@ -185,6 +241,7 @@ export function sanitizeFooterStyle(v: unknown): Partial<FooterStyle> | null {
   if (o.align === 'l' || o.align === 'ctr' || o.align === 'r') out.align = o.align;
   if (typeof o.sizePt === 'number' && Number.isFinite(o.sizePt)) out.sizePt = clampFooterPt(o.sizePt);
   if (typeof o.onCover === 'boolean') out.onCover = o.onCover;
+  if (o.bandSource === 'template' || o.bandSource === 'custom') out.bandSource = o.bandSource;
   if (typeof o.color === 'object' && o.color !== null) {
     const c = o.color as Record<string, unknown>;
     const color: ThemeColor = {};

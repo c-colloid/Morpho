@@ -18,8 +18,18 @@ import {
 } from '../design/presets';
 import { sanitizeDecorText } from '../design/designFile';
 import {
-  DEFAULT_FOOTER_STYLE, MAX_FOOTER_PT, MAX_FOOTER_TEXT, MIN_FOOTER_PT,
-  sanitizeFooterText, withFooterDefaults, type FooterStyle,
+  DEFAULT_FOOTER_STYLE,
+  FOOTER_COLOR_SCHEMES,
+  FOOTER_STEP_PCT,
+  FOOTER_TINTS,
+  footerBandPct,
+  MAX_FOOTER_PT,
+  MAX_FOOTER_TEXT,
+  MIN_FOOTER_PT,
+  sanitizeFooterText,
+  shiftFooterBand,
+  type FooterStyle,
+  withFooterDefaults,
 } from '../design/footer';
 import { clampPt, type TextSizes } from '../design/textSizes';
 import { BUILTIN_THEMES, RATIO_PRESETS, resolveTheme, sameRatio, type ThemeChoice } from '../theme/theme';
@@ -484,6 +494,8 @@ export function DecorSheet({
           <FooterEditor
             text={footerText}
             style={footerStyle}
+            deck={deck}
+            colors={colors}
             onUpdateText={onUpdateFooterText}
             onUpdateStyle={onUpdateFooterStyle}
           />
@@ -661,11 +673,15 @@ export function DecorSheet({
 function FooterEditor({
   text,
   style,
+  deck,
+  colors,
   onUpdateText,
   onUpdateStyle,
 }: {
   text: string;
   style: Partial<FooterStyle> | undefined;
+  deck: DeckInfo | null;
+  colors: Record<string, string>;
   onUpdateText: (t: string) => void;
   onUpdateStyle: (f: Partial<FooterStyle> | undefined) => void;
 }) {
@@ -723,6 +739,68 @@ function FooterEditor({
         onDec={() => upd({ sizePt: Math.max(MIN_FOOTER_PT, st.sizePt - 1) })}
         onInc={() => upd({ sizePt: Math.min(MAX_FOOTER_PT, st.sizePt + 1) })}
       />
+      {/* 位置: 装飾（下の帯など）と重なったときに上下へ逃がす。テンプレートの帯を
+          借りているときも、その位置から動かし始める（footerBandPct） */}
+      {deck ? (
+        <>
+          <Stepper
+            label={`位置 上から ${footerBandPct(style, deck).yPct.toFixed(1)}%${
+              st.bandSource === 'custom' ? '' : '（テンプレートの帯）'
+            }`}
+            onDec={() => onUpdateStyle(shiftFooterBand(style, deck, -FOOTER_STEP_PCT))}
+            onInc={() => onUpdateStyle(shiftFooterBand(style, deck, FOOTER_STEP_PCT))}
+          />
+          <Text style={styles.note}>− で上へ、＋ で下へ（{FOOTER_STEP_PCT}% ずつ）</Text>
+          <Stepper
+            label={`左右の余白 ${st.band.marginPct}%`}
+            onDec={() => upd({ band: { ...st.band, marginPct: Math.max(0, st.band.marginPct - 1) } })}
+            onInc={() => upd({ band: { ...st.band, marginPct: Math.min(40, st.band.marginPct + 1) } })}
+          />
+          {st.bandSource === 'custom' && (
+            <Pressable
+              style={styles.ungroupBtnLike}
+              onPress={() => {
+                const { bandSource: _b, band: _band, ...rest } = style ?? {};
+                onUpdateStyle(Object.keys(rest).length ? rest : undefined);
+              }}
+            >
+              <Text style={styles.ungroupText}>位置をテンプレートの帯に戻す</Text>
+            </Pressable>
+          )}
+        </>
+      ) : (
+        <Text style={styles.note}>位置の調整はスライドを一度表示してから</Text>
+      )}
+      {/* 文字色: テーマ配色の参照（テンプレートに追従）と濃さ */}
+      <View style={styles.swatchLine}>
+        <Text style={styles.swatchLabel}>文字色</Text>
+        {FOOTER_COLOR_SCHEMES.map((c) => (
+          <Pressable
+            key={c.scheme}
+            accessibilityLabel={c.label}
+            style={[
+              styles.swatch,
+              { backgroundColor: colors[c.scheme] ?? (c.scheme === 'lt1' ? '#FFFFFF' : '#888888') },
+              st.color.scheme === c.scheme && styles.swatchOn,
+            ]}
+            onPress={() => upd({ color: { scheme: c.scheme, tint: st.color.tint ?? 100000 } })}
+          />
+        ))}
+      </View>
+      <View style={styles.alignRow}>
+        {FOOTER_TINTS.map((tn) => {
+          const on = (st.color.tint ?? 100000) === tn.tint;
+          return (
+            <Pressable
+              key={tn.tint}
+              style={[styles.alignBtn, on && styles.alignBtnOn]}
+              onPress={() => upd({ color: { ...st.color, tint: tn.tint } })}
+            >
+              <Text style={[styles.alignText, on && styles.alignTextOn]}>濃さ {tn.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
       <Pressable style={styles.checkRow} onPress={() => upd({ onCover: !st.onCover })}>
         <Text style={[styles.mark, st.onCover && styles.markOn]}>{st.onCover ? '●' : '○'}</Text>
         <Text style={styles.checkLabel}>表紙にも出す</Text>

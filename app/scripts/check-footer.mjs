@@ -17,6 +17,7 @@ import { convert } from '../node_modules/pandoc-wasm/src/index.node.js';
 const {
   DEFAULT_FOOTER_STYLE, withFooterDefaults, resolveFooterBand,
   footerColorHex, sanitizeFooterText, toExportFooter, sanitizeFooterStyle,
+  footerBandPct, shiftFooterBand,
 } = await import('../src/design/footer.ts');
 const { adjustDeck } = await import('../src/design/textSizes.ts');
 const { splitFrontMatter, setFrontMatterValue } = await import('../src/converter/frontMatter.ts');
@@ -61,6 +62,47 @@ t('帯はスライド内に収まる', () => {
     assert.ok(b.y + b.h <= DECK.h, '下端がスライドを越えない');
     assert.ok(b.x + b.w <= DECK.w, '右端がスライドを越えない');
   }
+});
+
+t('帯の位置（0.19.1）: custom はテンプレートの帯を無視して比率を使う', () => {
+  const deck = { ...DECK, ftrBand: { x: 3124200, y: 4767263, w: 2895600, h: 273844 } };
+  const st = withFooterDefaults({ bandSource: 'custom', band: { yPct: 80, hPct: 5.32, marginPct: 5 } });
+  const b = resolveFooterBand(st, deck);
+  assert.equal(b.y, Math.round(5143500 * 0.8));
+  assert.equal(b.h, Math.round(5143500 * 0.0532));
+  /* template（既定）のままなら帯は借りる */
+  assert.equal(resolveFooterBand(withFooterDefaults({ band: { yPct: 80, hPct: 5.32, marginPct: 5 } }), deck).y, 4767263);
+});
+
+t('帯の位置: 上下へ動かすとテンプレートの位置を起点に custom へ切り替わり、端で止まる', () => {
+  const deck = { ...DECK, ftrBand: { x: 3124200, y: 4767263, w: 2895600, h: 273844 } };
+  const start = footerBandPct(undefined, deck);
+  assert.ok(Math.abs(start.yPct - 92.69) < 0.01, 'テンプレートの帯の位置が起点');
+  const up = shiftFooterBand(undefined, deck, -5);
+  assert.equal(up.bandSource, 'custom');
+  assert.ok(Math.abs(up.band.yPct - (start.yPct - 5)) < 0.01);
+  assert.ok(Math.abs(up.band.hPct - start.hPct) < 0.01, '高さはテンプレートのまま');
+  const b = resolveFooterBand(withFooterDefaults(up), deck);
+  assert.ok(b.y < 4767263, '上へ動いた');
+  /* 下端で止まる: 何度動かしてもスライドからはみ出さない */
+  let s = up;
+  for (let i = 0; i < 40; i++) s = shiftFooterBand(s, deck, 1);
+  const bb = resolveFooterBand(withFooterDefaults(s), deck);
+  assert.ok(bb.y + bb.h <= DECK.h, '下端を越えない');
+  let u = up;
+  for (let i = 0; i < 200; i++) u = shiftFooterBand(u, deck, -1);
+  assert.equal(resolveFooterBand(withFooterDefaults(u), deck).y, 0, '上端で止まる');
+  /* 他の体裁（揃え・色）は保つ */
+  const moved = shiftFooterBand({ align: 'l', color: { scheme: 'lt1' } }, deck, 1);
+  assert.equal(moved.align, 'l');
+  assert.equal(moved.color.scheme, 'lt1');
+});
+
+t('sanitizeFooterStyle: bandSource と lt1（白）を受ける', () => {
+  assert.deepEqual(sanitizeFooterStyle({ bandSource: 'custom' }), { bandSource: 'custom' });
+  assert.equal(sanitizeFooterStyle({ bandSource: 'auto' }), null);
+  assert.deepEqual(sanitizeFooterStyle({ color: { scheme: 'lt1' } }), { color: { scheme: 'lt1' } });
+  assert.equal(footerColorHex({ scheme: 'lt1' }, { lt1: '#FFFFFF' }), '#FFFFFF');
 });
 
 t('色: テーマ参照 + tint を白へ寄せて解決する', () => {
