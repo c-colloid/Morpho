@@ -13,6 +13,7 @@ import type {
 import { toDocFooter } from '../design/footer';
 import { toExportSizes } from '../design/textSizes';
 import type { DesignData } from '../store/designs';
+import { compileTheme, resolveTheme } from '../theme/theme';
 
 /** 手が止まってから変換するまで（CLAUDE.md の性能設計。デッキ全体の変換は 1.5 秒後） */
 export const IDLE_MS = 1500;
@@ -85,6 +86,8 @@ export function usePreviewSync(args: {
             captionTitle: d.captionTitle,
             /* docx / Web のデッキ全体フッター。pptx は帯をアプリ側で描くので不要 */
             docFooter: toDocFooter(metadata.footer, d.footer),
+            /* テーマ（第2層）。配色はこの文書の deck で解決する（初回は pandoc 既定） */
+            theme: compileTheme(resolveTheme(d.theme), resultRef.current?.deck?.colors ?? {}),
           });
         },
         (r, e) => {
@@ -148,11 +151,11 @@ export function usePreviewSync(args: {
     };
   }, [source, ready, runner, activeId]);
 
-  /* 文字サイズ設定（と表・図と並ぶタイトルの置き方）が変わったら再変換する。表・図と並ぶスライド（Content with
+  /* 文字サイズ設定（と表・図と並ぶタイトルの置き方・テーマ）が変わったら再変換する。表・図と並ぶスライド（Content with
      Caption）のタイトルは、ブリッジが設定を目標に枠へ合わせて XML へ焼き込むので
      adjustDeck だけでは追従しない。ほかのタイトルは adjustDeck が即時に反映し、
      こちらは少し遅れて揃う。書類の切り替えは本線の効果が変換するので除く */
-  const textSizesKey = JSON.stringify([design.text ?? null, design.captionTitle ?? null]);
+  const textSizesKey = JSON.stringify([design.text ?? null, design.captionTitle ?? null, design.theme ?? null]);
   const textSizesSeen = useRef<{ id: string | null; key: string } | null>(null);
   useEffect(() => {
     const prev = textSizesSeen.current;

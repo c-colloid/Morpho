@@ -51,6 +51,7 @@ import {
 import { cardWidthFor, layoutFor, type Pane } from './layout';
 import { useKeyboardInset } from './useKeyboardInset';
 import { usePreviewSync } from './usePreviewSync';
+import { compileTheme, resolveTheme, type ThemeChoice } from '../theme/theme';
 import { MarkdownToolbar, type ToolbarAction } from './MarkdownToolbar';
 import { findSplitSuspects } from '../preview/slideSync.ts';
 import { usePandocConverter } from '../converter/usePandocConverter';
@@ -1602,6 +1603,18 @@ export default function EditorScreen() {
     [mutateDesign],
   );
 
+  const handleUpdateTheme = useCallback(
+    (v: ThemeChoice | undefined) => {
+      mutateDesign((prev) => {
+        const next = { ...prev };
+        if (v) next.theme = v;
+        else delete next.theme;
+        return next;
+      });
+    },
+    [mutateDesign],
+  );
+
   const handleUpdateTextSizes = useCallback(
     (t: TextSizes | undefined) => {
       mutateDesign((prev) => {
@@ -1753,6 +1766,7 @@ export default function EditorScreen() {
             docFooter: toDocFooter(splitFrontMatter(src).metadata.footer, design.footer),
             captionTitle: design.captionTitle,
             useTemplate: design.template !== undefined,
+            theme: compileTheme(resolveTheme(design.theme), resultRef.current?.deck?.colors ?? {}),
           });
           await shareExport(fileName, choice, { base64: out.base64 });
         }
@@ -2059,6 +2073,8 @@ export default function EditorScreen() {
           onUpdateTextSizes={handleUpdateTextSizes}
           captionTitle={design.captionTitle}
           onUpdateCaptionTitle={handleUpdateCaptionTitle}
+          theme={design.theme}
+          onUpdateTheme={handleUpdateTheme}
           footerText={deckFooterText}
           onUpdateFooterText={handleUpdateFooterText}
           footerStyle={design.footer}

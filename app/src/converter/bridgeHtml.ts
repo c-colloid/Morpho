@@ -254,6 +254,10 @@ function parseRuns(paragraphXml) {
     /* ラン単位の文字色（pandoc はコードの構文色を srgbClr で出す。実測） */
     var clr = /<a:solidFill>\\s*<a:srgbClr\\s+val="([0-9A-Fa-f]{6})"/.exec(r);
     if (clr) run.color = '#' + clr[1].toUpperCase();
+    /* テーマ配色の参照（意味クラスの Lua が schemeClr で出す）。テンプレートの
+       配色に追従するので、実色は parsePptxZip が deck.colors で解決する */
+    var sclr = /<a:solidFill>\\s*<a:schemeClr\\s+val="(dk1|lt1|dk2|lt2|accent[1-6])"/.exec(r);
+    if (sclr && !clr) run.colorScheme = sclr[1];
     runs.push(run);
   }
   return runs;
@@ -766,6 +770,19 @@ function parsePptxZip(zip) {
         sh.anchor =
           findAnchor(layoutPh, sh.placeholder, sh.phIdx, true) ||
           findAnchor(deck.masterPh, sh.placeholder, sh.phIdx, false);
+      }
+    }
+    /* schemeClr のラン色をテーマ配色で解決する（テンプレート差し替えに追従） */
+    for (var ci = 0; ci < shapes.length; ci++) {
+      var cps = shapes[ci].paragraphs || [];
+      for (var cj = 0; cj < cps.length; cj++) {
+        var crs = cps[cj].runs || [];
+        for (var ck = 0; ck < crs.length; ck++) {
+          if (crs[ck].colorScheme) {
+            if (deck.colors[crs[ck].colorScheme]) crs[ck].color = deck.colors[crs[ck].colorScheme];
+            delete crs[ck].colorScheme;
+          }
+        }
       }
     }
     return {
@@ -1464,9 +1481,11 @@ function deckFooterHtml(f) {
   return '<div class="footer morpho-deck-footer" style="text-align:' + align + size + '">' +
     escapeHtmlText(f.text) + '</div>';
 }
-function decorateWebHtml(html, docFooter) {
+function decorateWebHtml(html, docFooter, extraCss) {
   var i = html.indexOf('</head>');
-  var out = i < 0 ? WEB_CSS + html : html.slice(0, i) + WEB_CSS + html.slice(i);
+  /* テーマ CSS は WEB_CSS の後に置く（cascade でテーマを勝たせる。columns-and-images.md） */
+  var css = WEB_CSS + (extraCss || '');
+  var out = i < 0 ? css + html : html.slice(0, i) + css + html.slice(i);
   var f = deckFooterHtml(docFooter);
   if (f) {
     var j = out.lastIndexOf('</body>');
@@ -1494,6 +1513,7 @@ async function doConvertWeb(id, md, opts) {
     options.filters = ['strip.lua'];
   }
   wireRuby(options, files);
+  wireTheme(options, files, opts);
   wireAssets(options, files, true, md);
 
   var t0 = performance.now();
@@ -1508,7 +1528,7 @@ async function doConvertWeb(id, md, opts) {
     type: 'ok',
     result: {
       kind: 'web',
-      html: decorateWebHtml(html, opts.docFooter),
+      html: decorateWebHtml(html, opts.docFooter, themeCss(opts.theme)),
       diagnostics: classify(res.warnings, res.stderr, ft.diags.concat(col.diags)),
       ms: ms,
       bytes: new Blob([html]).size
@@ -1910,6 +1930,7 @@ async function doConvertDoc(id, md, opts) {
   filters.push('drop-notes.lua');
   options.filters = filters;
   wireRuby(options, files);
+  wireTheme(options, files, opts);
   wireAssets(options, files, false, md);
 
   var t0 = performance.now();
@@ -2625,6 +2646,187 @@ window.__morphoScanFooters = scanFooters;
 window.__morphoFooterJoin = ftJoin;
 window.__morphoAttachSlideFooters = attachSlideFooters;
 
+/* ---------- テーマ層（第2層）: 意味クラスと列比 ---------- */
+
+/* 意味クラス [語]{.accent} をテーマの色・太字へ落とす Lua を組む（notes/theme-layer.md）。
+   pptx は RawInline openxml のラン（CLAUDE.md 落とし穴 14: pptx ライターは素通し）、
+   docx は w:color（w:themeColor 併記で Word 側もテーマに追従）、html はクラスを残して
+   テーマ CSS に任せる。pandoc.utils.stringify は使わない（落とし穴 16: RawInline を
+   捨てる）。Span の中身は自前で歩き、ルビ等の RawInline はそのまま並べる */
+function buildThemeLua(classes) {
+  var lua = 'local C = {}\\n';
+  for (var i = 0; i < classes.length; i++) {
+    var c = classes[i];
+    if (!/^[A-Za-z][A-Za-z0-9]*$/.test(c.name)) continue;
+    lua += 'C[' + luaQuote(c.name) + '] = { hex = ' + luaQuote(String(c.hex || '7F7F7F').replace('#', '').toUpperCase()) +
+      ', scheme = ' + (c.scheme ? luaQuote(c.scheme) : 'nil') +
+      ', bold = ' + (c.bold ? 'true' : 'false') + ' }\\n';
+  }
+  lua += [
+    'local function esc(s)',
+    "  return (s:gsub('&', '&amp;'):gsub('<', '&lt;'):gsub('>', '&gt;'))",
+    'end',
+    'local function pptxRun(text, cls, bold)',
+    "  local rpr = '<a:rPr lang=\\"ja-JP\\"' .. ((bold or cls.bold) and ' b=\\"1\\"' or '') .. '>'",
+    '  if cls.scheme then',
+    "    rpr = rpr .. '<a:solidFill><a:schemeClr val=\\"' .. cls.scheme .. '\\"/></a:solidFill>'",
+    '  else',
+    "    rpr = rpr .. '<a:solidFill><a:srgbClr val=\\"' .. cls.hex .. '\\"/></a:solidFill>'",
+    '  end',
+    "  return pandoc.RawInline('openxml', '<a:r>' .. rpr .. '</a:rPr><a:t>' .. esc(text) .. '</a:t></a:r>')",
+    'end',
+    'local function docxRun(text, cls, bold)',
+    "  local rpr = '<w:rPr>' .. ((bold or cls.bold) and '<w:b/>' or '') .. '<w:color w:val=\\"' .. cls.hex .. '\\"'",
+    "  if cls.scheme then rpr = rpr .. ' w:themeColor=\\"' .. cls.scheme .. '\\"' end",
+    "  rpr = rpr .. '/></w:rPr>'",
+    "  return pandoc.RawInline('openxml', '<w:r>' .. rpr .. '<w:t xml:space=\\"preserve\\">' .. esc(text) .. '</w:t></w:r>')",
+    'end',
+    '-- Span の中身を歩いて、文字の連なりごとに 1 ランへ。RawInline（ルビ等）は素通し',
+    'local function walk(inlines, cls, bold, out, buf)',
+    '  for _, il in ipairs(inlines) do',
+    "    if il.t == 'Str' then buf.text = buf.text .. il.text",
+    "    elseif il.t == 'Space' or il.t == 'SoftBreak' then buf.text = buf.text .. ' '",
+    "    elseif il.t == 'LineBreak' then buf.text = buf.text .. '\\\\n'",
+    "    elseif il.t == 'Strong' then",
+    "      if buf.text ~= '' then table.insert(out, { text = buf.text, bold = bold }); buf.text = '' end",
+    '      walk(il.content, cls, true, out, buf)',
+    "      if buf.text ~= '' then table.insert(out, { text = buf.text, bold = true }); buf.text = '' end",
+    "    elseif il.t == 'Emph' or il.t == 'Span' or il.t == 'Underline' then",
+    '      walk(il.content, cls, bold, out, buf)',
+    "    elseif il.t == 'Code' then buf.text = buf.text .. il.text",
+    "    elseif il.t == 'RawInline' then",
+    "      if buf.text ~= '' then table.insert(out, { text = buf.text, bold = bold }); buf.text = '' end",
+    '      table.insert(out, { raw = il })',
+    '    else',
+    "      buf.text = buf.text .. pandoc.utils.stringify(il)",
+    '    end',
+    '  end',
+    'end',
+    'function Span(el)',
+    '  local cls = nil',
+    '  for _, c in ipairs(el.classes) do if C[c] then cls = C[c]; break end end',
+    '  if not cls then return nil end',
+    "  if not (FORMAT == 'pptx' or FORMAT == 'docx') then return nil end",
+    '  local parts = {}',
+    "  local buf = { text = '' }",
+    '  walk(el.content, cls, false, parts, buf)',
+    "  if buf.text ~= '' then table.insert(parts, { text = buf.text, bold = false }) end",
+    '  local out = {}',
+    '  for _, p in ipairs(parts) do',
+    '    if p.raw then table.insert(out, p.raw)',
+    "    elseif FORMAT == 'pptx' then table.insert(out, pptxRun(p.text, cls, p.bold))",
+    '    else table.insert(out, docxRun(p.text, cls, p.bold)) end',
+    '  end',
+    '  return out',
+    'end',
+    ''
+  ].join('\\n');
+  return lua;
+}
+window.__morphoBuildThemeLua = buildThemeLua;
+
+/* 列比: 出力 pptx の slideLayout（Two Content / Comparison）の列プレースホルダ枠を
+   書き換える（notes/columns-and-images.md の「第三の経路」。reference-doc が無い
+   既定テーマでも効き、変換は 1 回で済む）。スライド側は空の <p:spPr/> で
+   レイアウトを継承するので、枠を動かすだけで本文が付いてくる。
+   左右の判定は x 座標。枠を持たないレイアウト（自作テンプレート）は触らず、
+   戻り値の applied で呼び手が診断を出す */
+function applyColumnRatioZip(zip, ratio) {
+  var result = { applied: 0, skipped: 0 };
+  if (!ratio || !(ratio[0] > 0) || !(ratio[1] > 0)) return result;
+  if (Math.abs(ratio[0] - ratio[1]) < 1e-9) return result;
+  var dec = new TextDecoder();
+  var names = Object.keys(zip).filter(function (n) {
+    return /^ppt\\/slideLayouts\\/slideLayout\\d+\\.xml$/.test(n);
+  });
+  for (var i = 0; i < names.length; i++) {
+    var xml = dec.decode(zip[names[i]]);
+    var cSld = /<p:cSld\\b[^>]*\\sname="([^"]*)"/.exec(xml);
+    var lname = cSld ? decodeXml(cSld[1]) : '';
+    if (lname !== 'Two Content' && lname !== 'Comparison') continue;
+    /* 列の枠: type が無い（= body）か body のプレースホルダで、座標を持つもの */
+    var sps = [];
+    var re = /<p:sp>[\\s\\S]*?<\\/p:sp>/g;
+    var m;
+    while ((m = re.exec(xml)) !== null) {
+      var sp = m[0];
+      var ph = /<p:ph\\b([^>]*)\\/?>/.exec(sp);
+      if (!ph) continue;
+      var type = /\\btype="([^"]*)"/.exec(ph[1]);
+      if (type && type[1] !== 'body') continue;
+      var off = /<a:off\\s+x="(\\d+)"\\s+y="(\\d+)"/.exec(sp);
+      var ext = /<a:ext\\s+cx="(\\d+)"\\s+cy="(\\d+)"/.exec(sp);
+      if (!off || !ext) continue;
+      sps.push({ start: m.index, end: m.index + sp.length, xml: sp, x: Number(off[1]), cx: Number(ext[1]) });
+    }
+    var xs = {};
+    for (var j = 0; j < sps.length; j++) xs[sps[j].x] = true;
+    var cols = Object.keys(xs).map(Number).sort(function (a, b) { return a - b; });
+    if (cols.length !== 2) { result.skipped++; continue; }
+    var leftX = cols[0];
+    var leftEdge = 0, rightEdge = 0;
+    for (var k = 0; k < sps.length; k++) {
+      if (sps[k].x === leftX) leftEdge = Math.max(leftEdge, sps[k].x + sps[k].cx);
+      else rightEdge = Math.max(rightEdge, sps[k].x + sps[k].cx);
+    }
+    var gap = cols[1] - leftEdge;
+    if (gap < 0) { result.skipped++; continue; }
+    var total = rightEdge - leftX - gap;
+    var leftCx = Math.round(total * ratio[0] / (ratio[0] + ratio[1]));
+    var rightX = leftX + leftCx + gap;
+    var rightCx = total - leftCx;
+    /* 後ろから置換して index を崩さない */
+    for (var q = sps.length - 1; q >= 0; q--) {
+      var s0 = sps[q];
+      var nx = s0.x === leftX ? leftX : rightX;
+      var ncx = s0.x === leftX ? leftCx : rightCx;
+      var nsp = s0.xml
+        .replace(/<a:off\\s+x="\\d+"/, '<a:off x="' + nx + '"')
+        .replace(/<a:ext\\s+cx="\\d+"/, '<a:ext cx="' + ncx + '"');
+      xml = xml.slice(0, s0.start) + nsp + xml.slice(s0.end);
+    }
+    zip[names[i]] = strToU8(xml);
+    result.applied++;
+  }
+  return result;
+}
+window.__morphoApplyColumnRatioZip = applyColumnRatioZip;
+
+/* テーマの CSS（html / epub）。pandoc 既定 CSS の div.columns{display:flex} に
+   列比を flex で重ね、意味クラスは色と太字 */
+function themeCss(theme) {
+  if (!theme) return '';
+  var css = '';
+  var r = theme.columnRatio;
+  if (r && r[0] > 0 && r[1] > 0) {
+    css += 'div.columns>div.column:nth-child(1){flex:' + r[0] + ' 1 0}' +
+      'div.columns>div.column:nth-child(2){flex:' + r[1] + ' 1 0}';
+  }
+  var cls = theme.classes || [];
+  for (var i = 0; i < cls.length; i++) {
+    if (!/^[A-Za-z][A-Za-z0-9]*$/.test(cls[i].name)) continue;
+    var hex = String(cls[i].hex || '7F7F7F').replace('#', '');
+    if (!/^[0-9A-Fa-f]{6}$/.test(hex)) continue;
+    css += '.' + cls[i].name + '{color:#' + hex + (cls[i].bold ? ';font-weight:bold' : '') + '}';
+  }
+  return css ? '<style>' + css + '</style>' : '';
+}
+window.__morphoThemeCss = themeCss;
+
+function ratioDiag(applied) {
+  if (applied.applied > 0 || applied.skipped === 0) return [];
+  return [ftDiag('info', 'テーマの列比を適用できませんでした',
+    'テンプレートの Two Content / Comparison レイアウトに列の枠（a:xfrm）がありません。列幅はテンプレートの既定のままです', '')];
+}
+
+/* 意味クラスの Lua を配線する（クラス定義があるときだけ。ライブプレビューの hot path） */
+function wireTheme(options, files, opts) {
+  var theme = opts && opts.theme;
+  if (!theme || !theme.classes || !theme.classes.length) return;
+  files['theme.lua'] = buildThemeLua(theme.classes);
+  options.filters = (options.filters || []).concat(['theme.lua']);
+}
+
 /* ルビ・傍点フィルタを配線する（全形式で常時有効。出し分けはフィルタ内の FORMAT） */
 function wireRuby(options, files) {
   files['ruby.lua'] = RUBY_LUA;
@@ -2726,6 +2928,7 @@ async function doConvert(id, md, opts, format) {
       options.filters = ['strip.lua'];
     }
     wireRuby(options, files);
+    wireTheme(options, files, opts);
     wireAssets(options, files, false, md);
     wireTemplate(opts, options, files);
 
@@ -2738,6 +2941,9 @@ async function doConvert(id, md, opts, format) {
     var buf = new Uint8Array(await out.arrayBuffer());
     /* スライドごとのフッター: 目印を実出力から取り出し（再 zip しない）、シーンへ載せる */
     var zip = unzipSync(buf);
+    /* テーマの列比はレイアウト枠の書き換え。解析前に当てるので、プレビューは
+       書き出しと同じ枠を読む（doExport と同じ関数・同じ順） */
+    var rd = ratioDiag(applyColumnRatioZip(zip, opts.theme && opts.theme.columnRatio));
     var hv = harvestFooters(zip);
     /* 表・図と並ぶスライドのタイトルを他のスライドと同じ既定に揃える（解析前に
        同じ zip を書き換えるので、プレビューは書き出しと同じ XML を読む） */
@@ -2753,7 +2959,7 @@ async function doConvert(id, md, opts, format) {
         slideCount: parsed.slideCount,
         slides: parsed.slides,
         deck: parsed.deck,
-        diagnostics: classify(res.warnings, res.stderr, ft.diags.concat(col.diags, hv.diags, tf)),
+        diagnostics: classify(res.warnings, res.stderr, ft.diags.concat(col.diags, hv.diags, tf, rd)),
         ms: ms,
         bytes: buf.length
       }
@@ -2800,6 +3006,7 @@ async function doExport(id, md, opts, format) {
       options.filters = (options.filters || []).concat(['drop-notes.lua']);
     }
     wireRuby(options, files);
+    wireTheme(options, files, opts);
     wireAssets(options, files, format === 'html', md);
     if (format === 'pptx') wireTemplate(opts, options, files);
 
@@ -2809,6 +3016,14 @@ async function doExport(id, md, opts, format) {
 
     var out = res.files && res.files[name];
     if (!out) throw new Error('pandoc produced no ' + name);
+
+    /* テーマの列比はレイアウト枠の書き換え。他の後処理より先（プレビューと同じ順） */
+    if (format === 'pptx' && opts.theme && opts.theme.columnRatio) {
+      var zipR = unzipSync(new Uint8Array(await out.arrayBuffer()));
+      var rdX = applyColumnRatioZip(zipR, opts.theme.columnRatio);
+      extraDiags = extraDiags.concat(ratioDiag(rdX));
+      if (rdX.applied) out = new Blob([zipSync(zipR)]);
+    }
 
     /* 文字サイズの上書きは pptx にだけ効く */
     if (format === 'pptx' && opts.textSizes) {
@@ -2852,7 +3067,7 @@ async function doExport(id, md, opts, format) {
       out = new Blob([applyDocxFooter(new Uint8Array(await out.arrayBuffer()), opts.docFooter)]);
     }
     if (format === 'html') {
-      out = new Blob([decorateWebHtml(await out.text(), opts.docFooter)], { type: 'text/html' });
+      out = new Blob([decorateWebHtml(await out.text(), opts.docFooter, themeCss(opts.theme))], { type: 'text/html' });
     }
 
     var reader = new FileReader();

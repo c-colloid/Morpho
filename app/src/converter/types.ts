@@ -434,6 +434,16 @@ export interface ConvertOptions {
    * 2 段構え — テンプレートは文書切替時に 1 度だけ預ける
    */
   useTemplate?: boolean;
+  /**
+   * テーマ（第2層）の解決結果（src/theme/theme.ts の compileTheme）。
+   * columnRatio は pptx で Two Content / Comparison のレイアウト枠、html で flex に
+   * 落ちる（docx は流す）。classes は意味クラス [語]{.accent} の色・太字で、
+   * pptx は schemeClr のラン、docx は w:color、html はクラス + CSS
+   */
+  theme?: {
+    columnRatio?: [number, number];
+    classes: Array<{ name: string; hex: string; scheme?: string; bold: boolean }>;
+  };
 }
 
 /** 変換器が生成できる出力形式。md はエディタの内容そのものなので含めない */

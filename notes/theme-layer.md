@@ -27,7 +27,7 @@ CLAUDE.md の落とし穴）から引いた事実。「経路」は次の 3 つ�
 | ルビの揃え（中付き・肩付き・均等） | — | `w:rubyAlign` | `ruby-align` | **T** | `distributeSpace` 固定 |
 | 縦中横（縦書き内の 2 桁数字を横に） | 未検証 | `w:eastAsianLayout w:combine` | `text-combine-upright` | **T**（Lua）。縦書きとセット | 未実装 |
 | 強調（`**`）の見た目（太字か・ゴシックか） | `b="1"` | `w:b` | `<strong>` | **T**（reference-doc のスタイル / CSS） | pandoc 既定 |
-| 意味クラス（`[語]{.accent}` → テーマ色） | Lua で `a:rPr` に色 | `custom-style`（表示名照合・落とし穴 15） | class | **T** | 未実装（インスペクタ v1 の席） |
+| 意味クラス（`[語]{.accent}` → テーマ色） | Lua で `a:rPr` に色 | `custom-style`（表示名照合・落とし穴 15） | class | **T** | **0.19.0**（`accent` / `muted` / `warn`。下の「実装」の節）。インスペクタ v1（UI からの挿入）は未 |
 
 ## 2. 段落・ブロック
 
@@ -37,7 +37,7 @@ CLAUDE.md の落とし穴）から引いた事実。「経路」は次の 3 つ�
 | 禁則（行頭の 」。、を出さない） | PowerPoint 側 | Word 側（`w:kinsoku`） | ブラウザ側 | **T**（reference-doc の設定・CSS `line-break`）。**アプリのプレビューは近似**（実寸描画の折り返しは自前） | 未実装。プレビューの折り返しに禁則が無い |
 | 行内の折り返しで半角スペースが混入しない | `+east_asian_line_breaks` | 同左 | 同左 | 済 | READER に固定（実測） |
 | 行頭記号のぶら下げ（箇条書き） | レイアウトの `lstStyle` | スタイル | CSS | **T** | 0.14 でレイアウト固有の `lstStyle` を読む |
-| 段組み（2 列）の列比 | **レイアウト枠が決める。原稿の `width=` は無視**（落とし穴 12） | **痕跡ゼロ**（落とし穴 12） | `width` が効く | pptx は **T**（Two Content の枠を reference-doc で動かす）。docx は **W**（`w:cols` を出す writer が無い）か **T**（後処理で `w:sectPr` を差す。未検証） | `+++` の入力と展開（0.15）。列比の変更は未実装 |
+| 段組み（2 列）の列比 | **レイアウト枠が決める。原稿の `width=` は無視**（落とし穴 12） | **痕跡ゼロ**（落とし穴 12） | `width` が効く | pptx は **T**（Two Content の枠を reference-doc で動かす）。docx は **W**（`w:cols` を出す writer が無い）か **T**（後処理で `w:sectPr` を差す。未検証） | `+++` の入力と展開（0.15）。**列比は 0.19.0**（出力 pptx のレイアウト枠を後処理で書き換える第三の経路。docx は流す） |
 | 段組みの 3 列以上 | **消える**（落とし穴 11） | — | 出る | **W** | 診断で止める（0.15） |
 | 列の先頭が画像・表 → 後続が消える | **消える**（落とし穴 13） | — | — | **W** | 診断で止める（0.15）。順序を変えてはいけない（三層分離） |
 | 表の後ろの本文がスライドを割る | **割れる**（落とし穴 5） | — | — | **W** | フッターの巻き上げで回避（`footer-design.md`） |
@@ -96,3 +96,30 @@ CLAUDE.md の落とし穴）から引いた事実。「経路」は次の 3 つ�
 
 未検証の行（縦書きの OOXML 後処理・縦中横・docx の `w:cols`・epub）は、
 v0.19 の着手時に 1 回ずつ Node で実験して確定させる。
+
+---
+
+## 実装（0.19.0）
+
+上の一覧のうち、**T の中で今すぐ届く 2 つ**（列比・意味クラス）と、テーマの置き場を作った。
+設計の判断と実測は次のとおり（すべて `app/scripts/check-theme.mjs` が常時検証）。
+
+| 項目 | 決めたこと | 根拠 |
+|---|---|---|
+| テーマの置き場 | `app/src/theme/theme.ts`。組み込みテーマ（`plain` 1:1 / `focus` 2:1）はコードに持つ。文書側の選択と列比の上書きは `DesignData.theme`（第3層・`.morphodesign` に入る） | 組み込みテーマはテーマファイルのみ（reference-doc を同梱しない） |
+| 列比の pptx 経路 | **出力 pptx の `slideLayout*.xml`（Two Content / Comparison）の列枠を後処理で書き換える**（`applyColumnRatioZip`）。`columns-and-images.md` が未検証としていた「第三の経路」 | 実測: pandoc 既定テンプレートで applied=2、左端・右端・段間は不変、幅の比が指定どおり。スライド側は空の `<p:spPr/>` でレイアウトを継承するので枠だけで本文が付いてくる。reference-doc が無くても効き、変換は 1 回のまま |
+| 適用点 | `doConvert` と `doExport` の両方、**他の後処理より先**（解析前） | プレビューが書き出しと同じ枠を読む（columns-and-images.md「適用順を 1 箇所で決める」） |
+| 枠の無いテンプレート | 触らず `skipped` を返し、情報診断「列比を適用できませんでした」 | 自作テンプレートの Two Content に `a:xfrm` が無いことがある |
+| 意味クラスの pptx | Lua で `Span` を RawInline openxml のラン（`a:solidFill`/`a:schemeClr` + `b="1"`）へ | 落とし穴 14（pptx ライターは raw openxml を素通し）。schemeClr なのでテンプレートの配色に追従する。プレビューは `parseRuns` が schemeClr を拾い `deck.colors` で解決 |
+| 意味クラスの docx | `w:color w:val="hex" w:themeColor="accent1"` | Word は themeColor があればテーマに追従、無ければ hex。文書プレビューは hex を読む |
+| 意味クラスの html | Span はそのまま（クラスが残る）。テーマ CSS を `WEB_CSS` の**後**に注入 | cascade でテーマを勝たせる（columns-and-images.md の未決事項を決めた） |
+| tint 付きの参照（muted） | pptx でも解決済みの srgbClr で出す | ランの `a:tint` は PowerPoint と自前描画で差が出る |
+| Span の中身 | `pandoc.utils.stringify` を使わず自前で歩く。RawInline（ルビ・傍点）は素通し | 落とし穴 16。実測: docx でクラスの中のルビが `w:ruby` のまま残る |
+| フィルタの順 | ruby.lua → theme.lua | pptx ではルビが Str に落ちてからクラスのランに入る |
+| 再変換の引き金 | テーマの変更は文字サイズ・帯モードと同じ効果（300 ms 後） | `usePreviewSync` |
+
+**やっていないこと（一覧の残り）:** 1 枚だけの列比の上書き（slide 経路）、docx の「並置を保つ」、
+縦書き、字下げ・禁則・ルビの揃え・圏点の種類、セレクタ規則（`rules[]`）、テーマファイルの
+書き出し・読み込み・編集 UI（v0.22）。スキーマの席（`writingMode`）は型にだけある。
+**実機未検証**（3-C の周回に含める）: 装飾パネルの「テーマ」で列比を替えて 2 段のスライドの
+幅が変わること／`[語]{.accent}` が PowerPoint・Word・ブラウザで色付きになること。
