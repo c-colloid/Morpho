@@ -634,7 +634,8 @@ app/                                 アプリ本体（React Native + Expo）
 docs/index.html                      GitHub Pages で公開する検証ハーネス
 fixtures/pptx-benchmark.md           50枚規模のテストデッキ（自己診断型）
 notes/findings.md                    検証の経緯
-notes/status-and-plan.md             現在地と残りの計画（棚卸し）
+notes/status-and-plan.md             現在地と残りの計画（棚卸し・0.15.0 時点。受け入れ条件はここ）
+notes/development-plan-2026-09.md    版割りと直近の作業順（0.18.0 時点。版割りはこちらが正）
 notes/roadmap-pptx.md                三層分離と「飾る力」の中期計画
 notes/preview-formats.md             プレビューの形式切り替え
 notes/columns-and-images.md          段組みと画像配置の設計
