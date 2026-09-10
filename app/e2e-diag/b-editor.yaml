@@ -1,0 +1,10 @@
+# 診断: 原稿をタップした状態で止める（直後に maestro hierarchy を取る）
+appId: com.ccolloid.morpho
+---
+- launchApp
+- extendedWaitUntil:
+    visible: '.*プレビュー · [0-9]+ 枚.*'
+    timeout: 300000
+- tapOn:
+    point: '18%,55%'
+- takeScreenshot: diag-b-editor

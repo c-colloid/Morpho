@@ -111,6 +111,40 @@ jobs:
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
           "$HOME/.maestro/bin/maestro" --version
 
+      - name: 診断（画面の要素木をログに出す）
+        continue-on-error: true
+        env:
+          MAESTRO_DRIVER_STARTUP_TIMEOUT: '240000'
+        run: |
+          mkdir -p e2e-out
+          UDID="${{ steps.sim.outputs.udid }}"
+          for f in a-export b-editor; do
+            echo "::group::diag $f"
+            maestro --device "$UDID" test "e2e-diag/$f.yaml" || true
+            maestro --device "$UDID" hierarchy > "e2e-out/hierarchy-$f.json" 2>/dev/null || true
+            # 文字を持つ要素だけを抜いて短く出す（text / label / value と可視・座標）
+            node -e '
+              const fs = require("fs");
+              const raw = fs.readFileSync(process.argv[1], "utf8");
+              const start = raw.indexOf("{");
+              if (start < 0) { console.log(raw.slice(0, 2000)); process.exit(0); }
+              let root;
+              try { root = JSON.parse(raw.slice(start)); } catch (e) { console.log(raw.slice(0, 4000)); process.exit(0); }
+              const out = [];
+              const walk = (n, depth) => {
+                if (!n) return;
+                const a = n.attributes || {};
+                const t = a.text || a["accessibilityText"] || a.label || a.title || a.value || "";
+                if (t && String(t).trim()) out.push(`${"  ".repeat(depth)}${JSON.stringify(String(t).slice(0, 60))} ${a.bounds || ""} vis=${a.visible ?? ""} ${a.resource-id || a["resource-id"] || ""}`);
+                (n.children || []).forEach((c) => walk(c, depth + 1));
+              };
+              walk(root, 0);
+              console.log(out.slice(0, 250).join("\n"));
+              console.log(`(${out.length} text elements)`);
+            ' "e2e-out/hierarchy-$f.json"
+            echo "::endgroup::"
+          done
+
       - name: フローを回す
         env:
           MAESTRO_DRIVER_STARTUP_TIMEOUT: '240000'

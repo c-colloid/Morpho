@@ -10,6 +10,13 @@ appId: com.ccolloid.morpho
     timeout: 300000
 - tapOn:
     point: '18%,55%'
+# 1 回目のタップで原稿に focus が入らなかったときの保険（原稿の別の場所をもう一度）
+- runFlow:
+    when:
+      notVisible: '字下げ'
+    commands:
+      - tapOn:
+          point: '15%,40%'
 - extendedWaitUntil:
     visible: '字下げ'
     timeout: 20000
