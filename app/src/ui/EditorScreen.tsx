@@ -271,6 +271,18 @@ export default function EditorScreen() {
      プログラム的に原稿を差し替える時だけ epoch を上げて remount で反映する */
   const editorRef = useRef<TextInput>(null);
   const [editorEpoch, setEditorEpoch] = useState(0);
+  /* iOS のツールバー（InputAccessoryView）は TextInput より 1 コミット遅れて mount する。
+     RN（Fabric）の InputAccessoryView は window に入った瞬間に 1 回だけ nativeID で
+     TextInput を探して結び、以後は結び直さない（RCTInputAccessoryComponentView.mm の
+     didMoveToWindow）。remount を同じ key で揃えても、Fabric は根に近い挿入を先に
+     流すので、ツールバーが window に入る時点で新しい TextInput はまだ無く、結びに
+     失敗したまま二度と結ばれない（シミュレータの要素木で実測: 0.19.2 でも
+     キーボードは出るのにツールバーの要素が無い）。epoch が変わったコミットでは
+     ツールバーを外し、effect で追いついてから mount する */
+  const [toolbarEpoch, setToolbarEpoch] = useState(-1);
+  useEffect(() => {
+    setToolbarEpoch(editorEpoch);
+  }, [editorEpoch]);
   const setSourceProgrammatic = useCallback((text: string) => {
     setSource(text);
     setEditorEpoch((e) => e + 1);
@@ -2094,16 +2106,11 @@ export default function EditorScreen() {
         />
       </View>
 
-      {Platform.OS === 'ios' && (
+      {Platform.OS === 'ios' && toolbarEpoch === editorEpoch && (
         /* キーボードと一緒に上下する Markdown ツールバー。物理キーボード接続時は
-           画面下端のバーとして出る（iOS の標準挙動）。
-           key を原稿の TextInput と揃えるのは、RN（Fabric）の InputAccessoryView が
-           window に入った最初の 1 回だけ nativeID で TextInput を探して結び、以後は
-           結び直さないため（RCTInputAccessoryComponentView.mm の didMoveToWindow）。
-           文書読み込みで TextInput が remount されると結びが古い方に残り、
-           新しい TextInput にはツールバーが付かない（シミュレータの要素木で実測:
-           キーボードは出るのにツールバーの要素が無い）。一緒に remount して結び直す */
-        <InputAccessoryView key={editorEpoch} nativeID={TOOLBAR_ID} backgroundColor="#ECEEF2">
+           画面下端のバーとして出る（iOS の標準挙動）。TextInput の remount より
+           1 コミット遅らせて mount する理由は toolbarEpoch の説明を参照 */
+        <InputAccessoryView key={toolbarEpoch} nativeID={TOOLBAR_ID} backgroundColor="#ECEEF2">
           <MarkdownToolbar onAction={handleToolbar} onDismiss={() => Keyboard.dismiss()} />
         </InputAccessoryView>
       )}
