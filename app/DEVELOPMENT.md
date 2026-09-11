@@ -247,6 +247,7 @@ src/text/       ── 文字列ユーティリティ（純関数）
   footerBlocks.ts        スライドごとのフッターの記法（/// 文言・::: footer）。同上
   blockInsert.ts         ブロック（画像等）の挿入位置。行を割らず、柵と区間の末尾を守る
   assetNames.ts          画像ファイル名の正規化・重複回避
+  imageLinks.ts          画像リンクの書き方の吸収（Obsidian ![[…]]・<img>・参照形式・フォルダ付き → 標準形）
   diffLines.ts           行 Diff（競合ダイアログ）
 
 src/ui/
@@ -291,6 +292,7 @@ CI でも同じものが走る（`.github/workflows/check.yml`。PR と push、`
 | `check-notes-edit.mjs` | 発表者ノートの読み取りと書き戻し（入れ子の div を含むノートの範囲は `scanFences` に従う。繰り返し保存・CRLF も） |
 | `check-linebreak.mjs` | 改行位置編集（正規化・分割・オフセット適用・対象特定・柵と禁止区間） |
 | `check-image-insert.mjs` | 画像の挿入位置（行を割らない・独立段落・柵と区間の末尾） |
+| `check-image-links.mjs` | 画像リンクの書き方の吸収（Obsidian `![[…]]`・`<img>`・参照形式・`<>`・フォルダ付き → 標準形。行数不変・URL とコードは無傷・参照名の走査） |
 | `check-columns.mjs` | 段組みの記法（`+++`）。判定・展開・診断と、**アプリと変換器で規則が食い違っていないこと**（区切りと柵の正規表現、および柵の深さ追跡 `scanFences` の**関数本文**が `columns.ts` とブリッジで一致すること） |
 | `check-update.mjs` | 版の比較と更新通知 |
 | `check-design.mjs` | 装飾・グループ・文字サイズ・.morphodesign の往復 |

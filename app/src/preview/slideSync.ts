@@ -8,6 +8,7 @@
  */
 import { slideSegments } from './cursorSlide.ts';
 import { stripCr } from '../text/lineEnding.ts';
+import { isImageOnlyLine } from '../text/imageLinks.ts';
 
 export type SplitCause = 'columns' | 'table' | 'image' | 'unknown';
 
@@ -56,7 +57,7 @@ function blocksOf(seg: string): Array<{ kind: Kind; at: number; text: string }> 
     if (HR.test(line)) continue;   /* 水平線は区間の境界。ブロックとしては数えない */
     if (/^ {0,3}#/.test(line)) { out.push({ kind: 'heading', at, text: line.replace(/^ {0,3}#+\s*/, '') }); continue; }
     if (/^ {0,3}\|/.test(line)) { if (out[out.length-1]?.kind !== 'table') out.push({ kind: 'table', at, text: line }); continue; }
-    if (/^ {0,3}!\[[^\]]*\]\([^)]*\)\s*$/.test(line)) { out.push({ kind: 'image', at, text: line }); continue; }
+    if (isImageOnlyLine(line)) { out.push({ kind: 'image', at, text: line }); continue; }
     if (out[out.length-1]?.kind !== 'text' || lastTextEnd !== at) {
       out.push({ kind: 'text', at, text: line });
     } else { out[out.length-1].text += '\n' + line; }

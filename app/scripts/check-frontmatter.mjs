@@ -81,9 +81,9 @@ t('sanitizeAssetName: パスと危険な文字を落としてフラット名に�
   assert.equal(sanitizeAssetName('///'), 'image');
 });
 
-t('referencedImages: フラット名だけ拾い、URL とパス付きは除外する', () => {
+t('referencedImages: フラット名で拾い、パス付きは名前だけに落とし、URL は除外する', () => {
   const md = '![a](one.png) ![b](sub/two.png) ![c](https://x/y.png) ![d](one.png) ![e](three.jpg "t")';
-  assert.deepEqual(referencedImages(md).sort(), ['one.png', 'three.jpg']);
+  assert.deepEqual(referencedImages(md).sort(), ['one.png', 'three.jpg', 'two.png']);
 });
 
 /* ---------- front matter の 1 行書き換え（フッターの入力欄が使う） ---------- */
