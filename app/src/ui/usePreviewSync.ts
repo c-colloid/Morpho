@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { LatestOnly } from '../converter/latestOnly';
 import { sanitizeForXml, splitFrontMatter } from '../converter/frontMatter';
+import { normalizeImageLinks } from '../text/imageLinks';
 import type {
   ConvertResult,
   Converter,
@@ -69,7 +70,10 @@ export function usePreviewSync(args: {
         (job) => {
           // CLAUDE.md 落とし穴 1: front matter は自前で剥がして metadata で渡す
           // 落とし穴 9: XML 非対応の制御文字は pandoc へ渡す直前に空白へ置換する
-          const { metadata, body } = sanitizeForXml(splitFrontMatter(job.md));
+          const { metadata, body: rawBody } = sanitizeForXml(splitFrontMatter(job.md));
+          /* 画像リンクの書き方（Obsidian の ![[…]]・<img>・フォルダ付き）を標準形へ。
+             行数は変わらないのでスライド境界と行番号はそのまま */
+          const body = normalizeImageLinks(rawBody);
           const d = designRef.current;
           return converter.convert(body, {
             metadata,

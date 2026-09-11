@@ -135,6 +135,7 @@ import {
   referencedImages,
   saveAsset,
 } from '../store/assets';
+import { normalizeImageLinks } from '../text/imageLinks';
 import { sanitizeFileName, shareExport } from '../store/exportShare';
 import { DocumentSurface } from './DocumentSurface';
 import { DocumentsModal } from './DocumentsModal';
@@ -1743,7 +1744,8 @@ export default function EditorScreen() {
           await shareExport(fileName, 'md', { text: src });
         } else {
           /* 落とし穴 9: XML 非対応の制御文字は pandoc へ渡す直前に空白へ置換する */
-          const { metadata, body } = sanitizeForXml(splitFrontMatter(src));
+          const { metadata, body: rawBody } = sanitizeForXml(splitFrontMatter(src));
+          const body = normalizeImageLinks(rawBody);
           const out = await converter.exportFile(body, choice, {
             metadata,
             stripHtmlComments: true,

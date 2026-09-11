@@ -3,6 +3,7 @@
  * 保存やファイル IO は store/assets.ts が持つ。ここは node の検査から
  * そのまま読める形に保つ。
  */
+import { imageRefsOf } from './imageLinks.ts';
 
 /**
  * 取り込み時のファイル名を保存庫用に整える。
@@ -15,16 +16,9 @@ export function sanitizeAssetName(name: string): string {
   return cleaned || 'image';
 }
 
-/** 原稿が参照する画像名（`![...](name)` のフラット名だけ拾う） */
+/** 原稿が参照する画像名。Obsidian の `![[…]]`・HTML の `<img>`・参照形式・
+ *  フォルダ付きも、取り込み時と同じ規則でフラット名に落として拾う（imageLinks.ts）。
+ *  URL は対象外（wasm から取得できない） */
 export function referencedImages(source: string): string[] {
-  const out = new Set<string>();
-  const re = /!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(source)) !== null) {
-    const ref = m[1];
-    if (/^[a-z]+:/i.test(ref)) continue; /* URL は対象外（wasm から取得できない） */
-    if (ref.includes('/')) continue; /* パス付きは解決不能（実測） */
-    out.add(ref);
-  }
-  return [...out];
+  return imageRefsOf(source);
 }
