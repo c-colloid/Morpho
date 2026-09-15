@@ -289,22 +289,62 @@ t('3 列以上は診断を出す（スライドは 2 列まで）', () => {
   assert.deepEqual(labels('# T\n\nA\n\n+++\n\nB\n'), []);
 });
 
-t('列の先頭が画像で後続があるときは展開しない（落とし穴 13）', () => {
+/* ---- 列の中で占有ブロック（画像・表）の後ろに続くブロック（落とし穴 13。0.19.8） ----
+ * pandoc に渡すと無警告で消えるか同じ枠に重なる。pptx（overflow）では列に残すのは
+ * 最初の占有ブロックまでとし、続きは *** で 1 ブロック 1 枚のスライドへ逃がして、
+ * ノートの目印 morpho-column:N で列番号を運ぶ（積み直しは check-deck の「列の積み直し」）。
+ * Web（html）は列に何でも置けるので、そのまま 2 段に展開する */
+const overflowOf = (md) => expand(md, { overflow: true }).md;
+
+t('pptx: 列の先頭が画像で後続があれば、後続を *** で逃がして目印を付ける', () => {
   const md = '# 実験\n\n![](z.png)\n\n図1: 装置\n\n+++\n\n右\n';
-  assert.equal(cols(md), 0, '展開してはいけない');
-  assert.deepEqual(labels(md), ['画像の後ろの内容が消えるため段組みにしませんでした']);
+  const out = overflowOf(md);
+  assert.equal((out.match(/::: \{\.column\}/g) || []).length, 2, '2 列に展開されていない:\n' + out);
+  assert.match(out, /::: \{\.column\}\n!\[\]\(z\.png\)\n:::/, '列には画像だけが残る');
+  assert.match(out, /\n\*\*\*\n\n図1: 装置\n\n::: notes\nmorpho-column:1\n:::/, '後続が目印付きの別スライドになっていない:\n' + out);
+  assert.deepEqual(labels(md), []);
 });
 
-t('列の先頭が表で後続があるときも展開しない', () => {
+t('pptx: 列の先頭が表で後続があるときも同じ（表は複数行で 1 ブロック）', () => {
   const md = '# 結果\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n※ 速報値\n\n+++\n\n右\n';
-  assert.equal(cols(md), 0);
-  assert.deepEqual(labels(md), ['表の後ろの内容が消えるため段組みにしませんでした']);
+  const out = overflowOf(md);
+  assert.match(out, /::: \{\.column\}\n\| A \| B \|\n\|---\|---\|\n\| 1 \| 2 \|\n:::/);
+  assert.match(out, /\*\*\*\n\n※ 速報値\n\n::: notes\nmorpho-column:1\n:::/);
 });
 
-t('展開しないときも区切りは消費する（本文に生の +++ を出さない）', () => {
-  const out = expand('# 実験\n\n![](z.png)\n\n図1: 装置\n\n+++\n\n右\n').md;
-  assert.ok(!/^\s*\+\+\+\s*$/m.test(out), '生の +++ が残っている');
-  assert.ok(out.includes('図1: 装置') && out.includes('右'), '内容が失われている');
+t('pptx: 「本文 → 表 → 箇条書き」は表までを列に残し、箇条書きを逃がす（表に被る形）', () => {
+  const md = '# 結果\n\n**太字**\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n* ひとつ\n* ふたつ\n\n+++\n\n![](z.png)\n';
+  const out = overflowOf(md);
+  assert.match(out, /::: \{\.column\}\n\*\*太字\*\*\n\n\| A \| B \|\n\|---\|---\|\n\| 1 \| 2 \|\n:::/, out);
+  assert.match(out, /\*\*\*\n\n\* ひとつ\n\* ふたつ\n\n::: notes\nmorpho-column:1\n:::/, out);
+  assert.ok(!/morpho-column:2/.test(out), '右の列（画像だけ）は逃がさない');
+});
+
+t('pptx: 右の列の「画像 → 画像」は 2 つ目を morpho-column:2 で逃がす', () => {
+  const md = '# 補足\n\n本文。\n\n+++\n\n![](a.png)\n\n![](b.png)\n';
+  const out = overflowOf(md);
+  assert.match(out, /::: \{\.column\}\n!\[\]\(a\.png\)\n:::/);
+  assert.match(out, /\*\*\*\n\n!\[\]\(b\.png\)\n\n::: notes\nmorpho-column:2\n:::/);
+});
+
+t('pptx: 区間末尾の ::: notes は段組みの直後（逃がしたスライドより前）に残る', () => {
+  const md = '# 実験\n\n![](z.png)\n\n図1\n\n+++\n\n右\n\n::: notes\nメモ。\n:::\n';
+  const out = overflowOf(md);
+  assert.ok(out.indexOf('メモ。') < out.indexOf('***'), out);
+  assert.ok(out.indexOf('メモ。') > out.indexOf('::: {.columns}'), out);
+});
+
+t('pptx: 逃がすのは 2 列目まで（3 列目は pandoc が捨てる）', () => {
+  const md = '# T\n\nA\n\n+++\n\nB\n\n+++\n\n![](z.png)\n\n後\n';
+  assert.ok(!/morpho-column/.test(overflowOf(md)));
+});
+
+t('html: 列に何でも置けるので逃がさず、そのまま展開する', () => {
+  const md = '# 実験\n\n![](z.png)\n\n図1: 装置\n\n+++\n\n右\n';
+  const out = expand(md).md;
+  assert.equal(cols(md), 2);
+  assert.ok(!/morpho-column|\*\*\*/.test(out), out);
+  assert.match(out, /::: \{\.column\}\n!\[\]\(z\.png\)\n\n図1: 装置\n:::/);
 });
 
 t('画像や表が列の唯一のブロックなら展開してよい', () => {
@@ -379,10 +419,10 @@ t('末尾にノートが 2 つ並んでいれば両方とも列の外に残る',
   assert.ok(expand(md).md.endsWith('::: notes\nA\n:::\n\n::: notes\nB\n:::\n'));
 });
 
-t('展開しないときに消費するのは区切りとして数えた行だけ（コードとノートの中は触らない）', () => {
+t('逃がすときもコードフェンスとノートの中の +++ は触らない', () => {
   const md = '# 実験\n\n![](z.png)\n\n図1: 装置\n\n+++\n\n右\n\n```\n+++\n```\n\n::: notes\n+++\n:::\n';
-  const out = expand(md).md;
-  assert.equal(cols(md), 0);
+  const out = expand(md, { overflow: true }).md;
+  assert.equal(cols(md), 2);
   assert.ok(out.includes('```\n+++\n```'), 'コードフェンスの中の +++ が消えた');
   assert.ok(out.includes('::: notes\n+++\n:::'), 'ノートの中の +++ が消えた');
   assert.ok(!out.includes('図1: 装置\n\n+++'), '本文の区切りが残っている');

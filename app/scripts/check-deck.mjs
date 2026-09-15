@@ -671,7 +671,7 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
   );
   const segs = (md) => slideSegments(md).length;
   const run = async (md, extra) => {
-    const e = expand(md);
+    const e = expand(md, { overflow: true });
     const o = { from: 'markdown-yaml_metadata_block+east_asian_line_breaks', to: 'pptx', 'output-file': 'p.pptx' };
     const files = { 'z.png': new Blob([PNG]) };
     if (extra && extra.title) o.metadata = { title: extra.title };
@@ -718,14 +718,16 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
 
   const unsafe = '# 実験\n\n![](z.png)\n\n図1: 装置\n\n+++\n\n右の説明\n';
   const u = await run(unsafe);
-  t('+++: 列の先頭が画像で後続があるときは展開せず、内容を保つ（落とし穴 13）', () => {
-    assert.deepEqual(u.diags, ['画像の後ろの内容が消えるため段組みにしませんでした']);
+  t('+++: 列の先頭が画像で後続があっても展開し、後続は目印付きの別スライドへ（落とし穴 13）', () => {
+    assert.deepEqual(u.diags, []);
+    assert.equal(u.sc.slides[0].layout, 'Two Content');
+    assert.equal(u.sc.slides[0].images.length, 1, '画像が消えている');
     const texts = u.sc.slides.flatMap((sl) =>
       sl.shapes.flatMap((sh) => sh.paragraphs.map((pp) => pp.runs.map((rr) => rr.text).join(''))));
     assert.ok(texts.some((x) => x.includes('図1')), 'キャプションが消えている');
     assert.ok(texts.some((x) => x.includes('右の説明')), '右の内容が消えている');
     assert.ok(!texts.some((x) => /\+\+\+/.test(x)), '本文に生の +++ が出ている');
-    assert.equal(u.sc.slides.reduce((a, sl) => a + sl.images.length, 0), 1, '画像が消えている');
+    assert.deepEqual(Array.from(u.sc.slides[1].notes, (n) => n.runs.map((r) => r.text).join('')), ['morpho-column:1']);
   });
 
   /* ---- ノートの中の入れ子 div（footer-design.md の既存の不具合 6・7） ----
@@ -1151,14 +1153,144 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
     }
   });
 
+  /* ---- 列の積み直し（0.19.8）。列の中で画像・表の後ろに続くブロックは、pandoc に渡すと
+     無警告で消えるか同じ枠に重なる（落とし穴 13・実測「本文 → 表 → 箇条書き」）。
+     expandColumns が *** で 1 ブロック 1 枚へ逃がし（目印 morpho-column:N）、
+     stackSegmentSlides がその列の枠へ原稿の順序で積み直す。ここは端から端まで:
+     枚数が区間数に戻る・列の枠に収まる・重ならない・目印のノートが残らない */
+  const colRun = async (md, meta) => {
+    const e = win.__morphoExpandColumns(md, { overflow: true });
+    const o = { from: 'markdown-yaml_metadata_block', to: 'pptx', 'output-file': 'c.pptx' };
+    if (meta) o.metadata = meta;
+    const r = await convert(o, e.md, { 'z.png': new Blob([PNG2]) });
+    const z = unzipSync(new Uint8Array(await r.files['c.pptx'].arrayBuffer()));
+    const before = win.__morphoParsePptxZip(z).slideCount;
+    const st = win.__morphoStackSegmentSlides(z, segmentHeadings(md));
+    return { before, st, zip: z, sc: win.__morphoParsePptxZip(z),
+      nonInfo: r.warnings.filter((w) => w.verbosity !== 'INFO'), diags: Array.from(win.__morphoStackDiags(st)) };
+  };
+  /* 列の枠に入っている図形（x が枠の範囲内）を上から順に */
+  const inColumn = (sl, x0, x1) => layoutOrder(sl).filter((i) => i.x >= x0 && i.x < x1);
+  const layoutOrderX = (sl) => {
+    const items = [];
+    for (const sh of sl.shapes) {
+      if (sh.placeholder === 'title' || sh.placeholder === 'ctrTitle') continue;
+      items.push({ x: sh.frame.x, y: sh.frame.y, w: sh.frame.w, h: sh.frame.h, kind: 'text', text: sh.paragraphs.map((p) => p.runs.map((x) => x.text).join('')).join('') });
+    }
+    for (const t of sl.tables) items.push({ x: t.x, y: t.y, w: t.w, h: t.h, kind: 'table', text: 'rows=' + t.rowCount });
+    for (const im of sl.images) items.push({ x: im.x, y: im.y, w: im.w, h: im.h, kind: 'image', text: im.name });
+    items.sort((a, b) => a.y - b.y);
+    return items;
+  };
+  /* Comparison の見出し枠と本文枠はレイアウト自体が 1 EMU 重なっている（実測）ので 2 EMU の遊び */
+  const noOverlap = (items) => {
+    for (let i = 1; i < items.length; i++) {
+      assert.ok(items[i].y >= items[i - 1].y + items[i - 1].h - 2, '重なっている: ' + JSON.stringify(items));
+    }
+  };
+
+  /* 実機のスクリーンショット 1: 「太字 → 表 → 箇条書き +++ 画像」。箇条書きが表に被っていた */
+  const tableBullets = '# 結果\n\n**太字**\n\n' + TBL + '\n* ひとつ\n* ふたつ\n\n+++\n\n![](z.png)\n\n***\n\n# 次\n\n本文\n';
+  const c1 = await colRun(tableBullets);
+  t('列の積み直し: 「本文 → 表 → 箇条書き +++ 画像」が 1 枚に戻り、箇条書きが表の下に来る', () => {
+    assert.equal(c1.before, 3, '前提: 逃がした箇条書きで 3 枚');
+    assert.equal(c1.sc.slideCount, 2);
+    assert.equal(c1.sc.slideCount, segCount(tableBullets), '枚数と区間数が一致しない');
+    assert.equal(c1.sc.slides[0].layout, 'Comparison');
+    const left = layoutOrderX(c1.sc.slides[0]).filter((i) => i.x < 4500000);
+    assert.deepEqual(left.map((i) => i.kind), ['text', 'table', 'text'], JSON.stringify(left));
+    assert.equal(left[2].text, 'ひとつふたつ');
+    noOverlap(left);
+    /* 表と箇条書きは列の本文枠（x=457200, w=4040188, 下端 1631156+2963466）に収まる */
+    for (const i of left.slice(1)) {
+      assert.ok(i.x >= 457200 && i.x + i.w <= 457200 + 4040188 + 1, JSON.stringify(i));
+      assert.ok(i.y + i.h <= 1631156 + 2963466 + 1, JSON.stringify(i));
+    }
+    assert.equal(c1.sc.slides[0].images.length, 1, '右の画像が消えた');
+    assert.equal(c1.nonInfo.length, 0);
+    assert.deepEqual(c1.diags, []);
+  });
+  t('列の積み直し: 目印のノートは残らず、次のスライドはそのまま', () => {
+    assert.deepEqual(Array.from(c1.sc.slides, (sl) => sl.notes.length), [0, 0]);
+    assert.ok(!Object.keys(c1.zip).some((n) => /notesSlides\//.test(n)), '目印のノートの部品が残っている');
+    assert.ok(!strFromU8(c1.zip['[Content_Types].xml']).includes('notesSlide'), 'Content_Types に残骸');
+    assert.equal(c1.sc.slides[1].shapes.find((x) => x.placeholder === 'title').paragraphs[0].runs[0].text, '次');
+  });
+
+  /* 実機のスクリーンショット 2: 「本文 +++ 画像 → 画像」。段組みにならず Title and Content に落ちていた */
+  const twoImages = '# 補足\n\n本文。\n\n+++\n\n![](z.png)\n\n![](z.png)\n';
+  const c2 = await colRun(twoImages);
+  t('列の積み直し: 「本文 +++ 画像 → 画像」が Two Content のまま、右の列に画像が 2 つ縦に並ぶ', () => {
+    assert.equal(c2.before, 2);
+    assert.equal(c2.sc.slideCount, 1);
+    assert.equal(c2.sc.slides[0].layout, 'Two Content');
+    const right = layoutOrderX(c2.sc.slides[0]).filter((i) => i.x >= 4500000);
+    assert.deepEqual(right.map((i) => i.kind), ['image', 'image'], JSON.stringify(right));
+    noOverlap(right);
+    for (const i of right) assert.ok(i.y + i.h <= 1200151 + 3394472 + 1 && i.x + i.w <= 4648200 + 4038600 + 1, JSON.stringify(i));
+    const left = layoutOrderX(c2.sc.slides[0]).filter((i) => i.x < 4500000);
+    assert.deepEqual(left.map((i) => i.text), ['本文。']);
+    assert.equal(left[0].w, 4038600, '左の本文は列の幅のまま');
+  });
+
+  /* 両方の列が逃がす。区間末尾のノートは base に残る */
+  const both = '# H\n\n![](z.png)\n\n左の説明\n\n+++\n\n' + TBL + '\n右の説明\n\n::: notes\nメモ。\n:::\n';
+  const c3 = await colRun(both, { title: '表紙' });
+  t('列の積み直し: 両方の列が逃がしても、それぞれの列へ戻る（表紙つき・ノートは元のスライドに残る）', () => {
+    assert.equal(c3.before, 4);
+    assert.equal(c3.sc.slideCount, 2);
+    const sl = c3.sc.slides[1];
+    assert.equal(sl.layout, 'Two Content');
+    const left = layoutOrderX(sl).filter((i) => i.x < 4500000);
+    const right = layoutOrderX(sl).filter((i) => i.x >= 4500000);
+    assert.deepEqual(left.map((i) => i.kind), ['image', 'text']);
+    assert.deepEqual(right.map((i) => i.kind), ['table', 'text']);
+    assert.equal(left[1].text, '左の説明');
+    assert.equal(right[1].text, '右の説明');
+    noOverlap(left); noOverlap(right);
+    assert.deepEqual(Array.from(sl.notes, (n) => n.runs.map((r) => r.text).join('')), ['メモ。']);
+    /* 列の文字サイズ（Two Content の 21pt）を継承する */
+    const texts = sl.shapes.filter((x) => x.placeholder !== 'title');
+    for (const x of texts) assert.equal(x.lvlStyle && x.lvlStyle[0] && x.lvlStyle[0].sz, 2100, JSON.stringify(x.frame));
+  });
+
+  /* 見出しの無い区間（***）が続いても、割れたぶんが目印付きだけなら畳める */
+  const noHeading = '# A\n\n上\n\n***\n\n![](z.png)\n\n下\n\n+++\n\n右\n\n***\n\n次\n';
+  const c4 = await colRun(noHeading);
+  t('列の積み直し: 見出しの無い区間が続いても、逃がしたぶんだけなら正しく畳む', () => {
+    assert.equal(c4.before, 4);
+    assert.equal(c4.sc.slideCount, 3);
+    assert.equal(c4.sc.slideCount, segCount(noHeading));
+    assert.equal(c4.sc.slides[1].layout, 'Two Content');
+    assert.deepEqual(layoutOrderX(c4.sc.slides[1]).filter((i) => i.x < 4500000).map((i) => i.kind), ['image', 'text']);
+    const last = c4.sc.slides[2].shapes.map((sh) => sh.paragraphs.map((p) => p.runs.map((x) => x.text).join('')).join('')).join('|');
+    assert.equal(last, '次');
+  });
+
+  /* 全幅の縦積みで、畳んだスライドに付いていたノート（区間末尾の ::: notes）を base が引き継ぐ */
+  const notesSplit = '# 見出し\n\n上の文章。\n\n' + TBL + '\n下の文章。\n\n::: notes\nノート本文。\n:::\n';
+  const c5 = await stackRun(notesSplit);
+  t('縦積み: 畳んだスライドのノートを 1 枚目が引き継ぐ（部品も rels も残骸を残さない）', () => {
+    assert.equal(c5.sc.slideCount, 1);
+    assert.deepEqual(Array.from(c5.sc.slides[0].notes, (n) => n.runs.map((r) => r.text).join('')), ['ノート本文。']);
+    const parts = Object.keys(c5.zip).filter((n) => /notesSlides\/notesSlide\d+\.xml$/.test(n));
+    assert.equal(parts.length, 1, parts.join(','));
+    const rels = strFromU8(c5.zip['ppt/notesSlides/_rels/' + parts[0].split('/').pop() + '.rels']);
+    assert.ok(rels.includes('Target="../slides/slide1.xml"'), rels);
+  });
+
   if (validateOoxml) {
     const errs = [
       (await validateOoxml(zipSync(s1.zip), 'pptx', 'Microsoft365')).length,
       (await validateOoxml(zipSync(s2.zip), 'pptx', 'Microsoft365')).length,
       (await validateOoxml(zipSync(s3.zip), 'pptx', 'Microsoft365')).length,
+      (await validateOoxml(zipSync(c1.zip), 'pptx', 'Microsoft365')).length,
+      (await validateOoxml(zipSync(c2.zip), 'pptx', 'Microsoft365')).length,
+      (await validateOoxml(zipSync(c3.zip), 'pptx', 'Microsoft365')).length,
+      (await validateOoxml(zipSync(c5.zip), 'pptx', 'Microsoft365')).length,
     ];
     t('縦積み: Open XML の妥当性が 0 件のまま', () => {
-      assert.deepEqual(errs, [0, 0, 0]);
+      assert.deepEqual(errs, [0, 0, 0, 0, 0, 0, 0]);
     });
   } else {
     console.log('  skip 縦積みの妥当性検証（npm install --no-save @ooxml-tools/validate で有効になる）');

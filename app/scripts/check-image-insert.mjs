@@ -44,15 +44,58 @@ t('空の原稿・末尾に改行が無い原稿', () => {
   assert.equal(insertBlock('本文', 2, B).body, '本文\n\n' + B + '\n');
 });
 
-t('列の中にカーソルがあれば、その列の中身の末尾へ', () => {
+t('列の中にカーソルがあれば、その段落の直後（列の中）へ', () => {
   const r = insertBlock(COLS, COLS.indexOf('左'), B);
   assert.match(r.body, /::: \{\.column\}\n左\n\n!\[\]\(x\.png\)\n\n:::/);
-  assert.equal(r.moved, 'column');
 });
 
 t('列の外にカーソルがあっても、段組みがあれば列の中へ（直下は無警告で消える）', () => {
   const r = insertBlock(COLS, COLS.indexOf('見出し'), B);
-  assert.match(r.body, /::: \{\.column\}\n右\n\n!\[\]\(x\.png\)\n\n:::/);
+  assert.match(r.body, /::: \{\.column\}\n左\n\n!\[\]\(x\.png\)\n\n:::/);
+  assert.equal(r.moved, 'column');
+});
+
+/* ---- カーソルのある段落の直後へ置く（0.19.8）。区間の末尾へは送らない ---- */
+const LONG = '# 見出し\n\n一つ目の段落。\n\n二つ目の段落。\n\n* 箇条書き A\n* 箇条書き B\n\n三つ目の段落。\n';
+
+t('段落の途中にカーソル → その段落の直後（区間の末尾ではない）', () => {
+  const r = insertBlock(LONG, LONG.indexOf('目の段落') , B);
+  assert.equal(r.body, '# 見出し\n\n一つ目の段落。\n\n' + B + '\n\n二つ目の段落。\n\n* 箇条書き A\n* 箇条書き B\n\n三つ目の段落。\n');
+  assert.equal(r.moved, 'block');
+});
+
+t('見出しの上にカーソル → 見出しの直後', () => {
+  const r = insertBlock(LONG, LONG.indexOf('見出し'), B);
+  assert.ok(r.body.startsWith('# 見出し\n\n' + B + '\n\n一つ目'), r.body);
+});
+
+t('箇条書きの項目にカーソル → 箇条書きの塊の直後（項目の間に割り込まない。落とし穴 21）', () => {
+  const r = insertBlock(LONG, LONG.indexOf('箇条書き A'), B);
+  assert.match(r.body, /\* 箇条書き B\n\n!\[\]\(x\.png\)\n\n三つ目/);
+});
+
+t('空行の上にカーソル → その空行の位置', () => {
+  const at = LONG.indexOf('\n\n二つ目') + 1;
+  const r = insertBlock(LONG, at, B);
+  assert.match(r.body, /一つ目の段落。\n\n!\[\]\(x\.png\)\n\n二つ目/);
+});
+
+t('+++ の行にカーソル → その直後（次の列の先頭）', () => {
+  const doc = '# 見出し\n\n左\n\n+++\n\n右\n';
+  const r = insertBlock(doc, doc.indexOf('+++') + 1, B);
+  assert.equal(r.body, '# 見出し\n\n左\n\n+++\n\n' + B + '\n\n右\n');
+});
+
+t('*** の行にカーソル → その直後（新しいスライドの先頭）', () => {
+  const doc = '# A\n\n本文。\n\n***\n\n次。\n';
+  const r = insertBlock(doc, doc.indexOf('***') + 1, B);
+  assert.equal(r.body, '# A\n\n本文。\n\n***\n\n' + B + '\n\n次。\n');
+});
+
+t('区間の途中に置いても、あとの内容は動かない（表の前でも）', () => {
+  const doc = '# 見出し\n\n本文です。\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n下の文。\n';
+  const r = insertBlock(doc, doc.indexOf('本文'), B);
+  assert.equal(r.body, '# 見出し\n\n本文です。\n\n' + B + '\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n下の文。\n');
 });
 
 t('3 列目には入れない（pandoc が無警告で捨てる）', () => {
@@ -70,13 +113,22 @@ t('末尾の ::: notes より前に置く（ノートに埋もれない）', () 
   const doc = '# 見出し\n\n本文。\n\n::: notes\nメモ。\n:::\n';
   const r = insertBlock(doc, doc.indexOf('本文'), B);
   assert.ok(r.body.indexOf(B) < r.body.indexOf('::: notes'));
-  assert.equal(r.moved, 'notes');
 });
 
-t('front matter 側（body 座標で負）でも本文の区間末尾へ落ちる', () => {
+t('::: notes の柵の行や中にカーソルがあっても、ノートの手前へ', () => {
+  const doc = '# 見出し\n\n本文。\n\n::: notes\nメモ。\n:::\n';
+  for (const at of [doc.indexOf('::: notes') + 2, doc.indexOf('メモ'), doc.lastIndexOf(':::') + 1]) {
+    const r = insertBlock(doc, at, B);
+    assert.equal(r.body, '# 見出し\n\n本文。\n\n' + B + '\n\n::: notes\nメモ。\n:::\n', 'cursor=' + at);
+    assert.equal(r.moved, 'notes');
+  }
+});
+
+t('front matter 側（body 座標で負）なら本文の最初の見出しの直後へ', () => {
   const doc = '\n# 見出し\n\n本文A。\n\n本文B。\n';
   const r = insertBlock(doc, -12, B);
-  assert.ok(r.body.indexOf(B) > r.body.indexOf('本文B。'), '本文より前に入った:\n' + r.body);
+  assert.equal(r.body, '\n# 見出し\n\n' + B + '\n\n本文A。\n\n本文B。\n');
+  assert.equal(r.moved, 'front-matter');
 });
 
 /* ---- 占有ブロックの置き場（beside。0.19.7） ----
@@ -92,11 +144,11 @@ t('beside: 画像のある区間へ 2 つ目でも列は作らない（縦に並
   assert.match(r.body, /!\[\]\(a\.png\)\n\n!\[\]\(x\.png\)\n/);
 });
 
-t('beside: 本文・表のある区間でも素直に末尾へ置く', () => {
+t('beside: 本文・表のある区間でも素直にカーソルの段落の直後へ置く', () => {
   const doc = '# 見出し\n\n本文です。\n\n| A | B |\n|---|---|\n| 1 | 2 |\n';
   const r = insertBlock(doc, doc.indexOf('本文'), B, { beside: true });
   assert.ok(!r.body.includes('+++'), '勝手に列を作った:\n' + r.body);
-  assert.match(r.body, /\| 1 \| 2 \|\n\n!\[\]\(x\.png\)\n/);
+  assert.match(r.body, /本文です。\n\n!\[\]\(x\.png\)\n\n\| A \| B \|/);
 });
 
 t('beside: 列が埋まっていれば 3 列目を作らず *** で新しいスライドへ', () => {

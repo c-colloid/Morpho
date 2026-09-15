@@ -148,6 +148,8 @@ import { SlideSurface } from './SlideSurface';
 
 /** 自動保存は手が止まって 1 秒後。フラッシュは文書切替と background 遷移でも走る */
 const SAVE_MS = 1000;
+/* カードのタップで原稿をジャンプさせた直後、スクロールロックを見送る時間 */
+const JUMP_MS = 1000;
 /** iOS: 原稿の TextInput とキーボード上のツールバーを結ぶ ID */
 /** 発表者ノートの空ブロック。キャレットは中の空行に置く（末尾の `\n:::` の手前） */
 const NOTES_BLOCK = '::: notes\n\n:::';
@@ -298,8 +300,14 @@ export default function EditorScreen() {
      （キーボードは既に出ていて、editable を切ると編集が終わってしまう） */
   const [scrollLock, setScrollLock] = useState(false);
   const scrollLockTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /* プログラム的なジャンプ（カードのタップ → setSelection）で native が原稿を
+     スクロールしている間はロックしない。ロックは editable を切り替えるので、
+     アニメーション中に切り替わるとスクロールが途中で止まる（実機フィードバック:
+     「ジャンプが途中で止まる」）。ジャンプ直後の 1 秒だけ見送る */
+  const jumpUntil = useRef(0);
   const onEditorScroll = useCallback(() => {
     if (editorRef.current?.isFocused()) return;
+    if (Date.now() < jumpUntil.current) return;
     setScrollLock(true);
     if (scrollLockTimer.current) clearTimeout(scrollLockTimer.current);
     scrollLockTimer.current = setTimeout(() => {
@@ -377,6 +385,19 @@ export default function EditorScreen() {
     },
     [onChangeSource],
   );
+
+  /* 原稿を丸ごと差し替えつつ、キャレットと表示位置を保つ（復帰時の外部ファイル取り込み用）。
+     setSourceProgrammatic は remount するので UITextView が先頭へ戻る（実機フィードバック:
+     「バックグラウンドから戻るとカーソルが一番上に戻る」）。ここは pushed の経路で
+     native へ text と選択位置を送るだけにする。保存済みの内容なので dirty にはしない */
+  const replaceSourceInPlace = useCallback((text: string) => {
+    sourceRef.current = text;
+    setSource(text);
+    const at = Math.max(0, Math.min(cursorRef.current, text.length));
+    cursorRef.current = at;
+    selectionRef.current = { start: at, end: at };
+    setPushed({ text, sel: { start: at, end: at } });
+  }, []);
 
   const patchBody = useCallback(
     (nextBody: string, nextCursor?: number) => {
@@ -1055,10 +1076,12 @@ export default function EditorScreen() {
       });
       return;
     }
-    setSourceProgrammatic(ext);
+    /* remount せず、キャレットと表示位置を保ったまま差し替える。プレビューの
+       強調位置とカード座標も捨てない（同じ文書の続きなので） */
+    replaceSourceInPlace(ext);
     setDocs(await saveDoc(id, ext));
     setSaveState({ kind: 'saved', at: Date.now() });
-    resetPreviewFor(ext);
+    resetPreview(ext);
   };
 
   const handleDelete = useCallback(
@@ -1166,7 +1189,10 @@ export default function EditorScreen() {
        setSelection だけでも native は選択位置まで原稿をスクロールする
        （RCTTextInputComponentView の setTextAndSelection）。キャレットは
        編集を始めるときに原稿をタップすれば出る */
-    const place = () => editorRef.current?.setSelection(pos, pos);
+    const place = () => {
+      jumpUntil.current = Date.now() + JUMP_MS;
+      editorRef.current?.setSelection(pos, pos);
+    };
     /* 一画面のときは原稿の面へ移ってから置く（隠れた TextInput は測れない） */
     if (!wideRef.current && paneRef.current !== 'editor') {
       setPane('editor');
@@ -1232,7 +1258,10 @@ export default function EditorScreen() {
                     cursorRef.current = pos;
                     selectionRef.current = { start: pos, end: pos };
                     if (!wideRef.current) setPane('editor');
-                    setTimeout(() => editorRef.current?.setSelection(pos, pos), 50);
+                    setTimeout(() => {
+                      jumpUntil.current = Date.now() + JUMP_MS;
+                      editorRef.current?.setSelection(pos, pos);
+                    }, 50);
                   },
                 },
               ]
