@@ -1454,6 +1454,307 @@ function titleFitDiags(shrunk) {
   }];
 }
 
+/* ---------- 割れたスライドを 1 枚へ戻して縦に積む（0.19.7） ----------
+ *
+ * pptx にはコンテンツ枠が 1 枚に 1 つしか無く、pandoc は「本文 → 表 → 本文」のような
+ * 原稿を無警告で複数枚に割る（CLAUDE.md 落とし穴 5・20）。書き手は縦に並ぶつもりで
+ * 書いているので、変換後の OOXML で**原稿の順序のまま 1 枚へ積み直す**。
+ *
+ * 内容の順序は 1 つも変えない（spTree の出現順 = 原稿の順）。変えるのは枠の位置だけ
+ * なので、三層分離の「テーマは内容に触らない」を守る。
+ *
+ * 安全弁: 対応づけに少しでも曖昧さが残る（見出しの無い区間が続く）ときと、
+ * 積んだ高さが本文領域に収まらないときは**統合しない**。最後に
+ * 「枚数 == 区間数」を確かめ、合わなければ丸ごと捨てて元の zip を使う。
+ */
+var STACK_GAP = 91440;            /* ブロック間の空き 0.1 in */
+var STACK_MIN_ROW = 274320;       /* 表の 1 行の最小高 0.3 in（PowerPoint の既定に近い） */
+var STACK_MIN_PIC = 457200;       /* 画像の最小高 0.5 in */
+var STACK_LINE_HEIGHT = 1.35;
+
+/* spTree 直下の図形を出現順に切り出す */
+function spTreeParts(xml) {
+  var t = /<p:spTree>([\\s\\S]*)<\\/p:spTree>/.exec(xml);
+  if (!t) return null;
+  var inner = t[1];
+  var re = /<p:(sp|pic|graphicFrame)\\b[^>]*>[\\s\\S]*?<\\/p:\\1>/g;
+  var shapes = [], m, head = null, last = 0;
+  while ((m = re.exec(inner)) !== null) {
+    if (head === null) head = inner.slice(0, m.index);
+    shapes.push({ kind: m[1], xml: m[0] });
+    last = m.index + m[0].length;
+  }
+  if (head === null) head = inner;
+  return {
+    start: t.index + '<p:spTree>'.length,
+    end: t.index + t[0].length - '</p:spTree>'.length,
+    head: head, shapes: shapes, tail: inner.slice(last)
+  };
+}
+
+function xfrmTag(f, tag) {
+  return '<' + tag + '><a:off x="' + Math.round(f.x) + '" y="' + Math.round(f.y) + '"/>' +
+    '<a:ext cx="' + Math.round(f.w) + '" cy="' + Math.round(f.h) + '"/></' + tag + '>';
+}
+
+/* 図形へ枠を書き込む。graphicFrame は p:xfrm、それ以外は spPr の a:xfrm */
+function withXfrm(spXml, kind, f) {
+  if (kind === 'graphicFrame') {
+    if (/<p:xfrm\\b[\\s\\S]*?<\\/p:xfrm>/.test(spXml)) {
+      return spXml.replace(/<p:xfrm\\b[\\s\\S]*?<\\/p:xfrm>/, function () { return xfrmTag(f, 'p:xfrm'); });
+    }
+    return spXml.replace('<a:graphic>', function () { return xfrmTag(f, 'p:xfrm') + '<a:graphic>'; });
+  }
+  var x = xfrmTag(f, 'a:xfrm');
+  if (/<a:xfrm>[\\s\\S]*?<\\/a:xfrm>/.test(spXml)) {
+    return spXml.replace(/<a:xfrm>[\\s\\S]*?<\\/a:xfrm>/, function () { return x; });
+  }
+  if (/<p:spPr\\s*\\/>/.test(spXml)) {
+    return spXml.replace(/<p:spPr\\s*\\/>/, function () { return '<p:spPr>' + x + '</p:spPr>'; });
+  }
+  return spXml.replace('<p:spPr>', function () { return '<p:spPr>' + x; });
+}
+
+/* テキスト図形の自然高。段落ごとに折り返し行数を数える（fitTitleSz と同じ近似） */
+function stackTextHeight(spXml, wEmu, szHundredths) {
+  var pt = szHundredths / 100;
+  var innerW = (wEmu - 91440 * 2) / EMU_PER_PT;
+  if (!(innerW > 0)) return 0;
+  var rows = 0;
+  var re = /<a:p>([\\s\\S]*?)<\\/a:p>/g;
+  var m;
+  while ((m = re.exec(spXml)) !== null) {
+    var text = '';
+    var tre = /<a:t>([^<]*)<\\/a:t>/g, tm;
+    while ((tm = tre.exec(m[1])) !== null) text += decodeXml(tm[1]);
+    rows += Math.max(1, Math.ceil((textEm(text) * pt) / innerW));
+  }
+  if (!rows) rows = 1;
+  return Math.round(rows * pt * STACK_LINE_HEIGHT * EMU_PER_PT) + 45720 * 2;
+}
+
+function hasTitlePh(xml) { return /<p:ph\\b[^>]*\\btype="title"/.test(xml); }
+function hasCtrTitlePh(xml) { return /<p:ph\\b[^>]*\\btype="ctrTitle"/.test(xml); }
+
+/**
+ * segments は RN 側の slideSegments と同じ区間列で、要素は { heading: boolean }。
+ * 戻り値 { stacked: [枚数…], skipped: [{ slide, reason }] }（診断用）。
+ */
+function stackSegmentSlides(zip, segments) {
+  var out = { stacked: [], skipped: [] };
+  if (!segments || !segments.length) return out;
+  var dec2 = new TextDecoder();
+  var names = Object.keys(zip).filter(function (n) {
+    return /^ppt\\/slides\\/slide\\d+\\.xml$/.test(n);
+  }).sort(function (a, b) { return slideNum(a) - slideNum(b); });
+  /* front matter の表紙は区間に対応しない */
+  var cover = names.length && hasCtrTitlePh(dec2.decode(zip[names[0]])) ? names[0] : null;
+  var content = cover ? names.slice(1) : names;
+  if (content.length <= segments.length) return out;
+
+  /* 区間 → スライド群。見出しの無い区間が続くと境界が判らないので、
+     そこでは統合しない（1 枚だけ割り当てて先へ進む） */
+  var groups = [];
+  var p = 0;
+  for (var i = 0; i < segments.length; i++) {
+    if (p >= content.length) return out;          /* 足りない = 前提が崩れている */
+    var start = p;
+    p++;
+    if (i + 1 < segments.length) {
+      if (segments[i + 1].heading) {
+        while (p < content.length && !hasTitlePh(dec2.decode(zip[content[p]]))) p++;
+      } else if (p < content.length && !hasTitlePh(dec2.decode(zip[content[p]]))) {
+        /* 次の区間に見出しが無く、次のスライドにもタイトルが無い。そのスライドが
+           「この区間の割れた続き」なのか「次の区間の先頭」なのか区別できないので、
+           対応づけを丸ごとあきらめる（誤って別の区間の内容を畳むと復元できない） */
+        return out;
+      }
+    } else {
+      p = content.length;
+    }
+    groups.push(content.slice(start, p));
+  }
+  if (p !== content.length) return out;
+
+  var master = dec2.decode(zip[Object.keys(zip).filter(function (n) {
+    return /^ppt\\/slideMasters\\/slideMaster\\d+\\.xml$/.test(n);
+  })[0]]);
+  var bodyFrame = parseXfrm(bodySpOf(master) || '');
+  var titleFrame = parseXfrm(titleSpOf(master) || '');
+  if (!bodyFrame) return out;
+  var bs = /<p:bodyStyle>[\\s\\S]*?<\\/p:bodyStyle>/.exec(master);
+  var bsLvl = bs ? /<a:lvl1pPr\\b([^>]*)>([\\s\\S]*?)<\\/a:lvl1pPr>/.exec(bs[0]) : null;
+  var bodySz = bsLvl ? Number(attrOf((/<a:defRPr\\b([^>]*)/.exec(bsLvl[2]) || [])[1], 'sz') || 2400) : 2400;
+
+  /* Title and Content（全幅の本文枠）へ張り替える。無ければ統合しない */
+  var tac = null;
+  Object.keys(zip).forEach(function (n) {
+    if (tac || !/^ppt\\/slideLayouts\\/slideLayout\\d+\\.xml$/.test(n)) return;
+    var cs = /<p:cSld\\b[^>]*\\sname="([^"]*)"/.exec(dec2.decode(zip[n]));
+    if (cs && decodeXml(cs[1]) === 'Title and Content') tac = n;
+  });
+  if (!tac) return out;
+
+  var gone = [];
+  for (var gi = 0; gi < groups.length; gi++) {
+    var g = groups[gi];
+    if (g.length < 2) continue;
+    var r = stackOneGroup(zip, g, dec2, bodyFrame, titleFrame, bodySz, tac);
+    if (r.ok) { out.stacked.push({ slide: gi + 1, from: g.length }); gone = gone.concat(g.slice(1)); }
+    else out.skipped.push({ slide: gi + 1, reason: r.reason });
+  }
+  if (!gone.length) return out;
+  dropSlides(zip, gone, dec2);
+  return out;
+}
+
+/* 1 グループを先頭スライドへ畳む。収まらなければ何もせず ok:false を返す */
+function stackOneGroup(zip, g, dec2, bodyFrame, titleFrame, bodySz, tacName) {
+  var base = g[0];
+  var baseXml = dec2.decode(zip[base]);
+  var parts = spTreeParts(baseXml);
+  if (!parts) return { ok: false, reason: 'spTree' };
+  var baseRelPath = 'ppt/slides/_rels/' + base.split('/').pop() + '.rels';
+  var baseRels = zip[baseRelPath] ? dec2.decode(zip[baseRelPath]) : '';
+  var nextRid = 1;
+  var ridRe = /Id="rId(\\d+)"/g, rm;
+  while ((rm = ridRe.exec(baseRels)) !== null) nextRid = Math.max(nextRid, Number(rm[1]) + 1);
+
+  var shapes = parts.shapes.slice();
+  var addRels = [];
+  for (var k = 1; k < g.length; k++) {
+    var xml = dec2.decode(zip[g[k]]);
+    var pk = spTreeParts(xml);
+    if (!pk) return { ok: false, reason: 'spTree' };
+    var relPath = 'ppt/slides/_rels/' + g[k].split('/').pop() + '.rels';
+    var rels = zip[relPath] ? dec2.decode(zip[relPath]) : '';
+    var map = {};
+    var rre = /<Relationship Id="(rId\\d+)" Type="([^"]*)" Target="([^"]*)"\\s*\\/>/g, r2;
+    while ((r2 = rre.exec(rels)) !== null) {
+      if (/slideLayout$/.test(r2[2])) continue;
+      var nid = 'rId' + (nextRid++);
+      map[r2[1]] = nid;
+      addRels.push('<Relationship Id="' + nid + '" Type="' + r2[2] + '" Target="' + r2[3] + '"/>');
+    }
+    for (var s2 = 0; s2 < pk.shapes.length; s2++) {
+      var sx = pk.shapes[s2].xml;
+      for (var oldId in map) {
+        sx = sx.replace(new RegExp('r:embed="' + oldId + '"', 'g'), 'r:embed="' + map[oldId] + '"')
+               .replace(new RegExp('r:link="' + oldId + '"', 'g'), 'r:link="' + map[oldId] + '"');
+      }
+      shapes.push({ kind: pk.shapes[s2].kind, xml: sx });
+    }
+  }
+
+  /* タイトルはマスターの枠へ戻し、残りを本文領域へ順に積む */
+  var title = null;
+  var rest = [];
+  for (var i2 = 0; i2 < shapes.length; i2++) {
+    if (!title && shapes[i2].kind === 'sp' && hasTitlePh(shapes[i2].xml)) title = shapes[i2];
+    else rest.push(shapes[i2]);
+  }
+  if (!rest.length) return { ok: false, reason: 'empty' };
+
+  var items = rest.map(function (s) {
+    if (s.kind === 'sp') {
+      var h = stackTextHeight(s.xml, bodyFrame.w, bodySz);
+      return { s: s, h: h, min: h, flex: false, ar: 0 };
+    }
+    var f = parseXfrm(s.xml);
+    if (s.kind === 'pic') {
+      var ar = f && f.h > 0 ? f.w / f.h : 1;
+      var nat = Math.round(bodyFrame.w / ar);
+      return { s: s, h: nat, min: STACK_MIN_PIC, flex: true, ar: ar };
+    }
+    var rows = (s.xml.match(/<a:tr\\b/g) || []).length || 1;
+    var natT = rows * Math.round((bodySz / 100) * 1.5 * EMU_PER_PT + 91440);
+    return { s: s, h: natT, min: rows * STACK_MIN_ROW, flex: true, ar: 0 };
+  });
+  var gaps = STACK_GAP * (items.length - 1);
+  var minSum = items.reduce(function (a, b) { return a + b.min; }, 0) + gaps;
+  if (minSum > bodyFrame.h) return { ok: false, reason: 'overflow' };
+  var natSum = items.reduce(function (a, b) { return a + b.h; }, 0) + gaps;
+  if (natSum > bodyFrame.h) {
+    /* 可変（画像・表）を最小高まで詰める。足りなければ比例で */
+    var fixed = items.reduce(function (a, b) { return a + (b.flex ? b.min : b.h); }, 0) + gaps;
+    var room = bodyFrame.h - fixed;
+    var flexNat = items.reduce(function (a, b) { return a + (b.flex ? b.h - b.min : 0); }, 0);
+    var ratio = flexNat > 0 ? Math.max(0, Math.min(1, room / flexNat)) : 0;
+    for (var t2 = 0; t2 < items.length; t2++) {
+      if (items[t2].flex) items[t2].h = Math.round(items[t2].min + (items[t2].h - items[t2].min) * ratio);
+    }
+  }
+
+  var placed = [];
+  if (title && titleFrame) placed.push(withXfrm(title.xml, 'sp', titleFrame));
+  else if (title) placed.push(title.xml);
+  var y = bodyFrame.y;
+  for (var q = 0; q < items.length; q++) {
+    var it = items[q];
+    var f2 = { x: bodyFrame.x, y: y, w: bodyFrame.w, h: it.h };
+    if (it.s.kind === 'pic' && it.ar > 0) {
+      var w2 = Math.min(bodyFrame.w, Math.round(it.h * it.ar));
+      f2 = { x: bodyFrame.x + Math.round((bodyFrame.w - w2) / 2), y: y, w: w2, h: it.h };
+    }
+    var sx2 = withXfrm(it.s.xml, it.s.kind, f2);
+    /* 本文はレイアウトの全幅枠（idx=1）を指す。継承（文字サイズ・行頭記号・字下げ）を
+       保ったまま、位置だけ自前で持つ。表・画像の ph は外す（枠は自前） */
+    if (it.s.kind === 'sp') sx2 = sx2.replace(/<p:ph\\b[^>]*\\/>/, '<p:ph idx="1"/>');
+    else sx2 = sx2.replace(/<p:ph\\b[^>]*\\/>/, '');
+    placed.push(sx2);
+    y += it.h + STACK_GAP;
+  }
+  /* 図形 ID の重複を解消（別スライドから持ってきたぶんは衝突している） */
+  var nid2 = 2;
+  var bodyXml = placed.map(function (x) {
+    return x.replace(/(<p:cNvPr\\b[^>]*\\bid=")\\d+(")/, function (all, a, b) { return a + (nid2++) + b; });
+  }).join('');
+  zip[base] = strToU8(baseXml.slice(0, parts.start) + parts.head + bodyXml + parts.tail + baseXml.slice(parts.end));
+  if (addRels.length) baseRels = baseRels.replace('</Relationships>', addRels.join('') + '</Relationships>');
+  baseRels = baseRels.replace(/(Type="[^"]*slideLayout"\\s+Target=")[^"]*(")/, function (all, a, b) {
+    return a + '../slideLayouts/' + tacName.split('/').pop() + b;
+  });
+  zip[baseRelPath] = strToU8(baseRels);
+  return { ok: true };
+}
+
+/* 畳んだスライドをパッケージから外す */
+function dropSlides(zip, gone, dec2) {
+  var pr = dec2.decode(zip['ppt/_rels/presentation.xml.rels']);
+  var pres = dec2.decode(zip['ppt/presentation.xml']);
+  var ct = dec2.decode(zip['[Content_Types].xml']);
+  for (var i = 0; i < gone.length; i++) {
+    var leaf = gone[i].split('/').pop();
+    var m = new RegExp('<Relationship Id="(rId\\\\d+)"[^>]*Target="slides/' + leaf + '"\\\\s*/>').exec(pr);
+    if (m) {
+      pr = pr.replace(m[0], '');
+      pres = pres.replace(new RegExp('<p:sldId[^>]*r:id="' + m[1] + '"\\\\s*/>'), '');
+    }
+    ct = ct.replace(new RegExp('<Override PartName="/' + gone[i].replace(/\\//g, '\\\\/') + '"[^>]*/>'), '');
+    delete zip[gone[i]];
+    delete zip['ppt/slides/_rels/' + leaf + '.rels'];
+  }
+  zip['ppt/_rels/presentation.xml.rels'] = strToU8(pr);
+  zip['ppt/presentation.xml'] = strToU8(pres);
+  zip['[Content_Types].xml'] = strToU8(ct);
+}
+
+/* 積めなかった区間を書き手へ返す */
+function stackDiags(r) {
+  if (!r || !r.skipped || !r.skipped.length) return [];
+  var s = r.skipped[0];
+  return [{
+    kind: 'info',
+    label: '1 枚に収まらないので、このスライドは分かれたままです',
+    hint: '本文・表・図を縦に積むと本文枠に入りきりません。分量を減らすか、' +
+      '*** で自分でスライドを分けてください',
+    text: 'スライド ' + s.slide,
+    count: r.skipped.length
+  }];
+}
+window.__morphoStackSegmentSlides = stackSegmentSlides;
+window.__morphoStackDiags = stackDiags;
+
 /* 「本文 + 図・表」を同じスライドに書くと pandoc は Content with Caption を選び、
    本文を幅 1/3 の枠へ入れて文字を下げる（実測: 本文 24pt → 10.5pt・
    枠 9.00in → 3.29in。タイトルも 33pt → 15pt。**非 INFO の警告はゼロ**）。
@@ -2978,6 +3279,9 @@ async function doConvert(id, md, opts, format) {
     /* テーマの列比はレイアウト枠の書き換え。解析前に当てるので、プレビューは
        書き出しと同じ枠を読む（doExport と同じ関数・同じ順） */
     var rd = ratioDiag(applyColumnRatioZip(zip, opts.theme && opts.theme.columnRatio));
+    /* pandoc が 1 区間を複数枚に割っていたら 1 枚へ戻して原稿の順序どおり縦に積む。
+       フッターの採取より前に畳む（採取はスライド単位なので、畳んだ後の並びで数える） */
+    var st = stackSegmentSlides(zip, opts.segments);
     var hv = harvestFooters(zip);
     /* 表・図と並ぶスライドのタイトルを他のスライドと同じ既定に揃える（解析前に
        同じ zip を書き換えるので、プレビューは書き出しと同じ XML を読む） */
@@ -2994,7 +3298,7 @@ async function doConvert(id, md, opts, format) {
         slides: parsed.slides,
         deck: parsed.deck,
         diagnostics: classify(res.warnings, res.stderr,
-          ft.diags.concat(col.diags, hv.diags, tf, rd, captionBodyDiags(parsed))),
+          ft.diags.concat(col.diags, hv.diags, tf, rd, stackDiags(st), captionBodyDiags(parsed))),
         ms: ms,
         bytes: buf.length
       }
@@ -3058,6 +3362,15 @@ async function doExport(id, md, opts, format) {
       var rdX = applyColumnRatioZip(zipR, opts.theme.columnRatio);
       extraDiags = extraDiags.concat(ratioDiag(rdX));
       if (rdX.applied) out = new Blob([zipSync(zipR)]);
+    }
+
+    /* 割れたスライドを 1 枚へ戻して縦に積む。プレビューと同じ順（列比の直後）で
+       同じ関数を通すので、装飾のスライド番号も両者で一致する */
+    if (format === 'pptx' && opts.segments && opts.segments.length) {
+      var zipS = unzipSync(new Uint8Array(await out.arrayBuffer()));
+      var stX = stackSegmentSlides(zipS, opts.segments);
+      extraDiags = extraDiags.concat(stackDiags(stX));
+      if (stX.stacked.length) out = new Blob([zipSync(zipS)]);
     }
 
     /* 文字サイズの上書きは pptx にだけ効く */

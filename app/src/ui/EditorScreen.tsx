@@ -70,7 +70,7 @@ import type {
   TextRun,
   WebResult,
 } from '../converter/types';
-import { slideIndexAtCursor, slideSegments } from '../preview/cursorSlide';
+import { segmentHeadings, slideIndexAtCursor, slideSegments } from '../preview/cursorSlide';
 import { getNotes, setNotes } from '../preview/notesEdit.ts';
 import {
   locateEditable,
@@ -1773,6 +1773,9 @@ export default function EditorScreen() {
             ),
             docFooter: toDocFooter(splitFrontMatter(src).metadata.footer, design.footer),
             captionTitle: design.captionTitle,
+            /* 区間。プレビューと同じものを渡さないと、割れたスライドの畳み方が
+               書き出しだけ変わって装飾のスライド番号がずれる */
+            segments: segmentHeadings(splitFrontMatter(src).body),
             useTemplate: design.template !== undefined,
             theme: compileTheme(resolveTheme(design.theme), resultRef.current?.deck?.colors ?? {}),
           });
