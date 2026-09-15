@@ -1536,6 +1536,125 @@ function stackTextHeight(spXml, wEmu, szHundredths) {
 function hasTitlePh(xml) { return /<p:ph\\b[^>]*\\btype="title"/.test(xml); }
 function hasCtrTitlePh(xml) { return /<p:ph\\b[^>]*\\btype="ctrTitle"/.test(xml); }
 
+/* 図形の自然高・最小高（全幅の積み直しと列の積み直しで共用）。
+   テキストは折り返し行数、表は行数、画像は縦横比から */
+function measureStackItem(s, w, sz) {
+  if (s.kind === 'sp') {
+    var h = stackTextHeight(s.xml, w, sz);
+    return { s: s, h: h, min: h, flex: false, ar: 0 };
+  }
+  var f = parseXfrm(s.xml);
+  if (s.kind === 'pic') {
+    var ar = f && f.h > 0 ? f.w / f.h : 1;
+    return { s: s, h: Math.round(w / ar), min: STACK_MIN_PIC, flex: true, ar: ar };
+  }
+  var rows = (s.xml.match(/<a:tr\\b/g) || []).length || 1;
+  var natT = rows * Math.round((sz / 100) * 1.5 * EMU_PER_PT + 91440);
+  return { s: s, h: natT, min: rows * STACK_MIN_ROW, flex: true, ar: 0 };
+}
+
+/* items を枠の高さに収める。余らなければ可変（画像・表）を最小高まで詰める。
+   最小高でも収まらなければ false（呼び手は何もしない） */
+function fitStackItems(items, frame) {
+  var gaps = STACK_GAP * (items.length - 1);
+  var minSum = items.reduce(function (a, b) { return a + b.min; }, 0) + gaps;
+  if (minSum > frame.h) return false;
+  var natSum = items.reduce(function (a, b) { return a + b.h; }, 0) + gaps;
+  if (natSum > frame.h) {
+    var fixed = items.reduce(function (a, b) { return a + (b.flex ? b.min : b.h); }, 0) + gaps;
+    var room = frame.h - fixed;
+    var flexNat = items.reduce(function (a, b) { return a + (b.flex ? b.h - b.min : 0); }, 0);
+    var ratio = flexNat > 0 ? Math.max(0, Math.min(1, room / flexNat)) : 0;
+    for (var t2 = 0; t2 < items.length; t2++) {
+      if (items[t2].flex) items[t2].h = Math.round(items[t2].min + (items[t2].h - items[t2].min) * ratio);
+    }
+  }
+  return true;
+}
+
+/* items を枠の中へ上から順に並べ、枠を書き込んだ XML を返す（ph は呼び手が整える） */
+function layoutStackItems(items, frame) {
+  var out = [];
+  var y = frame.y;
+  for (var q = 0; q < items.length; q++) {
+    var it = items[q];
+    var f2 = { x: frame.x, y: y, w: frame.w, h: it.h };
+    if (it.s.kind === 'pic' && it.ar > 0) {
+      var w2 = Math.min(frame.w, Math.round(it.h * it.ar));
+      f2 = { x: frame.x + Math.round((frame.w - w2) / 2), y: y, w: w2, h: it.h };
+    }
+    out.push(withXfrm(it.s.xml, it.s.kind, f2));
+    y += it.h + STACK_GAP;
+  }
+  return out;
+}
+
+function slideRelPathOf(name) { return 'ppt/slides/_rels/' + name.split('/').pop() + '.rels'; }
+
+/* スライドの rels が指すノート（ppt/notesSlides/notesSlideN.xml）。無ければ null */
+function notesPartOf(zip, name, dec2) {
+  var rp = slideRelPathOf(name);
+  if (!zip[rp]) return null;
+  var m = /Target="([^"]*notesSlide\\d+\\.xml)"/.exec(dec2.decode(zip[rp]));
+  return m ? m[1].replace(/^\\.\\.\\//, 'ppt/') : null;
+}
+
+/* expandColumns が列から逃がした 1 ブロック 1 枚のスライドは、ノートに
+   \`morpho-column:N\` の目印を持つ。その N（1 始まりの列番号）。無ければ null */
+function columnMarkOf(zip, name, dec2) {
+  var np = notesPartOf(zip, name, dec2);
+  if (!np || !zip[np]) return null;
+  /* ノート本文（type="body"）だけを読む。スライド番号の枠（sldNum）の文字を
+     連結すると「1」+「2」が「12」になる */
+  var text = '';
+  var shapes = parseShapes(dec2.decode(zip[np]));
+  for (var i = 0; i < shapes.length; i++) {
+    if (shapes[i].placeholder !== 'body') continue;
+    for (var j = 0; j < shapes[i].paragraphs.length; j++) {
+      for (var k = 0; k < shapes[i].paragraphs[j].runs.length; k++) text += shapes[i].paragraphs[j].runs[k].text;
+    }
+  }
+  var hit = new RegExp('^\\\\s*' + COL_MARK + '(\\\\d+)\\\\s*$').exec(text);
+  return hit ? Number(hit[1]) : null;
+}
+
+/* 他スライドの図形を base へ移す準備: rels を写して r:embed / r:link を付け替える。
+   slideLayout と notesSlide の rels は写さない（ノートは呼び手が扱う） */
+function importShapes(zip, name, dec2, state) {
+  var xml = dec2.decode(zip[name]);
+  var pk = spTreeParts(xml);
+  if (!pk) return null;
+  var relPath = slideRelPathOf(name);
+  var rels = zip[relPath] ? dec2.decode(zip[relPath]) : '';
+  var map = {};
+  var rre = /<Relationship Id="(rId\\d+)" Type="([^"]*)" Target="([^"]*)"\\s*\\/>/g, r2;
+  while ((r2 = rre.exec(rels)) !== null) {
+    if (/slideLayout$/.test(r2[2]) || /notesSlide$/.test(r2[2])) continue;
+    var nid = 'rId' + (state.nextRid++);
+    map[r2[1]] = nid;
+    state.addRels.push('<Relationship Id="' + nid + '" Type="' + r2[2] + '" Target="' + r2[3] + '"/>');
+  }
+  var out = [];
+  for (var s2 = 0; s2 < pk.shapes.length; s2++) {
+    var sx = pk.shapes[s2].xml;
+    for (var oldId in map) {
+      sx = sx.replace(new RegExp('r:embed="' + oldId + '"', 'g'), 'r:embed="' + map[oldId] + '"')
+             .replace(new RegExp('r:link="' + oldId + '"', 'g'), 'r:link="' + map[oldId] + '"');
+    }
+    out.push({ kind: pk.shapes[s2].kind, xml: sx });
+  }
+  return out;
+}
+
+/* 図形 ID の重複を解消して spTree を書き戻す（別スライドから持ってきたぶんは衝突している） */
+function writeSpTree(zip, name, baseXml, parts, shapes) {
+  var nid2 = 2;
+  var bodyXml = shapes.map(function (x) {
+    return x.replace(/(<p:cNvPr\\b[^>]*\\bid=")\\d+(")/, function (all, a, b) { return a + (nid2++) + b; });
+  }).join('');
+  zip[name] = strToU8(baseXml.slice(0, parts.start) + parts.head + bodyXml + parts.tail + baseXml.slice(parts.end));
+}
+
 /**
  * segments は RN 側の slideSegments と同じ区間列で、要素は { heading: boolean }。
  * 戻り値 { stacked: [枚数…], skipped: [{ slide, reason }] }（診断用）。
@@ -1556,6 +1675,10 @@ function stackSegmentSlides(zip, segments) {
      そこでは統合しない（1 枚だけ割り当てて先へ進む） */
   var groups = [];
   var p = 0;
+  /* 割れたぶん（枚数 − 区間数）が列の続き（目印付き）だけで説明できるか */
+  var totalMarks = 0;
+  for (var ti = 0; ti < content.length; ti++) if (columnMarkOf(zip, content[ti], dec2) !== null) totalMarks++;
+  var exact = content.length - segments.length === totalMarks;
   for (var i = 0; i < segments.length; i++) {
     if (p >= content.length) return out;          /* 足りない = 前提が崩れている */
     var start = p;
@@ -1563,11 +1686,17 @@ function stackSegmentSlides(zip, segments) {
     if (i + 1 < segments.length) {
       if (segments[i + 1].heading) {
         while (p < content.length && !hasTitlePh(dec2.decode(zip[content[p]]))) p++;
-      } else if (p < content.length && !hasTitlePh(dec2.decode(zip[content[p]]))) {
-        /* 次の区間に見出しが無く、次のスライドにもタイトルが無い。そのスライドが
-           「この区間の割れた続き」なのか「次の区間の先頭」なのか区別できないので、
-           対応づけを丸ごとあきらめる（誤って別の区間の内容を畳むと復元できない） */
-        return out;
+      } else {
+        /* 次の区間に見出しが無い。タイトルの無い次のスライドが「この区間の割れた続き」
+           なのか「次の区間の先頭」なのかは、列の続き（ノートに目印がある）なら判る。
+           目印の無いものは、割れた枚数がすべて目印付きで説明できる（exact）なら
+           次の区間の先頭。そうでなければ区別できないので、対応づけを丸ごと
+           あきらめる（誤って別の区間の内容を畳むと復元できない） */
+        while (p < content.length && !hasTitlePh(dec2.decode(zip[content[p]]))) {
+          if (columnMarkOf(zip, content[p], dec2) !== null) { p++; continue; }
+          if (exact) break;
+          return out;
+        }
       }
     } else {
       p = content.length;
@@ -1596,54 +1725,50 @@ function stackSegmentSlides(zip, segments) {
   if (!tac) return out;
 
   var gone = [];
+  var keepNotes = {};
   for (var gi = 0; gi < groups.length; gi++) {
     var g = groups[gi];
     if (g.length < 2) continue;
-    var r = stackOneGroup(zip, g, dec2, bodyFrame, titleFrame, bodySz, tac);
-    if (r.ok) { out.stacked.push({ slide: gi + 1, from: g.length }); gone = gone.concat(g.slice(1)); }
-    else out.skipped.push({ slide: gi + 1, reason: r.reason });
+    /* 列の続き（expandColumns が逃がした 1 ブロック 1 枚）はノートの目印で判る */
+    var marks = [];
+    for (var mi = 1; mi < g.length; mi++) marks.push(columnMarkOf(zip, g[mi], dec2));
+    var marked = marks.filter(function (m) { return m !== null; }).length;
+    var r;
+    if (marked && marked !== marks.length) r = { ok: false, reason: 'mixed' };
+    else if (marked) r = stackIntoColumns(zip, g, marks, dec2, bodySz);
+    else r = stackOneGroup(zip, g, dec2, bodyFrame, titleFrame, bodySz, tac, keepNotes);
+    if (r.ok) {
+      out.stacked.push({ slide: gi + 1, from: g.length, columns: marked > 0 });
+      gone = gone.concat(g.slice(1));
+    } else out.skipped.push({ slide: gi + 1, reason: r.reason });
   }
   if (!gone.length) return out;
-  dropSlides(zip, gone, dec2);
+  dropSlides(zip, gone, dec2, keepNotes);
   return out;
 }
 
-/* 1 グループを先頭スライドへ畳む。収まらなければ何もせず ok:false を返す */
-function stackOneGroup(zip, g, dec2, bodyFrame, titleFrame, bodySz, tacName) {
+/* 1 グループを先頭スライドへ畳む（全幅に縦積み）。収まらなければ何もせず ok:false を返す */
+function stackOneGroup(zip, g, dec2, bodyFrame, titleFrame, bodySz, tacName, keepNotes) {
   var base = g[0];
   var baseXml = dec2.decode(zip[base]);
   var parts = spTreeParts(baseXml);
   if (!parts) return { ok: false, reason: 'spTree' };
-  var baseRelPath = 'ppt/slides/_rels/' + base.split('/').pop() + '.rels';
+  var baseRelPath = slideRelPathOf(base);
   var baseRels = zip[baseRelPath] ? dec2.decode(zip[baseRelPath]) : '';
-  var nextRid = 1;
+  var state = { nextRid: 1, addRels: [] };
   var ridRe = /Id="rId(\\d+)"/g, rm;
-  while ((rm = ridRe.exec(baseRels)) !== null) nextRid = Math.max(nextRid, Number(rm[1]) + 1);
+  while ((rm = ridRe.exec(baseRels)) !== null) state.nextRid = Math.max(state.nextRid, Number(rm[1]) + 1);
 
   var shapes = parts.shapes.slice();
-  var addRels = [];
+  var adoptNotes = null;
   for (var k = 1; k < g.length; k++) {
-    var xml = dec2.decode(zip[g[k]]);
-    var pk = spTreeParts(xml);
-    if (!pk) return { ok: false, reason: 'spTree' };
-    var relPath = 'ppt/slides/_rels/' + g[k].split('/').pop() + '.rels';
-    var rels = zip[relPath] ? dec2.decode(zip[relPath]) : '';
-    var map = {};
-    var rre = /<Relationship Id="(rId\\d+)" Type="([^"]*)" Target="([^"]*)"\\s*\\/>/g, r2;
-    while ((r2 = rre.exec(rels)) !== null) {
-      if (/slideLayout$/.test(r2[2])) continue;
-      var nid = 'rId' + (nextRid++);
-      map[r2[1]] = nid;
-      addRels.push('<Relationship Id="' + nid + '" Type="' + r2[2] + '" Target="' + r2[3] + '"/>');
-    }
-    for (var s2 = 0; s2 < pk.shapes.length; s2++) {
-      var sx = pk.shapes[s2].xml;
-      for (var oldId in map) {
-        sx = sx.replace(new RegExp('r:embed="' + oldId + '"', 'g'), 'r:embed="' + map[oldId] + '"')
-               .replace(new RegExp('r:link="' + oldId + '"', 'g'), 'r:link="' + map[oldId] + '"');
-      }
-      shapes.push({ kind: pk.shapes[s2].kind, xml: sx });
-    }
+    var got = importShapes(zip, g[k], dec2, state);
+    if (!got) return { ok: false, reason: 'spTree' };
+    shapes = shapes.concat(got);
+    /* 畳んだスライドのノート（区間末尾の ::: notes は最後の 1 枚に付く）は
+       base に無ければ base のものにする。base が持っていれば捨てる */
+    var np = notesPartOf(zip, g[k], dec2);
+    if (np && !adoptNotes && !/notesSlide"/.test(baseRels)) adoptNotes = { part: np, from: g[k] };
   }
 
   /* タイトルはマスターの枠へ戻し、残りを本文領域へ順に積む */
@@ -1655,62 +1780,34 @@ function stackOneGroup(zip, g, dec2, bodyFrame, titleFrame, bodySz, tacName) {
   }
   if (!rest.length) return { ok: false, reason: 'empty' };
 
-  var items = rest.map(function (s) {
-    if (s.kind === 'sp') {
-      var h = stackTextHeight(s.xml, bodyFrame.w, bodySz);
-      return { s: s, h: h, min: h, flex: false, ar: 0 };
-    }
-    var f = parseXfrm(s.xml);
-    if (s.kind === 'pic') {
-      var ar = f && f.h > 0 ? f.w / f.h : 1;
-      var nat = Math.round(bodyFrame.w / ar);
-      return { s: s, h: nat, min: STACK_MIN_PIC, flex: true, ar: ar };
-    }
-    var rows = (s.xml.match(/<a:tr\\b/g) || []).length || 1;
-    var natT = rows * Math.round((bodySz / 100) * 1.5 * EMU_PER_PT + 91440);
-    return { s: s, h: natT, min: rows * STACK_MIN_ROW, flex: true, ar: 0 };
-  });
-  var gaps = STACK_GAP * (items.length - 1);
-  var minSum = items.reduce(function (a, b) { return a + b.min; }, 0) + gaps;
-  if (minSum > bodyFrame.h) return { ok: false, reason: 'overflow' };
-  var natSum = items.reduce(function (a, b) { return a + b.h; }, 0) + gaps;
-  if (natSum > bodyFrame.h) {
-    /* 可変（画像・表）を最小高まで詰める。足りなければ比例で */
-    var fixed = items.reduce(function (a, b) { return a + (b.flex ? b.min : b.h); }, 0) + gaps;
-    var room = bodyFrame.h - fixed;
-    var flexNat = items.reduce(function (a, b) { return a + (b.flex ? b.h - b.min : 0); }, 0);
-    var ratio = flexNat > 0 ? Math.max(0, Math.min(1, room / flexNat)) : 0;
-    for (var t2 = 0; t2 < items.length; t2++) {
-      if (items[t2].flex) items[t2].h = Math.round(items[t2].min + (items[t2].h - items[t2].min) * ratio);
-    }
-  }
+  var items = rest.map(function (s) { return measureStackItem(s, bodyFrame.w, bodySz); });
+  if (!fitStackItems(items, bodyFrame)) return { ok: false, reason: 'overflow' };
 
   var placed = [];
   if (title && titleFrame) placed.push(withXfrm(title.xml, 'sp', titleFrame));
   else if (title) placed.push(title.xml);
-  var y = bodyFrame.y;
+  var laid = layoutStackItems(items, bodyFrame);
   for (var q = 0; q < items.length; q++) {
-    var it = items[q];
-    var f2 = { x: bodyFrame.x, y: y, w: bodyFrame.w, h: it.h };
-    if (it.s.kind === 'pic' && it.ar > 0) {
-      var w2 = Math.min(bodyFrame.w, Math.round(it.h * it.ar));
-      f2 = { x: bodyFrame.x + Math.round((bodyFrame.w - w2) / 2), y: y, w: w2, h: it.h };
-    }
-    var sx2 = withXfrm(it.s.xml, it.s.kind, f2);
+    var sx2 = laid[q];
     /* 本文はレイアウトの全幅枠（idx=1）を指す。継承（文字サイズ・行頭記号・字下げ）を
        保ったまま、位置だけ自前で持つ。表・画像の ph は外す（枠は自前） */
-    if (it.s.kind === 'sp') sx2 = sx2.replace(/<p:ph\\b[^>]*\\/>/, '<p:ph idx="1"/>');
+    if (items[q].s.kind === 'sp') sx2 = sx2.replace(/<p:ph\\b[^>]*\\/>/, '<p:ph idx="1"/>');
     else sx2 = sx2.replace(/<p:ph\\b[^>]*\\/>/, '');
     placed.push(sx2);
-    y += it.h + STACK_GAP;
   }
-  /* 図形 ID の重複を解消（別スライドから持ってきたぶんは衝突している） */
-  var nid2 = 2;
-  var bodyXml = placed.map(function (x) {
-    return x.replace(/(<p:cNvPr\\b[^>]*\\bid=")\\d+(")/, function (all, a, b) { return a + (nid2++) + b; });
-  }).join('');
-  zip[base] = strToU8(baseXml.slice(0, parts.start) + parts.head + bodyXml + parts.tail + baseXml.slice(parts.end));
-  if (addRels.length) baseRels = baseRels.replace('</Relationships>', addRels.join('') + '</Relationships>');
+  writeSpTree(zip, base, baseXml, parts, placed);
+  if (adoptNotes) {
+    var nrid = 'rId' + (state.nextRid++);
+    state.addRels.push('<Relationship Id="' + nrid + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/' + adoptNotes.part.split('/').pop() + '"/>');
+    var nrp = 'ppt/notesSlides/_rels/' + adoptNotes.part.split('/').pop() + '.rels';
+    if (zip[nrp]) {
+      zip[nrp] = strToU8(dec2.decode(zip[nrp]).replace(
+        new RegExp('Target="\\\\.\\\\./slides/' + adoptNotes.from.split('/').pop() + '"'),
+        'Target="../slides/' + base.split('/').pop() + '"'));
+    }
+    keepNotes[adoptNotes.part] = true;
+  }
+  if (state.addRels.length) baseRels = baseRels.replace('</Relationships>', state.addRels.join('') + '</Relationships>');
   baseRels = baseRels.replace(/(Type="[^"]*slideLayout"\\s+Target=")[^"]*(")/, function (all, a, b) {
     return a + '../slideLayouts/' + tacName.split('/').pop() + b;
   });
@@ -1718,11 +1815,126 @@ function stackOneGroup(zip, g, dec2, bodyFrame, titleFrame, bodySz, tacName) {
   return { ok: true };
 }
 
-/* 畳んだスライドをパッケージから外す */
-function dropSlides(zip, gone, dec2) {
+/**
+ * 列の続きを base の列の枠へ積む。base は段組み（Two Content / Comparison）のスライドで、
+ * 各 extra は「列 q の 1 ブロック」（ノートの目印 morpho-column:q）。列の先頭ブロック
+ * （画像・表。pandoc がこれの後ろを消すか重ねるので逃がした）の下へ、原稿の順序のまま
+ * 並べる。枠はレイアウトの本文枠（列比の書き換え後）を x の重なりで列に束ねて決める */
+function stackIntoColumns(zip, g, marks, dec2, bodySz) {
+  var base = g[0];
+  var baseXml = dec2.decode(zip[base]);
+  var parts = spTreeParts(baseXml);
+  if (!parts) return { ok: false, reason: 'spTree' };
+  var baseRelPath = slideRelPathOf(base);
+  var baseRels = zip[baseRelPath] ? dec2.decode(zip[baseRelPath]) : '';
+  var lm = /Target="([^"]*slideLayout\\d+\\.xml)"/.exec(baseRels);
+  var layoutPath = lm ? lm[1].replace(/^\\.\\.\\//, 'ppt/') : null;
+  if (!layoutPath || !zip[layoutPath]) return { ok: false, reason: 'layout' };
+  var layoutPh = parsePlaceholderFrames(dec2.decode(zip[layoutPath]));
+
+  /* 本文系の枠を x の重なりで列に束ねる（Comparison は上下 2 枠で 1 列） */
+  var boxes = [];
+  for (var i = 0; i < layoutPh.length; i++) {
+    var ph = layoutPh[i];
+    if (!ph.frame || (ph.type && ph.type !== 'body' && ph.type !== 'obj')) continue;
+    boxes.push(ph);
+  }
+  boxes.sort(function (a, b) { return a.frame.x - b.frame.x; });
+  var clusters = [];
+  for (var bi = 0; bi < boxes.length; bi++) {
+    var f = boxes[bi].frame;
+    var hit = null;
+    for (var ci = 0; ci < clusters.length; ci++) {
+      var cf = clusters[ci][0].frame;
+      var ov = Math.min(f.x + f.w, cf.x + cf.w) - Math.max(f.x, cf.x);
+      if (ov > 0.5 * Math.min(f.w, cf.w)) { hit = clusters[ci]; break; }
+    }
+    if (hit) hit.push(boxes[bi]); else clusters.push([boxes[bi]]);
+  }
+  if (clusters.length < 2) return { ok: false, reason: 'columns' };
+
+  var byCol = {};
+  for (var k = 1; k < g.length; k++) {
+    var q0 = marks[k - 1];
+    if (!byCol[q0]) byCol[q0] = [];
+    byCol[q0].push(g[k]);
+  }
+  var state = { nextRid: 1, addRels: [] };
+  var ridRe = /Id="rId(\\d+)"/g, rm;
+  while ((rm = ridRe.exec(baseRels)) !== null) state.nextRid = Math.max(state.nextRid, Number(rm[1]) + 1);
+
+  var shapes = parts.shapes.slice();
+  var cols = Object.keys(byCol).map(Number).sort(function (a, b) { return a - b; });
+  for (var qi = 0; qi < cols.length; qi++) {
+    var q = cols[qi];
+    if (q < 1 || q > clusters.length) return { ok: false, reason: 'columns' };
+    /* 列の器はその列で最も大きい枠（Comparison なら上の小さな見出し枠ではなく下の本文枠） */
+    var cont = clusters[q - 1][0];
+    for (var cj = 1; cj < clusters[q - 1].length; cj++) {
+      var a = clusters[q - 1][cj].frame, b = cont.frame;
+      if (a.w * a.h > b.w * b.h) cont = clusters[q - 1][cj];
+    }
+    var cf2 = cont.frame;
+    /* 列の先頭ブロック = 器の中に中心がある画像・表 */
+    var hi = -1;
+    for (var si = 0; si < shapes.length; si++) {
+      if (shapes[si].kind === 'sp') continue;
+      var sf = parseXfrm(shapes[si].xml);
+      if (!sf) continue;
+      var cx = sf.x + sf.w / 2, cy = sf.y + sf.h / 2;
+      if (cx >= cf2.x && cx <= cf2.x + cf2.w && cy >= cf2.y && cy <= cf2.y + cf2.h) { hi = si; break; }
+    }
+    if (hi < 0) return { ok: false, reason: 'head' };
+    var extra = [];
+    for (var ei = 0; ei < byCol[q].length; ei++) {
+      var got = importShapes(zip, byCol[q][ei], dec2, state);
+      if (!got) return { ok: false, reason: 'spTree' };
+      for (var gj = 0; gj < got.length; gj++) {
+        if (got[gj].kind === 'sp' && hasTitlePh(got[gj].xml)) continue;
+        extra.push(got[gj]);
+      }
+    }
+    /* 列の文字サイズはレイアウトの枠が持つ（Two Content 21pt / Comparison 18pt。実測）。
+       無ければマスターの本文 */
+    var lvl = findInherited(layoutPh, cont.type, cont.idx, 'lvlStyle', true);
+    var sz = (lvl && lvl[0] && lvl[0].sz) || bodySz;
+    var items = [measureStackItem(shapes[hi], cf2.w, sz)];
+    for (var xi = 0; xi < extra.length; xi++) items.push(measureStackItem(extra[xi], cf2.w, sz));
+    if (!fitStackItems(items, cf2)) return { ok: false, reason: 'overflow' };
+    var laid = layoutStackItems(items, cf2);
+    /* テキストは器の ph を指して列の文字サイズ・行頭記号を継承する。画像・表の ph は外す */
+    var phTag = '<p:ph' + (cont.type ? ' type="' + cont.type + '"' : '') +
+      (cont.idx !== null ? ' idx="' + cont.idx + '"' : '') + '/>';
+    var placed = [];
+    for (var li = 0; li < laid.length; li++) {
+      var sx = laid[li];
+      if (items[li].s.kind === 'sp') {
+        if (/<p:ph\\b[^>]*\\/>/.test(sx)) sx = sx.replace(/<p:ph\\b[^>]*\\/>/, phTag);
+        else sx = sx.replace(/<p:nvPr\\s*\\/>/, '<p:nvPr>' + phTag + '</p:nvPr>');
+      } else {
+        sx = sx.replace(/<p:ph\\b[^>]*\\/>/, '');
+      }
+      placed.push({ kind: items[li].s.kind, xml: sx });
+    }
+    shapes = shapes.slice(0, hi).concat(placed, shapes.slice(hi + 1));
+  }
+  writeSpTree(zip, base, baseXml, parts, shapes.map(function (s) { return s.xml; }));
+  if (state.addRels.length) {
+    baseRels = baseRels.replace('</Relationships>', state.addRels.join('') + '</Relationships>');
+    zip[baseRelPath] = strToU8(baseRels);
+  }
+  return { ok: true };
+}
+
+/* 畳んだスライドをパッケージから外す。そのノートも外す（keep に無いもの） */
+function dropSlides(zip, gone, dec2, keep) {
   var pr = dec2.decode(zip['ppt/_rels/presentation.xml.rels']);
   var pres = dec2.decode(zip['ppt/presentation.xml']);
   var ct = dec2.decode(zip['[Content_Types].xml']);
+  var dropPart = function (part) {
+    ct = ct.replace(new RegExp('<Override PartName="/' + part.replace(/\\//g, '\\\\/') + '"[^>]*/>'), '');
+    delete zip[part];
+  };
   for (var i = 0; i < gone.length; i++) {
     var leaf = gone[i].split('/').pop();
     var m = new RegExp('<Relationship Id="(rId\\\\d+)"[^>]*Target="slides/' + leaf + '"\\\\s*/>').exec(pr);
@@ -1730,8 +1942,12 @@ function dropSlides(zip, gone, dec2) {
       pr = pr.replace(m[0], '');
       pres = pres.replace(new RegExp('<p:sldId[^>]*r:id="' + m[1] + '"\\\\s*/>'), '');
     }
-    ct = ct.replace(new RegExp('<Override PartName="/' + gone[i].replace(/\\//g, '\\\\/') + '"[^>]*/>'), '');
-    delete zip[gone[i]];
+    var np = notesPartOf(zip, gone[i], dec2);
+    if (np && !(keep && keep[np])) {
+      dropPart(np);
+      delete zip['ppt/notesSlides/_rels/' + np.split('/').pop() + '.rels'];
+    }
+    dropPart(gone[i]);
     delete zip['ppt/slides/_rels/' + leaf + '.rels'];
   }
   zip['ppt/_rels/presentation.xml.rels'] = strToU8(pr);
@@ -1743,11 +1959,21 @@ function dropSlides(zip, gone, dec2) {
 function stackDiags(r) {
   if (!r || !r.skipped || !r.skipped.length) return [];
   var s = r.skipped[0];
+  if (s.reason === 'overflow') {
+    return [{
+      kind: 'info',
+      label: '1 枚に収まらないので、このスライドは分かれたままです',
+      hint: '本文・表・図を縦に積むと本文枠に入りきりません。分量を減らすか、' +
+        '*** で自分でスライドを分けてください',
+      text: 'スライド ' + s.slide,
+      count: r.skipped.length
+    }];
+  }
   return [{
     kind: 'info',
-    label: '1 枚に収まらないので、このスライドは分かれたままです',
-    hint: '本文・表・図を縦に積むと本文枠に入りきりません。分量を減らすか、' +
-      '*** で自分でスライドを分けてください',
+    label: '列に積み直せなかったので、このスライドは分かれたままです',
+    hint: '画像・表の後ろに続く内容を同じ列へ戻せませんでした（' + s.reason + '）。' +
+      '*** で自分でスライドを分けるか、内容を減らしてください',
     text: 'スライド ' + s.slide,
     count: r.skipped.length
   }];
@@ -2386,25 +2612,48 @@ window.__morphoScanFences = scanFences;
 /* 段落 1 つぶんの画像 / パイプ表の先頭行 */
 var COL_IMAGE = /^[ \\t]*!\\[[^\\]]*\\]\\([^)]*\\)[ \\t]*$/;
 var COL_TABLE = /^[ \\t]*\\|/;
+/* 列から逃がした 1 ブロック 1 枚のスライドに付けるノートの目印（stackSegmentSlides が読む） */
+var COL_MARK = 'morpho-column:';
 
-/* 列の先頭ブロックの種別と、その後ろにブロックが続くか。
-   CLAUDE.md 落とし穴 13: 列の先頭が画像か表だと後続ブロックが全部消える */
-function colHead(colLines) {
-  var i = 0;
-  while (i < colLines.length && colLines[i].trim() === '') i++;
-  if (i >= colLines.length) return { kind: 'empty', more: false };
-  var kind = COL_IMAGE.test(colLines[i]) ? 'image'
-    : COL_TABLE.test(colLines[i]) ? 'table' : 'other';
-  var j = i;
-  while (j < colLines.length && colLines[j].trim() !== '') j++;
-  var more = false;
-  for (var k = j; k < colLines.length; k++) {
-    if (colLines[k].trim() !== '') { more = true; break; }
+/* 列の中身を「ブロック」（空行で区切られた塊）に切る。コードフェンスと fenced div は
+   中に空行があっても 1 塊。pandoc のブロック分割の近似で、目的は「占有ブロックの
+   後ろに何が続くか」を知ることだけ */
+function colBlocks(colLines) {
+  var scan = scanFences(colLines);
+  var blocks = [];
+  var cur = null;
+  var depth = 0;
+  for (var i = 0; i < colLines.length; i++) {
+    var line = colLines[i];
+    if (!scan.code[i] && depth === 0 && line.trim() === '') { cur = null; continue; }
+    if (!cur) { cur = []; blocks.push(cur); }
+    cur.push(line);
+    if (scan.code[i]) continue;
+    if (DIV_CLOSE.test(line)) { if (depth > 0) depth--; if (depth === 0) cur = null; }
+    else if (DIV_FENCE.test(line)) depth++;
   }
-  return { kind: kind, more: more };
+  return blocks;
 }
 
-function expandColumns(md) {
+/* 占有ブロック（単独の画像・パイプ表）。pptx のコンテンツ枠を独り占めする */
+function colBlockOccupied(block) {
+  if (!block.length) return false;
+  if (COL_TABLE.test(block[0])) return true;
+  return block.length === 1 && COL_IMAGE.test(block[0]);
+}
+
+/**
+ * \`+++\` の列区切りを pandoc の fenced div へ実現する。
+ * opts.overflow（pptx だけ）: 列の中で占有ブロック（画像・表）の後ろに続くブロックは、
+ * pandoc に渡すと**無警告で消える**（落とし穴 13）か**同じ枠に重ねて出る**
+ * （実測: 「本文 → 表 → 箇条書き」の箇条書きが表に被る）。列に残すのは最初の占有
+ * ブロックまでとし、続きは \`***\` で 1 ブロック 1 枚のスライドへ逃がして、変換後に
+ * stackSegmentSlides が列の枠へ積み直す。どの列の続きかはノートの目印で運ぶ。
+ * Web（html）は列に何でも置けるので逃がさない
+ */
+function expandColumns(md, opts) {
+  opts = opts || {};
+  var overflowOn = !!opts.overflow;
   /* CRLF 原稿（Windows 由来の .md）では各行末に \\r が残り、COL_SEP / COL_HR /
      COL_DIV_CLOSE が一致せず、段組みが無警告で 1 段のまま出ていた（実測:
      scripts/check-deck.mjs）。ここは変換器へ渡す派生テキストしか作らないので、
@@ -2469,28 +2718,20 @@ function expandColumns(md) {
     for (var c = 0; c < rel.length; c++) { cols.push(body.slice(prev, rel[c])); prev = rel[c] + 1; }
     cols.push(body.slice(prev));
 
-    /* 展開してはいけない形。展開すると後続が無警告で消えるので、
-       そのまま（1 段のまま）渡して診断を出す。内容の順序は変えない */
-    var unsafe = null;
-    for (var u = 0; u < cols.length; u++) {
-      var h = colHead(cols[u]);
-      if ((h.kind === 'image' || h.kind === 'table') && h.more) { unsafe = h.kind; break; }
-    }
-    if (unsafe) {
-      var what = unsafe === 'image' ? '画像' : '表';
-      diags.push({
-        kind: 'design',
-        label: what + 'の後ろの内容が消えるため段組みにしませんでした',
-        hint: what + 'を列の最後に置くか、*** で別のスライドにしてください',
-        text: '列の先頭が' + what + 'で、その後ろに内容が続いています',
-        count: 1
-      });
-      /* 段組みにはしないが、区切りは内容ではなく記法なので消費する。
-         残すと本文に生の +++ が出る（実測）。空行に置き換えて段落の切れ目は保つ。
-         消すのは区切りとして数えた行だけ（コードフェンスやノートの中は触らない） */
-      for (var y = 0; y < sepIdx.length; y++) seg[sepIdx[y]] = '';
-      out = out.concat(seg);
-      continue;
+    /* 列の中で占有ブロック（画像・表）の後ろに続くブロックは、pptx では列に残さず
+       \`***\` で 1 ブロック 1 枚のスライドへ逃がす（上の説明）。3 列目以降は捨てられるので対象外 */
+    var overflowSlides = [];
+    if (overflowOn) {
+      for (var oc = 0; oc < Math.min(cols.length, 2); oc++) {
+        var bl = colBlocks(cols[oc]);
+        var f = -1;
+        for (var bi = 0; bi < bl.length; bi++) { if (colBlockOccupied(bl[bi])) { f = bi; break; } }
+        if (f < 0 || f >= bl.length - 1) continue;
+        var keep = [];
+        for (var ki = 0; ki <= f; ki++) { if (ki) keep.push(''); keep = keep.concat(bl[ki]); }
+        cols[oc] = keep;
+        for (var ri = f + 1; ri < bl.length; ri++) overflowSlides.push({ col: oc + 1, lines: bl[ri] });
+      }
     }
 
     if (cols.length > 2) {
@@ -2512,7 +2753,14 @@ function expandColumns(md) {
       out.push(':::');
     }
     out.push(':::');
+    /* 区間末尾の ::: notes は段組みの直後（このスライドのノート）。逃がした
+       ブロックはその後ろに 1 枚ずつ。目印のノートで列番号を運ぶ */
     out = out.concat(seg.slice(tail));
+    for (var os = 0; os < overflowSlides.length; os++) {
+      out.push('', '***', '');
+      out = out.concat(overflowSlides[os].lines);
+      out.push('', '::: notes', COL_MARK + overflowSlides[os].col, ':::');
+    }
   }
   return { md: out.join('\\n'), diags: diags };
 }
@@ -3249,7 +3497,7 @@ async function doConvert(id, md, opts, format) {
     if (format === 'doc') { await doConvertDoc(id, md, opts); return; }
     /* 内容層の記法を pandoc の語彙へ実現する（原稿は書き換えない） */
     var ft = extractFooters(md, 'pptx', { hasDeckFooter: !!(opts.docFooter && opts.docFooter.text) });
-    var col = expandColumns(ft.md);
+    var col = expandColumns(ft.md, { overflow: true });
     md = col.md;
     var options = {
       from: READER,
@@ -3323,7 +3571,7 @@ async function doExport(id, md, opts, format) {
     /* 内容層の記法を pandoc の語彙へ実現する（原稿は書き換えない） */
     var ft = extractFooters(md, format === 'pptx' ? 'pptx' : format === 'docx' ? 'docx' : 'html',
       { hasDeckFooter: !!(opts.docFooter && opts.docFooter.text) });
-    var col = expandColumns(ft.md);
+    var col = expandColumns(ft.md, { overflow: format === 'pptx' });
     md = col.md;
     var extraDiags = ft.diags.concat(col.diags);
     var name = 'out.' + format;

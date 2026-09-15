@@ -193,6 +193,18 @@ export function usePandocConverter(): {
       style={styles.hidden}
       containerStyle={styles.hidden}
       onMessage={onMessage}
+      /* iOS はバックグラウンドの WKWebView のコンテンツプロセスを落とすことがある
+         （不可視でも 115 MB のヒープを持つので狙われやすい）。落ちたままだと
+         以後の変換が永久に返らず、プレビューも書き出しも黙って止まる。
+         待ちを断って読み直し、ready で預けたテンプレート・画像を復元する */
+      onContentProcessDidTerminate={() => {
+        isReady.current = false;
+        setStatus({ phase: 'idle' });
+        const waiting = Array.from(pending.current.values());
+        pending.current.clear();
+        waiting.forEach((p) => p.reject(new Error('変換器が停止したため読み直しています')));
+        webRef.current?.reload();
+      }}
       onError={(e) =>
         setStatus({ phase: 'error', message: 'WebView: ' + e.nativeEvent.description })
       }

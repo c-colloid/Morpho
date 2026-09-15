@@ -7,14 +7,16 @@
  *
  * 着地の規則（すべて pandoc 3.10 の実測から）:
  *  - 行の途中には絶対に入れない。前後に空行を確保して独立した段落にする
- *  - カーソルが列（`::: {.column}`）の中にあれば、その列の中身の末尾へ
- *  - 列の外なら、その区間に段組みがあれば最後の列の中へ。
- *    段組みの直下（どの列にも属さない位置）へ置くと、pandoc は
+ *  - **カーソルのある段落（空行で区切られた塊）の直後へ置く**（0.19.8）。
+ *    0.19.7 までは区間の末尾へ送っていた（「画像 → 本文」が 2 枚に割れるのを
+ *    避けるため）が、割れたスライドは変換器が 1 枚へ積み直す（`stackSegmentSlides`）
+ *    ようになったので、書き手の居る場所へ素直に置く。長いスライドで「一番下に
+ *    入る」と見えていたのはこの規則だった（実機フィードバック）
+ *  - 空行の上ならそこへ。見出し・`+++`・`***` の行の上なら、その直後へ
+ *  - `::: notes` の中とコードフェンスの中には入れない（ノートの手前・フェンスの後ろへ）
+ *  - pandoc ネイティブ記法の段組み（`::: {.columns}`）で列の外に着地するときは
+ *    列の中へ寄せる。段組みの直下（どの列にも属さない位置）へ置くと、pandoc は
  *    画像もテキストも無警告で捨て、しかも段組み自体が消えることがある（実測）
- *  - それ以外はカーソルのあるスライド区間の末尾へ。
- *    「本文 → 画像」は Content with Caption になって 1 枚に収まるが、
- *    「画像 → 本文」は 2 枚に割れる（実測）ので、必ず既存本文の後ろへ送る
- *  - `::: notes` の中とコードフェンスの中には入れない
  *
  * 占有ブロック（`beside` を立てたときだけ。0.19.7）:
  *  **横に並べるのは `+++` を書いた人の意思**で、挿入 UI が勝手に列を作ることはしない。
@@ -138,6 +140,19 @@ function closeOf(lines: Line[], i: number): number {
   return lines.length;
 }
 
+/** li 行目を含む最も外側の `::: notes` の開き行。ノートの外なら -1 */
+function notesOpenAt(lines: Line[], li: number): number {
+  const open: number[] = [];
+  for (let k = 0; k <= li; k++) {
+    if (lines[k].open) open.push(k);
+    else if (lines[k].close && k < li) open.pop();
+  }
+  for (const o of open) {
+    if ((lines[o].open as string[]).includes('notes')) return o;
+  }
+  return -1;
+}
+
 /** j 行目から遡って空行を飛ばした「中身の末尾の次の行」 */
 function trimBack(lines: Line[], from: number, to: number): number {
   let k = to;
@@ -203,17 +218,13 @@ export function insertBlock(
   for (let k = 0; k < lines.length; k++) {
     if (c >= lines[k].at && c <= lines[k].at + lines[k].text.length) { li = k; break; }
   }
-
-  let moved: InsertMove = cursor <= 0 ? 'front-matter' : null;
-  if (cursor <= 0 && seg.start > 0) moved = 'front-matter';
-  else if (cursor <= 0) moved = null;
-
-  /* 0. `+++`（列区切り）がある区間では、カーソルのいる列の末尾へ置く。
-     区間の末尾へ送ると最後の列に入ってしまい、書き手の意図と食い違う。
-     最後の列にいるときは下の「区間の末尾」の規則へ落ちる（notes と *** を越えない） */
-  const sepLines: number[] = [];
-  for (let k = 0; k < lines.length; k++) {
-    if (!lines[k].code && COLUMN_SEPARATOR.test(lines[k].text)) sepLines.push(k);
+  let moved: InsertMove = null;
+  if (cursor < 0) {
+    /* front matter の中にカーソルがある。本文の最初の行（見出し）の直後へ */
+    moved = 'front-matter';
+    for (let k = 0; k < lines.length; k++) {
+      if (lines[k].text.trim() !== '') { li = k; break; }
+    }
   }
   const beside = opts?.beside === true;
   /* 並べる先が埋まっているときの逃げ場。区間の末尾（`::: notes` の後ろ）へ
@@ -222,83 +233,116 @@ export function insertBlock(
   const toNewSlide = (): BlockInsertResult =>
     place(body, seg.end, '***\n\n' + block, 'new-slide');
 
-  if (sepLines.length) {
-    const next = sepLines.find((k) => k > li);
-    /* カーソルのいる列の範囲。`+++` の行そのものは含めない */
-    let prev = -1;
-    for (const k of sepLines) if (k <= li) prev = k;
-    if (beside && contentOf(lines, prev + 1, next ?? lines.length).occupied > 0) return toNewSlide();
-    if (next !== undefined) {
-      const end = trimBack(lines, 0, next);
-      return place(body, end < lines.length ? lines[end].at : seg.end, block, 'column');
-    }
+  /* 着地行 end（この行の手前に置く。lines.length なら区間の末尾）。
+     カーソルのある段落（空行で区切られた塊）の直後が基本 */
+  let end: number;
+  const notesOpen = notesOpenAt(lines, li);
+  if (lines[li].code) {
+    /* コードフェンスの中 → 閉じフェンスの次の行 */
+    let k = li;
+    while (k < lines.length && lines[k].code) k++;
+    end = k;
+    moved = moved ?? 'code';
+  } else if (notesOpen >= 0) {
+    /* `::: notes` の中（柵の行を含む）→ 最も外側のノートの開き柵の手前（ノートに埋もれない） */
+    end = trimBack(lines, 0, notesOpen);
+    moved = moved ?? 'notes';
+  } else if (lines[li].text.trim() === '') {
+    /* 空行の上ならそこへ */
+    end = li;
+  } else if (lines[li].open) {
+    /* 開き柵（`::: {.column}` 等）の上なら、その中の先頭へ */
+    end = li + 1;
+  } else if (lines[li].close) {
+    /* 閉じ柵の上なら、その手前（中身の末尾） */
+    end = trimBack(lines, 0, li);
+  } else {
+    /* 段落の末尾。空行・柵・コードフェンスで止まる */
+    let k = li + 1;
+    while (
+      k < lines.length &&
+      lines[k].text.trim() !== '' &&
+      !lines[k].open && !lines[k].close && !lines[k].code
+    ) k++;
+    end = k;
   }
 
-  /* 1. カーソルのいる列（無ければ区間の最後の列） */
+  /* pandoc ネイティブ記法の段組み（`::: {.columns}`）: 列の外へ置くと無警告で
+     消えることがあるので、列の中へ寄せる。着地点より前に開いた列があればその列、
+     無ければ最初の列。3 列目以降は pandoc が捨てる（落とし穴 11）ので 2 列まで */
   let colOpen = -1;
-  const st = stackAt(lines, li);
-  if (st.some((cl) => cl.includes('column') && !cl.includes('columns'))) {
-    for (let k = li; k >= 0; k--) {
-      const cl = lines[k].open;
-      if (cl && cl.includes('column') && !cl.includes('columns') && closeOf(lines, k) >= li) {
-        /* この列が段組みの何番目か。3 列目以降なら捨てられるので採らない */
-        let nth = 0;
-        for (let j = 0; j <= k; j++) {
-          const c2 = lines[j].open;
-          if (!c2) continue;
-          if (c2.includes('columns')) nth = 0;
-          if (c2.includes('column') && !c2.includes('columns')) nth++;
-        }
-        if (nth <= 2) colOpen = k;
-        break;
-      }
-    }
-    if (colOpen >= 0) moved = moved ?? 'column';
-  }
-  if (colOpen < 0) {
-    /* 3 列目以降は pandoc が無警告で捨てる（落とし穴 11）ので、
-       同じ段組みの中では先頭 2 列までしか着地点にしない */
+  {
     let nth = 0;
+    let first = -1;
+    let before = -1;
+    let inColumns = false;
     for (let k = 0; k < lines.length; k++) {
       const cl = lines[k].open;
-      if (!cl) continue;
-      if (cl.includes('columns')) nth = 0;
-      if (cl.includes('column') && !cl.includes('columns')) {
+      if (!cl) { if (lines[k].close && stackAt(lines, k).length === 1) inColumns = false; continue; }
+      if (cl.includes('columns')) { nth = 0; inColumns = true; continue; }
+      if (cl.includes('column') && inColumns) {
         nth++;
-        if (nth <= 2) colOpen = k;
+        if (nth > 2) continue;
+        if (first < 0) first = k;
+        if (k < end) before = k;
       }
     }
-    if (colOpen >= 0) moved = 'column';
+    if (first >= 0) {
+      const inside = stackAt(lines, Math.min(end, lines.length - 1))
+        .some((cl) => cl.includes('column') && !cl.includes('columns'));
+      const onLine = end < lines.length && lines[end].close &&
+        stackAt(lines, end).some((cl) => cl.includes('column') && !cl.includes('columns'));
+      if (!inside && !onLine) colOpen = before >= 0 ? before : first;
+      else if (inside || onLine) {
+        /* 3 列目以降の中なら 2 列目の末尾へ */
+        let n2 = 0;
+        for (let k = 0; k < end; k++) {
+          const cl = lines[k].open;
+          if (!cl) continue;
+          if (cl.includes('columns')) n2 = 0;
+          else if (cl.includes('column')) n2++;
+        }
+        if (n2 > 2) colOpen = before;
+      }
+    }
+  }
+  if (colOpen >= 0) {
+    const close = closeOf(lines, colOpen);
+    end = trimBack(lines, colOpen + 1, Math.min(close, lines.length));
+    moved = moved ?? 'column';
   }
 
-  let at: number;
-  if (colOpen >= 0) {
-    const end = closeOf(lines, colOpen);
-    if (beside && contentOf(lines, colOpen + 1, end).occupied > 0) return toNewSlide();
-    const k = trimBack(lines, colOpen + 1, Math.min(end, lines.length));
-    at = k < lines.length ? lines[k].at : body.length;
-  } else {
-    /* 2. 区間の末尾。末尾の空行・水平線・`::: notes` ブロックは越えない */
-    let end = trimBack(lines, 0, lines.length);
-    for (;;) {
-      if (end > 0 && /^ {0,3}([*_-])(?:[ \t]*\1){2,}[ \t]*$/.test(lines[end - 1].text)) {
-        end = trimBack(lines, 0, end - 1);
-        continue;
-      }
-      /* 末尾が最上位の notes div ならその手前へ */
-      let openLine = -1;
-      for (let k = 0; k < end; k++) {
-        if (lines[k].open && stackAt(lines, k).length === 0) {
-          if (closeOf(lines, k) === end - 1 && (lines[k].open as string[]).includes('notes')) openLine = k;
+  if (beside) {
+    /* 着地する列（`+++` の列・ネイティブの列）が占有ブロックで埋まっていれば新しいスライドへ。
+       列の無い区間は見ない（縦に並ぶぶんは変換器が積み直す） */
+    let from = -1;
+    let to = lines.length;
+    const colStack = stackAt(lines, Math.min(end, lines.length - 1));
+    if (colStack.some((cl) => cl.includes('column') && !cl.includes('columns'))) {
+      for (let k = Math.min(end, lines.length) - 1; k >= 0; k--) {
+        const cl = lines[k].open;
+        if (cl && cl.includes('column') && !cl.includes('columns') && closeOf(lines, k) >= end) {
+          from = k + 1;
+          to = closeOf(lines, k);
+          break;
         }
       }
-      if (openLine >= 0) { end = trimBack(lines, 0, openLine); moved = 'notes'; continue; }
-      break;
+    } else {
+      let seps = 0;
+      for (let k = 0; k < lines.length; k++) {
+        if (lines[k].code || !COLUMN_SEPARATOR.test(lines[k].text)) continue;
+        seps++;
+        if (k < end) from = k + 1;
+        else { to = k; break; }
+      }
+      if (seps > 0 && from < 0) from = 0;
     }
-    if (moved === null && end - 1 !== li) moved = lines[li].code ? 'code' : 'block';
-    at = end < lines.length ? lines[end].at : seg.end;
-    if (end >= lines.length) at = seg.end;
+    if (from >= 0 && contentOf(lines, from, to).occupied > 0) return toNewSlide();
   }
+
+  /* 行の途中から段落の直後へ動かしたときだけ 'block'（空行の上ならその場） */
+  if (moved === null && lines[li].text.trim() !== '') moved = 'block';
+  const at = end < lines.length ? lines[end].at : seg.end;
   return place(body, at, block, moved);
 }
 
