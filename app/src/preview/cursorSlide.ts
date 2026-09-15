@@ -112,3 +112,20 @@ export function slideIndexAtCursor(
   }
   return slide + (hasTitleSlide ? 1 : 0);
 }
+
+/**
+ * 区間ごとに「`# ` の見出しを持つか」を返す。
+ *
+ * 変換器はこれを手がかりに、pandoc が 1 区間を複数枚に割ったスライドを
+ * 1 枚へ戻して原稿の順序どおり縦に積む（ブリッジの `stackSegmentSlides`）。
+ * 見出しの無い区間が続くところは境界が判らないので変換器が触らない —
+ * その判断材料がこの真偽値。
+ */
+export function segmentHeadings(body: string): Array<{ heading: boolean }> {
+  return slideSegments(body).map((seg) => ({
+    heading: body
+      .slice(seg.start, seg.end)
+      .split('\n')
+      .some((l) => /^#[ \t]/.test(stripCr(l))),
+  }));
+}

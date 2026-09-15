@@ -15,11 +15,36 @@
  *    「本文 → 画像」は Content with Caption になって 1 枚に収まるが、
  *    「画像 → 本文」は 2 枚に割れる（実測）ので、必ず既存本文の後ろへ送る
  *  - `::: notes` の中とコードフェンスの中には入れない
+ *
+ * 占有ブロック（`beside` を立てたときだけ。0.19.7）:
+ *  **横に並べるのは `+++` を書いた人の意思**で、挿入 UI が勝手に列を作ることはしない。
+ *  素直に縦へ置けば、割れたスライドは変換器が 1 枚へ積み直す（`stackSegmentSlides`）。
+ *  ここで見るのは「置くと壊れる場所」だけ:
+ *  - 着地する列に占有ブロック（単独画像・表）が既にあるとき。列の中で重ねると
+ *    段組みごと壊れて 3 枚に割れ、3 列目を作れば無警告で消える（実測）。
+ *    この 2 つは積み直しでも直せないので、`***` で新しいスライドを起こして逃がす
+ *
+ * | 原稿 | pandoc | 積み直し後 |
+ * |---|---|---|
+ * | 画像 → 画像（素直に縦へ） | 2 枚 | **1 枚**（縦に並ぶ） |
+ * | 本文 → 表 → 本文 | 2 枚 | **1 枚**（原稿の順序のまま） |
+ * | 画像 `+++` 画像 | **1 枚**（Two Content・横に並ぶ） | そのまま |
+ * | 画像 `+++` 画像 `+++` 画像 | 1 枚 | **3 つ目が消える**（INFO 1 件だけ） |
+ * | 列の中で 画像 → 画像 | 3 枚 | 段組みが壊れているので積み直しも効かない |
  */
 import { slideSegments } from '../preview/cursorSlide.ts';
 import { COLUMN_SEPARATOR } from './columns.ts';
+import { isImageOnlyLine } from './imageLinks.ts';
 
-export type InsertMove = null | 'block' | 'column' | 'notes' | 'code' | 'front-matter';
+export type InsertMove =
+  | null
+  | 'block'
+  | 'column'
+  | 'notes'
+  | 'code'
+  | 'front-matter'
+  /** 置く先の列が占有ブロックで埋まっていたので `***` で新しいスライドを起こした */
+  | 'new-slide';
 
 export interface BlockInsertResult {
   /** 差し替え後の本文 */
@@ -120,7 +145,48 @@ function trimBack(lines: Line[], from: number, to: number): number {
   return k;
 }
 
-export function insertBlock(body: string, cursor: number, block: string): BlockInsertResult {
+/**
+ * 行 from..to（to は含まない）の中身。
+ *
+ * `occupied` は占有ブロック（単独画像・表）の数。pptx のコンテンツ枠を独り占めするので、
+ * 列の中で 2 つ目を重ねると段組みごと壊れる（落とし穴 5・13）。
+ *
+ * from の時点で開いている div は数に入れない前提で、ここから開く div の中
+ * （`::: notes` や列の入れ子）とコードフェンスの中は数えない。
+ */
+function contentOf(lines: Line[], from: number, to: number): { occupied: number } {
+  let depth = 0;
+  let inTable = false;
+  let occupied = 0;
+  for (let k = from; k < Math.min(to, lines.length); k++) {
+    const ln = lines[k];
+    if (ln.open) { depth++; inTable = false; continue; }
+    if (ln.close) { if (depth > 0) depth--; inTable = false; continue; }
+    if (ln.code || depth > 0) { inTable = false; continue; }
+    const text = ln.text.trim();
+    if (text === '') { inTable = false; continue; }
+    /* 表は連続する `|` 行でひとかたまり。区切り行だけの `|---|` も同じ塊 */
+    if (/^ {0,3}\|/.test(text)) { if (!inTable) occupied++; inTable = true; continue; }
+    inTable = false;
+    if (isImageOnlyLine(ln.text)) occupied++;
+  }
+  return { occupied };
+}
+
+export function insertBlock(
+  body: string,
+  cursor: number,
+  block: string,
+  opts?: {
+    /**
+     * 占有ブロック（画像・表）として置く。着地する列が既に占有ブロックで
+     * 埋まっているときだけ `***` で新しいスライドを起こす（列の中で重ねると
+     * 段組みごと壊れるため）。画像の挿入だけが立てる。
+     * 横に並べるかどうかは書き手が `+++` で決める — ここでは列を作らない
+     */
+    beside?: boolean;
+  },
+): BlockInsertResult {
   if (body.trim() === '') {
     const b = block + '\n';
     return { body: b, cursor: block.length, moved: null };
@@ -149,8 +215,19 @@ export function insertBlock(body: string, cursor: number, block: string): BlockI
   for (let k = 0; k < lines.length; k++) {
     if (!lines[k].code && COLUMN_SEPARATOR.test(lines[k].text)) sepLines.push(k);
   }
+  const beside = opts?.beside === true;
+  /* 並べる先が埋まっているときの逃げ場。区間の末尾（`::: notes` の後ろ）へ
+     `***` ごと送って新しいスライドを起こす。3 列目は無警告で消え、
+     列の中で占有ブロックを重ねると段組みごと壊れて割れる（実測） */
+  const toNewSlide = (): BlockInsertResult =>
+    place(body, seg.end, '***\n\n' + block, 'new-slide');
+
   if (sepLines.length) {
     const next = sepLines.find((k) => k > li);
+    /* カーソルのいる列の範囲。`+++` の行そのものは含めない */
+    let prev = -1;
+    for (const k of sepLines) if (k <= li) prev = k;
+    if (beside && contentOf(lines, prev + 1, next ?? lines.length).occupied > 0) return toNewSlide();
     if (next !== undefined) {
       const end = trimBack(lines, 0, next);
       return place(body, end < lines.length ? lines[end].at : seg.end, block, 'column');
@@ -197,6 +274,7 @@ export function insertBlock(body: string, cursor: number, block: string): BlockI
   let at: number;
   if (colOpen >= 0) {
     const end = closeOf(lines, colOpen);
+    if (beside && contentOf(lines, colOpen + 1, end).occupied > 0) return toNewSlide();
     const k = trimBack(lines, colOpen + 1, Math.min(end, lines.length));
     at = k < lines.length ? lines[k].at : body.length;
   } else {

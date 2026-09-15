@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LatestOnly } from '../converter/latestOnly';
 import { sanitizeForXml, splitFrontMatter } from '../converter/frontMatter';
 import { normalizeImageLinks } from '../text/imageLinks';
+import { segmentHeadings } from '../preview/cursorSlide';
 import type {
   ConvertResult,
   Converter,
@@ -88,6 +89,9 @@ export function usePreviewSync(args: {
               resultRef.current?.deck?.bodySz ?? [2400, 2100, 1800, 1500, 1500],
             ),
             captionTitle: d.captionTitle,
+            /* 原稿の区間。pandoc が 1 区間を複数枚に割ったとき、
+               変換器が 1 枚へ戻して原稿の順序どおり縦に積むのに使う */
+            segments: segmentHeadings(body),
             /* docx / Web のデッキ全体フッター。pptx は帯をアプリ側で描くので不要 */
             docFooter: toDocFooter(metadata.footer, d.footer),
             /* テーマ（第2層）。配色はこの文書の deck で解決する（初回は pandoc 既定） */

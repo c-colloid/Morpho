@@ -398,6 +398,12 @@ export interface ConvertOptions {
    */
   captionTitle?: 'narrow' | 'band';
   /**
+   * 原稿のスライド区間（`slideSegments` と同じ並び。`heading` は区間に `# ` があるか）。
+   * pptx のみ。pandoc が 1 区間を複数枚に割ったとき、これを手がかりに 1 枚へ戻して
+   * 原稿の順序どおり縦に積む（`stackSegmentSlides`）。渡さなければ積み直さない
+   */
+  segments?: Array<{ heading: boolean }>;
+  /**
    * フッター（出典・注釈）の帯と体裁。pptx のみ。他形式では無視される。
    * 座標は解決済みの EMU で渡す（装飾と同じ流儀 — テンプレートの帯を読むのも
    * 比率の既定値へ落とすのもアプリ側の仕事で、変換器は書くだけ）。

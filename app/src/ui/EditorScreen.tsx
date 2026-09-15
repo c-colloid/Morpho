@@ -70,7 +70,7 @@ import type {
   TextRun,
   WebResult,
 } from '../converter/types';
-import { slideIndexAtCursor, slideSegments } from '../preview/cursorSlide';
+import { segmentHeadings, slideIndexAtCursor, slideSegments } from '../preview/cursorSlide';
 import { getNotes, setNotes } from '../preview/notesEdit.ts';
 import {
   locateEditable,
@@ -640,9 +640,17 @@ export default function EditorScreen() {
       /* 位置決めは純関数へ。フェンス行を割らず、必ず単独の段落として入れる */
       const { body } = splitFrontMatter(baseSource);
       const fmLen = baseSource.length - body.length;
-      const r = insertBlock(body, baseCursor - fmLen, '![](' + name + ')');
+      /* 画像は占有ブロック。素直に縦へ置き（横に並べるかは書き手が `+++` で決める）、
+         置く先の列が画像・表で埋まっているときだけ `***` で新しいスライドを起こす */
+      const r = insertBlock(body, baseCursor - fmLen, '![](' + name + ')', { beside: true });
       patchBody(r.body, fmLen + r.cursor);
       await flushSave();
+      if (r.moved === 'new-slide') {
+        Alert.alert(
+          '新しいスライドに置きました',
+          '横に並べた列が画像・表で埋まっていました。同じ列に重ねると段組みごと崩れるので、新しいスライドにしています',
+        );
+      }
     } catch (e) {
       Alert.alert('画像を挿入できませんでした', String(e instanceof Error ? e.message : e));
     }
@@ -1765,6 +1773,9 @@ export default function EditorScreen() {
             ),
             docFooter: toDocFooter(splitFrontMatter(src).metadata.footer, design.footer),
             captionTitle: design.captionTitle,
+            /* 区間。プレビューと同じものを渡さないと、割れたスライドの畳み方が
+               書き出しだけ変わって装飾のスライド番号がずれる */
+            segments: segmentHeadings(splitFrontMatter(src).body),
             useTemplate: design.template !== undefined,
             theme: compileTheme(resolveTheme(design.theme), resultRef.current?.deck?.colors ?? {}),
           });

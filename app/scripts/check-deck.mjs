@@ -8,7 +8,8 @@ import { createContext, runInContext } from 'node:vm';
 import assert from 'node:assert/strict';
 import { unzipSync, zipSync, strToU8, strFromU8 } from 'fflate';
 import { convert } from '../node_modules/pandoc-wasm/src/index.node.js';
-import { slideSegments } from '../src/preview/cursorSlide.ts';
+import { segmentHeadings, slideSegments } from '../src/preview/cursorSlide.ts';
+import { insertBlock } from '../src/text/blockInsert.ts';
 
 const src = readFileSync(new URL('../src/converter/bridgeHtml.ts', import.meta.url), 'utf8');
 const decl = src.indexOf('export const BRIDGE_HTML');
@@ -837,6 +838,33 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
     const notes = hc.sc.slides[1].notes.map((p) => p.runs.map((r) => r.text).join('')).join('');
     assert.equal(notes, 'ノート');
   });
+
+  /* 手で書いた「本文 + 表」は挿入 UI を通らない。pandoc は Content with Caption を
+     選んで本文を 24pt → 10.5pt・幅 9.00in → 3.29in にするが、非 INFO の警告は
+     ゼロなので、変換器が情報診断にして書き手へ返す（積み直せなかったときの最後の網） */
+  {
+    const cap = await run('# 見出し\n\n表の上の文章。\n\n| a | b |\n|---|---|\n| 1 | 2 |\n');
+    t('本文 + 表: Content with Caption で本文が縮み、非 INFO 警告は出ない', () => {
+      assert.equal(cap.nonInfo.length, 0, JSON.stringify(cap.nonInfo));
+      assert.equal(cap.sc.slides[0].layout, 'Content with Caption');
+      const b0 = cap.sc.slides[0].shapes.find((sh) => sh.placeholder !== 'title' && sh.paragraphs.length);
+      assert.equal(b0.lvlStyle[0].sz, 1050, '本文の実効サイズ');
+      assert.equal(cap.sc.deck.bodySz[0], 2400);
+    });
+    t('本文 + 表: 縮んだことを情報診断で返す', () => {
+      const d = win.__morphoCaptionBodyDiags(cap.sc);
+      assert.equal(d.length, 1, JSON.stringify(d));
+      assert.equal(d[0].kind, 'info');
+      assert.match(d[0].text, /24pt → 10\.5pt/);
+      assert.match(d[0].hint, /\+\+\+/);
+    });
+    const capCols = await run('# 見出し\n\n表の上の文章。\n\n+++\n\n| a | b |\n|---|---|\n| 1 | 2 |\n');
+    t('+++ で列に分ければ本文の大きさが戻り、診断も出ない', () => {
+      assert.notEqual(capCols.sc.slides[0].layout, 'Content with Caption');
+      /* vm 側の配列はレルムが違うので length で見る（check-scene の注意と同じ） */
+      assert.equal(win.__morphoCaptionBodyDiags(capCols.sc).length, 0);
+    });
+  }
 }
 
 /* ---------- 表・図と並ぶスライド（Content with Caption）のタイトル ---------- */
@@ -983,6 +1011,158 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
   t('fitTitleSz: 目標が下限以下なら目標のまま（書き手の指定が勝つ）', () => {
     assert.equal(win.__morphoFitTitleSz(['見出し'], 200, 60, 1200, 1500), 1200);
   });
+}
+
+/* ---------- 割れたスライドを 1 枚へ戻して縦に積む（0.19.7） ----------
+   pptx にはコンテンツ枠が 1 枚に 1 つしか無く、pandoc は「本文 → 表 → 本文」を
+   無警告で複数枚に割る。書き手は縦に並ぶつもりで書いているので、変換後の OOXML で
+   原稿の順序のまま 1 枚へ積み直す。ここは「本当に 1 枚になり、順序が変わらず、
+   ブロックが重ならない」ことの検査 */
+{
+  const PNG2 = Uint8Array.from(
+    atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='),
+    (c) => c.charCodeAt(0),
+  );
+  const segCount = (md) => slideSegments(md).length;
+  let validateOoxml = null;
+  try { validateOoxml = (await import('@ooxml-tools/validate')).default; } catch { /* 任意 */ }
+  const stackRun = async (md, meta) => {
+    const o = { from: 'markdown-yaml_metadata_block', to: 'pptx', 'output-file': 's.pptx' };
+    if (meta) o.metadata = meta;
+    const r = await convert(o, md, { 'z.png': new Blob([PNG2]) });
+    const z = unzipSync(new Uint8Array(await r.files['s.pptx'].arrayBuffer()));
+    const before = win.__morphoParsePptxZip(z).slideCount;
+    const st = win.__morphoStackSegmentSlides(z, segmentHeadings(md));
+    return {
+      before, st, zip: z,
+      sc: win.__morphoParsePptxZip(z),
+      nonInfo: r.warnings.filter((w) => w.verbosity !== 'INFO'),
+      diags: Array.from(win.__morphoStackDiags(st)),
+    };
+  };
+  /* スライドの中身を上から順に並べる（種類と枠） */
+  const layoutOrder = (sl) => {
+    const items = [];
+    for (const sh of sl.shapes) {
+      if (sh.placeholder === 'title' || sh.placeholder === 'ctrTitle') continue;
+      items.push({ y: sh.frame.y, h: sh.frame.h, kind: 'text', text: sh.paragraphs.map((p) => p.runs.map((x) => x.text).join('')).join('') });
+    }
+    for (const t of sl.tables) items.push({ y: t.y, h: t.h, kind: 'table', text: 'rows=' + t.rowCount });
+    for (const im of sl.images) items.push({ y: im.y, h: im.h, kind: 'image', text: im.name });
+    items.sort((a, b) => a.y - b.y);
+    return items;
+  };
+
+  const TBL = '| 項目 | 値 |\n|---|---|\n| あ | 1 |\n| い | 2 |\n';
+  const sandwich = '# 見出し\n\n表の上の文章です。\n\n' + TBL + '\n表の下の文章です。\n';
+  const s1 = await stackRun(sandwich);
+  t('縦積み: 「本文 → 表 → 本文」が 1 枚になり、原稿の順序のまま縦に並ぶ', () => {
+    assert.equal(s1.before, 2, '前提: pandoc は 2 枚に割る');
+    assert.equal(s1.sc.slideCount, 1);
+    assert.equal(s1.sc.slideCount, segCount(sandwich), '枚数と区間数が一致しない');
+    const items = layoutOrder(s1.sc.slides[0]);
+    assert.deepEqual(items.map((i) => i.kind), ['text', 'table', 'text']);
+    assert.equal(items[0].text, '表の上の文章です。');
+    assert.equal(items[2].text, '表の下の文章です。');
+  });
+  t('縦積み: ブロックが重ならない（次の上端 >= 前の下端）', () => {
+    const items = layoutOrder(s1.sc.slides[0]);
+    for (let i = 1; i < items.length; i++) {
+      assert.ok(items[i].y >= items[i - 1].y + items[i - 1].h,
+        '重なっている: ' + JSON.stringify(items));
+    }
+  });
+  t('縦積み: 本文もタイトルも全幅の枠に戻る（Content with Caption の狭い枠を抜ける）', () => {
+    assert.equal(s1.sc.slides[0].layout, 'Title and Content');
+    assert.equal(win.__morphoCaptionBodyDiags(s1.sc).length, 0);
+    for (const sh of s1.sc.slides[0].shapes) assert.ok(sh.frame.w >= 8229600, JSON.stringify(sh.frame));
+  });
+  t('縦積み: 非 INFO の警告は増えない', () => {
+    assert.equal(s1.nonInfo.length, 0, JSON.stringify(s1.nonInfo));
+    assert.equal(s1.diags.length, 0);
+  });
+
+  const four = '# 見出し\n\n上の文章。\n\n' + TBL + '\n下の文章。\n\n![](z.png)\n';
+  const s2 = await stackRun(four);
+  t('縦積み: 本文・表・本文・画像の 4 ブロックでも 1 枚に順序どおり', () => {
+    assert.equal(s2.sc.slideCount, 1);
+    assert.deepEqual(layoutOrder(s2.sc.slides[0]).map((i) => i.kind), ['text', 'table', 'text', 'image']);
+  });
+
+  const s3 = await stackRun(sandwich, { title: '表紙' });
+  t('縦積み: front matter の表紙があってもずれない', () => {
+    assert.equal(s3.before, 3);
+    assert.equal(s3.sc.slideCount, 2);
+    assert.equal(s3.sc.slides[0].layout, 'Title Slide');
+    assert.deepEqual(layoutOrder(s3.sc.slides[1]).map((i) => i.kind), ['text', 'table', 'text']);
+  });
+
+  /* 安全弁: 見出しの無い区間が続くと、割れた続きなのか次の区間なのか区別できない */
+  const ambiguous = '# A\n\n上の文章。\n\n' + TBL + '\n下の文章。\n\n***\n\n次の区間\n';
+  const s4 = await stackRun(ambiguous);
+  t('縦積み: 見出しの無い区間が続くときは畳まない（別の区間を巻き込まない）', () => {
+    assert.equal(s4.sc.slideCount, s4.before, '曖昧なのに畳んだ');
+    const last = s4.sc.slides[s4.sc.slideCount - 1];
+    /* vm 側の配列はレルムが違うので文字列に畳んで比べる（check-scene の注意と同じ） */
+    const texts = Array.from(last.shapes).map((sh) => Array.from(sh.paragraphs)
+      .map((p) => Array.from(p.runs).map((x) => x.text).join('')).join('|')).join('|');
+    assert.equal(texts, '次の区間', '別の区間の内容が混ざった: ' + texts);
+  });
+
+  /* 収まらないときは畳まず、理由を返す */
+  const tooMuch = '# 見出し\n\n' + '長い文章をたくさん書きます。'.repeat(12) + '\n\n' + TBL + '\n' + 'さらに長い文章を書きます。'.repeat(12) + '\n';
+  const s5 = await stackRun(tooMuch);
+  t('縦積み: 1 枚に収まらないときは畳まず、情報診断で返す', () => {
+    assert.equal(s5.sc.slideCount, s5.before);
+    assert.equal(s5.diags.length, 1, JSON.stringify(s5.diags));
+    assert.equal(s5.diags[0].kind, 'info');
+  });
+
+  /* 割れていない原稿は 1 バイトも変えない */
+  const plain = '# A\n\n本文だけ。\n\n# B\n\n左\n\n+++\n\n右\n';
+  const s6 = await stackRun(plain);
+  t('縦積み: 割れていない原稿には触らない', () => {
+    assert.equal(s6.sc.slideCount, s6.before);
+    assert.equal(s6.st.stacked.length, 0);
+    assert.equal(s6.st.skipped.length, 0);
+  });
+
+  /* 挿入 UI が作る原稿の往復。横に並べるかは書き手が `+++` で決めるので、
+     画像を続けて貼っても列は作らない。割れたぶんはここで縦に積み直される */
+  let ins = '# 見出し\n\n本文です。\n';
+  const moves = [];
+  for (let i = 0; i < 3; i++) {
+    const r = insertBlock(ins, ins.length, '![](z.png)', { beside: true });
+    ins = r.body;
+    moves.push(r.moved);
+  }
+  const s7 = await stackRun(ins);
+  t('縦積み: 画像を続けて 3 枚貼っても列は作らず、1 枚に縦へ積まれる', () => {
+    assert.ok(!ins.includes('+++'), '勝手に列を作った:\n' + ins);
+    assert.equal(s7.sc.slideCount, 1, ins);
+    assert.equal(s7.sc.slideCount, segCount(ins), '枚数と区間数が食い違う');
+    assert.deepEqual(layoutOrder(s7.sc.slides[0]).map((i) => i.kind), ['text', 'image', 'image', 'image']);
+    assert.equal(s7.sc.slides[0].images.length, 3, '画像が消えた');
+  });
+  t('縦積み: 3 枚の画像も重ならない', () => {
+    const items = layoutOrder(s7.sc.slides[0]);
+    for (let i = 1; i < items.length; i++) {
+      assert.ok(items[i].y >= items[i - 1].y + items[i - 1].h, '重なっている: ' + JSON.stringify(items));
+    }
+  });
+
+  if (validateOoxml) {
+    const errs = [
+      (await validateOoxml(zipSync(s1.zip), 'pptx', 'Microsoft365')).length,
+      (await validateOoxml(zipSync(s2.zip), 'pptx', 'Microsoft365')).length,
+      (await validateOoxml(zipSync(s3.zip), 'pptx', 'Microsoft365')).length,
+    ];
+    t('縦積み: Open XML の妥当性が 0 件のまま', () => {
+      assert.deepEqual(errs, [0, 0, 0]);
+    });
+  } else {
+    console.log('  skip 縦積みの妥当性検証（npm install --no-save @ooxml-tools/validate で有効になる）');
+  }
 }
 
 console.log(`\n${n} 件すべて通過`);
