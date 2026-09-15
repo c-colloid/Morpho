@@ -839,48 +839,10 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
     assert.equal(notes, 'ノート');
   });
 
-  /* ---- 挿入 UI が作る原稿の往復（0.19.6。画像を続けて貼る） ----
-     pptx はコンテンツ枠を 1 枚に 1 つしか持てず、素直に足すと pandoc が
-     無警告でスライドを割る（区間数と枚数が食い違い contentIndexOf が止まる）。
-     blockInsert が `+++`（横へ並べる）と `***`（新しいスライド）を選ぶので、
-     ここでは「その結果が本当に 1 枚に収まり、画像が 1 枚も消えない」を見る */
+  /* 手で書いた「本文 + 表」は挿入 UI を通らない。pandoc は Content with Caption を
+     選んで本文を 24pt → 10.5pt・幅 9.00in → 3.29in にするが、非 INFO の警告は
+     ゼロなので、変換器が情報診断にして書き手へ返す（積み直せなかったときの最後の網） */
   {
-    let body = '# 見出し\n\n本文です。\n';
-    const moves = [];
-    for (let i = 0; i < 3; i++) {
-      const r = insertBlock(body, body.length, '![](z.png)', { beside: true });
-      body = r.body;
-      moves.push(r.moved);
-    }
-    const r3 = await run(body);
-    t('画像を続けて貼る: 本文の横へ並べ、列が埋まったら新しいスライドを起こす', () => {
-      assert.deepEqual(moves, ['beside', 'new-slide', 'beside'], body);
-    });
-    t('画像を続けて貼る: 枚数と区間数が一致し、画像が 1 枚も消えない', () => {
-      assert.equal(r3.nonInfo.length, 0, JSON.stringify(r3.nonInfo));
-      assert.equal(r3.sc.slideCount, segs(body), '枚数と区間数が食い違う:\n' + body);
-      assert.equal(r3.sc.slides.reduce((a, s) => a + s.images.length, 0), 3, '画像が消えた:\n' + body);
-    });
-    t('画像を続けて貼る: 1 枚目は本文の横、2 枚目に残りが 2 つ並ぶ', () => {
-      assert.equal(r3.sc.slideCount, 2);
-      assert.equal(r3.sc.slides[0].images.length, 1);
-      assert.equal(r3.sc.slides[1].images.length, 2);
-      const texts = r3.sc.slides[0].shapes.flatMap((s) => s.paragraphs.map((p) => p.runs.map((x) => x.text).join('')));
-      assert.ok(texts.includes('本文です。'), JSON.stringify(texts));
-    });
-    t('画像を続けて貼る: 本文が Content with Caption の狭い枠へ落ちない', () => {
-      /* 素直に足すと Content with Caption が選ばれ、本文は 24pt → 10.5pt・
-         幅 9.00in → 3.29in になる（実測・警告ゼロ）。`+++` なら 21pt・4.42in */
-      assert.notEqual(r3.sc.slides[0].layout, 'Content with Caption');
-      const body0 = r3.sc.slides[0].shapes.find((sh) => sh.placeholder === 'body');
-      const sz = (body0.lvlStyle && body0.lvlStyle[0] && body0.lvlStyle[0].sz) || r3.sc.deck.bodySz[0];
-      assert.ok(sz >= 2100, '本文が縮んだ: ' + sz);
-      assert.ok(body0.frame.w >= 4038600, '本文枠が狭くなった: ' + body0.frame.w);
-    });
-
-    /* 手で書いた「本文 + 表」は挿入 UI を通らない。pandoc は Content with Caption を
-       選んで本文を 24pt → 10.5pt・幅 9.00in → 3.29in にするが、非 INFO の警告は
-       ゼロなので、変換器が情報診断にして書き手へ返す */
     const cap = await run('# 見出し\n\n表の上の文章。\n\n| a | b |\n|---|---|\n| 1 | 2 |\n');
     t('本文 + 表: Content with Caption で本文が縮み、非 INFO 警告は出ない', () => {
       assert.equal(cap.nonInfo.length, 0, JSON.stringify(cap.nonInfo));
@@ -901,17 +863,6 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
       assert.notEqual(capCols.sc.slides[0].layout, 'Content with Caption');
       /* vm 側の配列はレルムが違うので length で見る（check-scene の注意と同じ） */
       assert.equal(win.__morphoCaptionBodyDiags(capCols.sc).length, 0);
-    });
-
-    let tb = '# 見出し\n\n表の説明。\n\n| a | b |\n|---|---|\n| 1 | 2 |\n';
-    const rt = insertBlock(tb, tb.length, '![](z.png)', { beside: true });
-    const rtc = await run(rt.body);
-    t('表のあるスライドへ画像を貼る: 横へ並び、表も画像も残って 1 枚', () => {
-      assert.equal(rt.moved, 'beside');
-      assert.equal(rtc.nonInfo.length, 0, JSON.stringify(rtc.nonInfo));
-      assert.equal(rtc.sc.slideCount, segs(rt.body));
-      assert.equal(rtc.sc.slides[0].images.length, 1);
-      assert.equal(rtc.sc.slides[0].tables.length, 1);
     });
   }
 }
@@ -1174,6 +1125,30 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
     assert.equal(s6.sc.slideCount, s6.before);
     assert.equal(s6.st.stacked.length, 0);
     assert.equal(s6.st.skipped.length, 0);
+  });
+
+  /* 挿入 UI が作る原稿の往復。横に並べるかは書き手が `+++` で決めるので、
+     画像を続けて貼っても列は作らない。割れたぶんはここで縦に積み直される */
+  let ins = '# 見出し\n\n本文です。\n';
+  const moves = [];
+  for (let i = 0; i < 3; i++) {
+    const r = insertBlock(ins, ins.length, '![](z.png)', { beside: true });
+    ins = r.body;
+    moves.push(r.moved);
+  }
+  const s7 = await stackRun(ins);
+  t('縦積み: 画像を続けて 3 枚貼っても列は作らず、1 枚に縦へ積まれる', () => {
+    assert.ok(!ins.includes('+++'), '勝手に列を作った:\n' + ins);
+    assert.equal(s7.sc.slideCount, 1, ins);
+    assert.equal(s7.sc.slideCount, segCount(ins), '枚数と区間数が食い違う');
+    assert.deepEqual(layoutOrder(s7.sc.slides[0]).map((i) => i.kind), ['text', 'image', 'image', 'image']);
+    assert.equal(s7.sc.slides[0].images.length, 3, '画像が消えた');
+  });
+  t('縦積み: 3 枚の画像も重ならない', () => {
+    const items = layoutOrder(s7.sc.slides[0]);
+    for (let i = 1; i < items.length; i++) {
+      assert.ok(items[i].y >= items[i - 1].y + items[i - 1].h, '重なっている: ' + JSON.stringify(items));
+    }
   });
 
   if (validateOoxml) {

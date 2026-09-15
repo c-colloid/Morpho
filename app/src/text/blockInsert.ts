@@ -16,29 +16,25 @@
  *    「画像 → 本文」は 2 枚に割れる（実測）ので、必ず既存本文の後ろへ送る
  *  - `::: notes` の中とコードフェンスの中には入れない
  *
- * 並べる規則（`beside` を立てたときだけ。0.19.6 で追加。実測は下の表）:
- *  - pptx はコンテンツ枠を 1 枚に 1 つしか持てない。**占有ブロック**（単独画像・表）が
- *    既にある区間へ 2 つ目を素直に足すと、pandoc は無警告でスライドを割る。
- *    区間数と枚数が食い違い、`contentIndexOf` が文書全体で止まる
- *  - 段組みが無ければ区間の末尾へ `+++` を足し、新しい列として置く。
- *    左の列に本文が残っていても割れない（実測）
- *  - 着地する列に占有ブロックが既にあるときは 3 列目を作らず（3 列目は無警告で消える）、
- *    `***` で新しいスライドを起こしてそこへ置く
+ * 占有ブロック（`beside` を立てたときだけ。0.19.7）:
+ *  **横に並べるのは `+++` を書いた人の意思**で、挿入 UI が勝手に列を作ることはしない。
+ *  素直に縦へ置けば、割れたスライドは変換器が 1 枚へ積み直す（`stackSegmentSlides`）。
+ *  ここで見るのは「置くと壊れる場所」だけ:
+ *  - 着地する列に占有ブロック（単独画像・表）が既にあるとき。列の中で重ねると
+ *    段組みごと壊れて 3 枚に割れ、3 列目を作れば無警告で消える（実測）。
+ *    この 2 つは積み直しでも直せないので、`***` で新しいスライドを起こして逃がす
  *
- * | 原稿 | 枚数 | 画像 |
+ * | 原稿 | pandoc | 積み直し後 |
  * |---|---|---|
- * | 画像 → 画像（素直に並べる） | 2 枚 | 2 つとも残る（別々のスライド） |
- * | 画像 `+++` 画像 | **1 枚**（Two Content） | 2 つとも残る |
- * | 本文 + 画像 `+++` 画像 | **1 枚**（Comparison） | 2 つとも残る |
- * | 箇条書き + 画像 `+++` 画像 | **1 枚**（Comparison） | 2 つとも残る |
- * | 本文 + 表 `+++` 画像 | **1 枚**（Comparison） | 表も画像も残る |
+ * | 画像 → 画像（素直に縦へ） | 2 枚 | **1 枚**（縦に並ぶ） |
+ * | 本文 → 表 → 本文 | 2 枚 | **1 枚**（原稿の順序のまま） |
+ * | 画像 `+++` 画像 | **1 枚**（Two Content・横に並ぶ） | そのまま |
  * | 画像 `+++` 画像 `+++` 画像 | 1 枚 | **3 つ目が消える**（INFO 1 件だけ） |
- * | 列の中で 画像 → 画像 | 3 枚 | 段組みが壊れて割れる |
+ * | 列の中で 画像 → 画像 | 3 枚 | 段組みが壊れているので積み直しも効かない |
  */
 import { slideSegments } from '../preview/cursorSlide.ts';
-import { COLUMN_SEPARATOR, COLUMN_SEPARATOR_TEXT } from './columns.ts';
+import { COLUMN_SEPARATOR } from './columns.ts';
 import { isImageOnlyLine } from './imageLinks.ts';
-import { FOOTER_LINE } from './footerBlocks.ts';
 
 export type InsertMove =
   | null
@@ -47,9 +43,7 @@ export type InsertMove =
   | 'notes'
   | 'code'
   | 'front-matter'
-  /** 占有ブロックの横へ並べた（`+++` を足した） */
-  | 'beside'
-  /** 並べる先が埋まっていたので `***` で新しいスライドを起こした */
+  /** 置く先の列が占有ブロックで埋まっていたので `***` で新しいスライドを起こした */
   | 'new-slide';
 
 export interface BlockInsertResult {
@@ -154,18 +148,16 @@ function trimBack(lines: Line[], from: number, to: number): number {
 /**
  * 行 from..to（to は含まない）の中身。
  *
- * - `occupied`: 占有ブロック（単独画像・表）の数。pptx のコンテンツ枠を
- *   独り占めするので、2 つ目からはスライドが割れる（落とし穴 5・20）
- * - `body`: 段落・箇条書きなどの本文があるか。見出し・`///`（出典）・水平線は数えない
+ * `occupied` は占有ブロック（単独画像・表）の数。pptx のコンテンツ枠を独り占めするので、
+ * 列の中で 2 つ目を重ねると段組みごと壊れる（落とし穴 5・13）。
  *
  * from の時点で開いている div は数に入れない前提で、ここから開く div の中
  * （`::: notes` や列の入れ子）とコードフェンスの中は数えない。
  */
-function contentOf(lines: Line[], from: number, to: number): { occupied: number; body: boolean } {
+function contentOf(lines: Line[], from: number, to: number): { occupied: number } {
   let depth = 0;
   let inTable = false;
   let occupied = 0;
-  let body = false;
   for (let k = from; k < Math.min(to, lines.length); k++) {
     const ln = lines[k];
     if (ln.open) { depth++; inTable = false; continue; }
@@ -176,13 +168,9 @@ function contentOf(lines: Line[], from: number, to: number): { occupied: number;
     /* 表は連続する `|` 行でひとかたまり。区切り行だけの `|---|` も同じ塊 */
     if (/^ {0,3}\|/.test(text)) { if (!inTable) occupied++; inTable = true; continue; }
     inTable = false;
-    if (isImageOnlyLine(ln.text)) { occupied++; continue; }
-    if (/^ {0,3}#/.test(text)) continue;
-    if (FOOTER_LINE.test(text)) continue;
-    if (/^ {0,3}([*_-])(?:[ \t]*\1){2,}[ \t]*$/.test(text)) continue;
-    body = true;
+    if (isImageOnlyLine(ln.text)) occupied++;
   }
-  return { occupied, body };
+  return { occupied };
 }
 
 export function insertBlock(
@@ -191,9 +179,10 @@ export function insertBlock(
   block: string,
   opts?: {
     /**
-     * 占有ブロック（画像・表）として置く。既に占有ブロックのある区間では
-     * `+++` で横へ並べ、並べる先が埋まっていれば `***` で新しいスライドを起こす。
-     * 画像の挿入だけが立てる。`+++` や `///` のような 1 行の記法では立てない
+     * 占有ブロック（画像・表）として置く。着地する列が既に占有ブロックで
+     * 埋まっているときだけ `***` で新しいスライドを起こす（列の中で重ねると
+     * 段組みごと壊れるため）。画像の挿入だけが立てる。
+     * 横に並べるかどうかは書き手が `+++` で決める — ここでは列を作らない
      */
     beside?: boolean;
   },
@@ -283,7 +272,6 @@ export function insertBlock(
   }
 
   let at: number;
-  let placed = block;
   if (colOpen >= 0) {
     const end = closeOf(lines, colOpen);
     if (beside && contentOf(lines, colOpen + 1, end).occupied > 0) return toNewSlide();
@@ -310,20 +298,8 @@ export function insertBlock(
     if (moved === null && end - 1 !== li) moved = lines[li].code ? 'code' : 'block';
     at = end < lines.length ? lines[end].at : seg.end;
     if (end >= lines.length) at = seg.end;
-    /* 段組みがまだ無い区間で、本文か占有ブロックが既にあるなら `+++` で列にする。
-       素直に足すと pandoc は Content with Caption を選び、本文を
-       **24pt → 10.5pt・幅 9.00in → 3.29in** の枠へ押し込む（実測。警告ゼロ）。
-       `+++` なら Two Content / Comparison になり 21pt・幅 4.42in を保つ。
-       占有ブロックが 2 つ目なら、そのまま足すとスライドが割れるのも避けられる */
-    if (beside && sepLines.length === 0) {
-      const c = contentOf(lines, 0, lines.length);
-      if (c.occupied > 0 || c.body) {
-        placed = COLUMN_SEPARATOR_TEXT + '\n\n' + block;
-        moved = 'beside';
-      }
-    }
   }
-  return place(body, at, placed, moved);
+  return place(body, at, block, moved);
 }
 
 /** 着地点へ独立した段落として置く。前後に空行を確保し、元の行は決して割らない */

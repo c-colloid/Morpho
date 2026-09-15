@@ -640,15 +640,15 @@ export default function EditorScreen() {
       /* 位置決めは純関数へ。フェンス行を割らず、必ず単独の段落として入れる */
       const { body } = splitFrontMatter(baseSource);
       const fmLen = baseSource.length - body.length;
-      /* 画像は占有ブロック。同じスライドに既に画像・表があれば `+++` で横へ並べ、
-         並べる先が埋まっていれば `***` で新しいスライドを起こす（blockInsert の表） */
+      /* 画像は占有ブロック。素直に縦へ置き（横に並べるかは書き手が `+++` で決める）、
+         置く先の列が画像・表で埋まっているときだけ `***` で新しいスライドを起こす */
       const r = insertBlock(body, baseCursor - fmLen, '![](' + name + ')', { beside: true });
       patchBody(r.body, fmLen + r.cursor);
       await flushSave();
       if (r.moved === 'new-slide') {
         Alert.alert(
           '新しいスライドに置きました',
-          'このスライドは画像・表で埋まっていました。pptx は 1 枚に 2 つまでしか並べられません',
+          '横に並べた列が画像・表で埋まっていました。同じ列に重ねると段組みごと崩れるので、新しいスライドにしています',
         );
       }
     } catch (e) {
