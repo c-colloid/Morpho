@@ -853,19 +853,54 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
       moves.push(r.moved);
     }
     const r3 = await run(body);
-    t('画像を続けて貼る: 2 枚目は横へ並べ、3 枚目で新しいスライドを起こす', () => {
-      assert.deepEqual(moves, ['block', 'beside', 'new-slide'], body);
+    t('画像を続けて貼る: 本文の横へ並べ、列が埋まったら新しいスライドを起こす', () => {
+      assert.deepEqual(moves, ['beside', 'new-slide', 'beside'], body);
     });
     t('画像を続けて貼る: 枚数と区間数が一致し、画像が 1 枚も消えない', () => {
       assert.equal(r3.nonInfo.length, 0, JSON.stringify(r3.nonInfo));
       assert.equal(r3.sc.slideCount, segs(body), '枚数と区間数が食い違う:\n' + body);
       assert.equal(r3.sc.slides.reduce((a, s) => a + s.images.length, 0), 3, '画像が消えた:\n' + body);
     });
-    t('画像を続けて貼る: 1 枚目に 2 つ並び、本文も残る', () => {
-      assert.equal(r3.sc.slides[0].images.length, 2);
-      assert.equal(r3.sc.slides[1].images.length, 1);
+    t('画像を続けて貼る: 1 枚目は本文の横、2 枚目に残りが 2 つ並ぶ', () => {
+      assert.equal(r3.sc.slideCount, 2);
+      assert.equal(r3.sc.slides[0].images.length, 1);
+      assert.equal(r3.sc.slides[1].images.length, 2);
       const texts = r3.sc.slides[0].shapes.flatMap((s) => s.paragraphs.map((p) => p.runs.map((x) => x.text).join('')));
       assert.ok(texts.includes('本文です。'), JSON.stringify(texts));
+    });
+    t('画像を続けて貼る: 本文が Content with Caption の狭い枠へ落ちない', () => {
+      /* 素直に足すと Content with Caption が選ばれ、本文は 24pt → 10.5pt・
+         幅 9.00in → 3.29in になる（実測・警告ゼロ）。`+++` なら 21pt・4.42in */
+      assert.notEqual(r3.sc.slides[0].layout, 'Content with Caption');
+      const body0 = r3.sc.slides[0].shapes.find((sh) => sh.placeholder === 'body');
+      const sz = (body0.lvlStyle && body0.lvlStyle[0] && body0.lvlStyle[0].sz) || r3.sc.deck.bodySz[0];
+      assert.ok(sz >= 2100, '本文が縮んだ: ' + sz);
+      assert.ok(body0.frame.w >= 4038600, '本文枠が狭くなった: ' + body0.frame.w);
+    });
+
+    /* 手で書いた「本文 + 表」は挿入 UI を通らない。pandoc は Content with Caption を
+       選んで本文を 24pt → 10.5pt・幅 9.00in → 3.29in にするが、非 INFO の警告は
+       ゼロなので、変換器が情報診断にして書き手へ返す */
+    const cap = await run('# 見出し\n\n表の上の文章。\n\n| a | b |\n|---|---|\n| 1 | 2 |\n');
+    t('本文 + 表: Content with Caption で本文が縮み、非 INFO 警告は出ない', () => {
+      assert.equal(cap.nonInfo.length, 0, JSON.stringify(cap.nonInfo));
+      assert.equal(cap.sc.slides[0].layout, 'Content with Caption');
+      const b0 = cap.sc.slides[0].shapes.find((sh) => sh.placeholder !== 'title' && sh.paragraphs.length);
+      assert.equal(b0.lvlStyle[0].sz, 1050, '本文の実効サイズ');
+      assert.equal(cap.sc.deck.bodySz[0], 2400);
+    });
+    t('本文 + 表: 縮んだことを情報診断で返す', () => {
+      const d = win.__morphoCaptionBodyDiags(cap.sc);
+      assert.equal(d.length, 1, JSON.stringify(d));
+      assert.equal(d[0].kind, 'info');
+      assert.match(d[0].text, /24pt → 10\.5pt/);
+      assert.match(d[0].hint, /\+\+\+/);
+    });
+    const capCols = await run('# 見出し\n\n表の上の文章。\n\n+++\n\n| a | b |\n|---|---|\n| 1 | 2 |\n');
+    t('+++ で列に分ければ本文の大きさが戻り、診断も出ない', () => {
+      assert.notEqual(capCols.sc.slides[0].layout, 'Content with Caption');
+      /* vm 側の配列はレルムが違うので length で見る（check-scene の注意と同じ） */
+      assert.equal(win.__morphoCaptionBodyDiags(capCols.sc).length, 0);
     });
 
     let tb = '# 見出し\n\n表の説明。\n\n| a | b |\n|---|---|\n| 1 | 2 |\n';

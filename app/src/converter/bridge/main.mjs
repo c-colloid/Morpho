@@ -1429,6 +1429,40 @@ function titleFitDiags(shrunk) {
   }];
 }
 
+/* 「本文 + 図・表」を同じスライドに書くと pandoc は Content with Caption を選び、
+   本文を幅 1/3 の枠へ入れて文字を下げる（実測: 本文 24pt → 10.5pt・
+   枠 9.00in → 3.29in。タイトルも 33pt → 15pt。**非 INFO の警告はゼロ**）。
+   タイトルは applyTitleFitZip が戻せるが、本文は枠が狭いままなので戻せない
+   （大きくすると溢れる）。黙って小さくせず書き手へ返す */
+function captionBodyDiags(parsed) {
+  var hits = [];
+  var def = (parsed.deck && parsed.deck.bodySz && parsed.deck.bodySz[0]) || null;
+  if (!def) return [];
+  for (var i = 0; i < parsed.slides.length; i++) {
+    var sl = parsed.slides[i];
+    if (sl.layout !== 'Content with Caption') continue;
+    for (var j = 0; j < sl.shapes.length; j++) {
+      var sh = sl.shapes[j];
+      if (sh.placeholder === 'title' || sh.placeholder === 'ctrTitle') continue;
+      if (!sh.paragraphs || !sh.paragraphs.length) continue;
+      var sz = sh.lvlStyle && sh.lvlStyle[0] && sh.lvlStyle[0].sz;
+      if (sz && sz < def) hits.push({ slide: sl.index, from: def, to: sz });
+      break;
+    }
+  }
+  if (!hits.length) return [];
+  var h = hits[0];
+  return [{
+    kind: 'info',
+    label: '図・表と並ぶ本文が狭い枠に入って小さくなっています',
+    hint: '同じスライドに本文と図・表を置くと、pandoc は本文を幅 1/3 の枠へ入れて文字を下げます。' +
+      '+++ で列に分けると本文の大きさと幅を保てます。*** で図・表を別のスライドにする手もあります',
+    text: 'スライド ' + h.slide + ': ' + (h.from / 100) + 'pt → ' + (h.to / 100) + 'pt',
+    count: hits.length
+  }];
+}
+window.__morphoCaptionBodyDiags = captionBodyDiags;
+
 async function convert(id, md, opts, format) {
   return serialized(async function () { await doConvert(id, md, opts, format); });
 }
@@ -2934,7 +2968,8 @@ async function doConvert(id, md, opts, format) {
         slideCount: parsed.slideCount,
         slides: parsed.slides,
         deck: parsed.deck,
-        diagnostics: classify(res.warnings, res.stderr, ft.diags.concat(col.diags, hv.diags, tf, rd)),
+        diagnostics: classify(res.warnings, res.stderr,
+          ft.diags.concat(col.diags, hv.diags, tf, rd, captionBodyDiags(parsed))),
         ms: ms,
         bytes: buf.length
       }
@@ -3012,6 +3047,8 @@ async function doExport(id, md, opts, format) {
     if (format === 'pptx') {
       var zipT = unzipSync(new Uint8Array(await out.arrayBuffer()));
       extraDiags = extraDiags.concat(titleFitDiags(applyTitleFitZip(zipT, null, opts.captionTitle)));
+      /* 本文が狭いキャプション枠へ落ちたら、書き出しでも同じことを伝える */
+      extraDiags = extraDiags.concat(captionBodyDiags(parsePptxZip(zipT)));
       /* 縮めなくても揃え・アンカーの明示で XML は変わり得るので常に書き戻す */
       out = new Blob([zipSync(zipT)]);
     }

@@ -106,11 +106,24 @@ t('beside: 表のある区間へ画像 → +++ で横へ並べる', () => {
   assert.match(r.body, /\| 1 \| 2 \|\n\n\+\+\+\n\n!\[\]\(x\.png\)\n/);
 });
 
-t('beside: 占有ブロックが無ければ従来どおり区間の末尾（+++ は足さない）', () => {
+t('beside: 本文だけの区間でも +++ で横へ並べる（Content with Caption の 10.5pt を避ける）', () => {
   const doc = '# 見出し\n\n本文です。\n';
   const r = insertBlock(doc, doc.indexOf('本文'), B, { beside: true });
+  assert.equal(r.moved, 'beside');
+  assert.match(r.body, /本文です。\n\n\+\+\+\n\n!\[\]\(x\.png\)\n/);
+});
+
+t('beside: 見出しだけの区間は素直に置く（全面に大きく出るのが正しい）', () => {
+  const doc = '# 見出し\n';
+  const r = insertBlock(doc, doc.length, B, { beside: true });
   assert.ok(!r.body.includes('+++'), '要らない +++ が入った:\n' + r.body);
-  assert.match(r.body, /本文です。\n\n!\[\]\(x\.png\)\n/);
+  assert.match(r.body, /# 見出し\n\n!\[\]\(x\.png\)\n/);
+});
+
+t('beside: 出典（///）だけの区間も素直に置く', () => {
+  const doc = '# 見出し\n\n/// 出典\n';
+  const r = insertBlock(doc, doc.length, B, { beside: true });
+  assert.ok(!r.body.includes('+++'), '要らない +++ が入った:\n' + r.body);
 });
 
 t('beside: 列が埋まっていれば 3 列目を作らず *** で新しいスライドへ', () => {
@@ -135,10 +148,10 @@ t('beside: ネイティブ記法の列が埋まっていても新しいスライ
   assert.ok(r.body.indexOf('***') > r.body.indexOf('b.png'), '新しいスライドになっていない:\n' + r.body);
 });
 
-t('beside: notes とコードフェンスの中の画像は占有ブロックに数えない', () => {
-  const doc = '# 見出し\n\n本文。\n\n```md\n![](code.png)\n```\n\n::: notes\n![](note.png)\n:::\n';
-  const r = insertBlock(doc, doc.indexOf('本文'), B, { beside: true });
-  assert.ok(!r.body.includes('+++'), '数えてはいけない画像を数えた:\n' + r.body);
+t('beside: notes とコードフェンスの中の画像・表・本文は数えない', () => {
+  const doc = '# 見出し\n\n```md\n![](code.png)\n\n| a | b |\n\nコードの中の本文\n```\n\n::: notes\n![](note.png)\nノートの本文\n:::\n';
+  const r = insertBlock(doc, doc.indexOf('見出し'), B, { beside: true });
+  assert.ok(!r.body.includes('+++'), '数えてはいけない中身を数えた:\n' + r.body);
   assert.equal(r.moved, 'notes');
 });
 

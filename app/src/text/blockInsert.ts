@@ -38,6 +38,7 @@
 import { slideSegments } from '../preview/cursorSlide.ts';
 import { COLUMN_SEPARATOR, COLUMN_SEPARATOR_TEXT } from './columns.ts';
 import { isImageOnlyLine } from './imageLinks.ts';
+import { FOOTER_LINE } from './footerBlocks.ts';
 
 export type InsertMove =
   | null
@@ -151,17 +152,20 @@ function trimBack(lines: Line[], from: number, to: number): number {
 }
 
 /**
- * 行 from..to（to は含まない）にある「占有ブロック」の数。
+ * 行 from..to（to は含まない）の中身。
  *
- * 占有ブロック = pptx のコンテンツ枠を独り占めするブロック（単独画像・表）。
- * 2 つ目からはスライドが割れる（実測。CLAUDE.md 落とし穴 5・20）。
+ * - `occupied`: 占有ブロック（単独画像・表）の数。pptx のコンテンツ枠を
+ *   独り占めするので、2 つ目からはスライドが割れる（落とし穴 5・20）
+ * - `body`: 段落・箇条書きなどの本文があるか。見出し・`///`（出典）・水平線は数えない
+ *
  * from の時点で開いている div は数に入れない前提で、ここから開く div の中
  * （`::: notes` や列の入れ子）とコードフェンスの中は数えない。
  */
-function occupiedCount(lines: Line[], from: number, to: number): number {
+function contentOf(lines: Line[], from: number, to: number): { occupied: number; body: boolean } {
   let depth = 0;
   let inTable = false;
-  let n = 0;
+  let occupied = 0;
+  let body = false;
   for (let k = from; k < Math.min(to, lines.length); k++) {
     const ln = lines[k];
     if (ln.open) { depth++; inTable = false; continue; }
@@ -170,11 +174,15 @@ function occupiedCount(lines: Line[], from: number, to: number): number {
     const text = ln.text.trim();
     if (text === '') { inTable = false; continue; }
     /* 表は連続する `|` 行でひとかたまり。区切り行だけの `|---|` も同じ塊 */
-    if (/^ {0,3}\|/.test(text)) { if (!inTable) n++; inTable = true; continue; }
+    if (/^ {0,3}\|/.test(text)) { if (!inTable) occupied++; inTable = true; continue; }
     inTable = false;
-    if (isImageOnlyLine(ln.text)) n++;
+    if (isImageOnlyLine(ln.text)) { occupied++; continue; }
+    if (/^ {0,3}#/.test(text)) continue;
+    if (FOOTER_LINE.test(text)) continue;
+    if (/^ {0,3}([*_-])(?:[ \t]*\1){2,}[ \t]*$/.test(text)) continue;
+    body = true;
   }
-  return n;
+  return { occupied, body };
 }
 
 export function insertBlock(
@@ -230,7 +238,7 @@ export function insertBlock(
     /* カーソルのいる列の範囲。`+++` の行そのものは含めない */
     let prev = -1;
     for (const k of sepLines) if (k <= li) prev = k;
-    if (beside && occupiedCount(lines, prev + 1, next ?? lines.length) > 0) return toNewSlide();
+    if (beside && contentOf(lines, prev + 1, next ?? lines.length).occupied > 0) return toNewSlide();
     if (next !== undefined) {
       const end = trimBack(lines, 0, next);
       return place(body, end < lines.length ? lines[end].at : seg.end, block, 'column');
@@ -278,7 +286,7 @@ export function insertBlock(
   let placed = block;
   if (colOpen >= 0) {
     const end = closeOf(lines, colOpen);
-    if (beside && occupiedCount(lines, colOpen + 1, end) > 0) return toNewSlide();
+    if (beside && contentOf(lines, colOpen + 1, end).occupied > 0) return toNewSlide();
     const k = trimBack(lines, colOpen + 1, Math.min(end, lines.length));
     at = k < lines.length ? lines[k].at : body.length;
   } else {
@@ -302,11 +310,17 @@ export function insertBlock(
     if (moved === null && end - 1 !== li) moved = lines[li].code ? 'code' : 'block';
     at = end < lines.length ? lines[end].at : seg.end;
     if (end >= lines.length) at = seg.end;
-    /* 段組みがまだ無い区間に 2 つ目の占有ブロックを足す。`+++` で列にすれば
-       1 枚に収まる（左の列に本文が残っていても割れない。実測） */
-    if (beside && sepLines.length === 0 && occupiedCount(lines, 0, lines.length) > 0) {
-      placed = COLUMN_SEPARATOR_TEXT + '\n\n' + block;
-      moved = 'beside';
+    /* 段組みがまだ無い区間で、本文か占有ブロックが既にあるなら `+++` で列にする。
+       素直に足すと pandoc は Content with Caption を選び、本文を
+       **24pt → 10.5pt・幅 9.00in → 3.29in** の枠へ押し込む（実測。警告ゼロ）。
+       `+++` なら Two Content / Comparison になり 21pt・幅 4.42in を保つ。
+       占有ブロックが 2 つ目なら、そのまま足すとスライドが割れるのも避けられる */
+    if (beside && sepLines.length === 0) {
+      const c = contentOf(lines, 0, lines.length);
+      if (c.occupied > 0 || c.body) {
+        placed = COLUMN_SEPARATOR_TEXT + '\n\n' + block;
+        moved = 'beside';
+      }
     }
   }
   return place(body, at, placed, moved);
