@@ -15,11 +15,41 @@
  *    「本文 → 画像」は Content with Caption になって 1 枚に収まるが、
  *    「画像 → 本文」は 2 枚に割れる（実測）ので、必ず既存本文の後ろへ送る
  *  - `::: notes` の中とコードフェンスの中には入れない
+ *
+ * 並べる規則（`beside` を立てたときだけ。0.19.6 で追加。実測は下の表）:
+ *  - pptx はコンテンツ枠を 1 枚に 1 つしか持てない。**占有ブロック**（単独画像・表）が
+ *    既にある区間へ 2 つ目を素直に足すと、pandoc は無警告でスライドを割る。
+ *    区間数と枚数が食い違い、`contentIndexOf` が文書全体で止まる
+ *  - 段組みが無ければ区間の末尾へ `+++` を足し、新しい列として置く。
+ *    左の列に本文が残っていても割れない（実測）
+ *  - 着地する列に占有ブロックが既にあるときは 3 列目を作らず（3 列目は無警告で消える）、
+ *    `***` で新しいスライドを起こしてそこへ置く
+ *
+ * | 原稿 | 枚数 | 画像 |
+ * |---|---|---|
+ * | 画像 → 画像（素直に並べる） | 2 枚 | 2 つとも残る（別々のスライド） |
+ * | 画像 `+++` 画像 | **1 枚**（Two Content） | 2 つとも残る |
+ * | 本文 + 画像 `+++` 画像 | **1 枚**（Comparison） | 2 つとも残る |
+ * | 箇条書き + 画像 `+++` 画像 | **1 枚**（Comparison） | 2 つとも残る |
+ * | 本文 + 表 `+++` 画像 | **1 枚**（Comparison） | 表も画像も残る |
+ * | 画像 `+++` 画像 `+++` 画像 | 1 枚 | **3 つ目が消える**（INFO 1 件だけ） |
+ * | 列の中で 画像 → 画像 | 3 枚 | 段組みが壊れて割れる |
  */
 import { slideSegments } from '../preview/cursorSlide.ts';
-import { COLUMN_SEPARATOR } from './columns.ts';
+import { COLUMN_SEPARATOR, COLUMN_SEPARATOR_TEXT } from './columns.ts';
+import { isImageOnlyLine } from './imageLinks.ts';
 
-export type InsertMove = null | 'block' | 'column' | 'notes' | 'code' | 'front-matter';
+export type InsertMove =
+  | null
+  | 'block'
+  | 'column'
+  | 'notes'
+  | 'code'
+  | 'front-matter'
+  /** 占有ブロックの横へ並べた（`+++` を足した） */
+  | 'beside'
+  /** 並べる先が埋まっていたので `***` で新しいスライドを起こした */
+  | 'new-slide';
 
 export interface BlockInsertResult {
   /** 差し替え後の本文 */
@@ -120,7 +150,46 @@ function trimBack(lines: Line[], from: number, to: number): number {
   return k;
 }
 
-export function insertBlock(body: string, cursor: number, block: string): BlockInsertResult {
+/**
+ * 行 from..to（to は含まない）にある「占有ブロック」の数。
+ *
+ * 占有ブロック = pptx のコンテンツ枠を独り占めするブロック（単独画像・表）。
+ * 2 つ目からはスライドが割れる（実測。CLAUDE.md 落とし穴 5・20）。
+ * from の時点で開いている div は数に入れない前提で、ここから開く div の中
+ * （`::: notes` や列の入れ子）とコードフェンスの中は数えない。
+ */
+function occupiedCount(lines: Line[], from: number, to: number): number {
+  let depth = 0;
+  let inTable = false;
+  let n = 0;
+  for (let k = from; k < Math.min(to, lines.length); k++) {
+    const ln = lines[k];
+    if (ln.open) { depth++; inTable = false; continue; }
+    if (ln.close) { if (depth > 0) depth--; inTable = false; continue; }
+    if (ln.code || depth > 0) { inTable = false; continue; }
+    const text = ln.text.trim();
+    if (text === '') { inTable = false; continue; }
+    /* 表は連続する `|` 行でひとかたまり。区切り行だけの `|---|` も同じ塊 */
+    if (/^ {0,3}\|/.test(text)) { if (!inTable) n++; inTable = true; continue; }
+    inTable = false;
+    if (isImageOnlyLine(ln.text)) n++;
+  }
+  return n;
+}
+
+export function insertBlock(
+  body: string,
+  cursor: number,
+  block: string,
+  opts?: {
+    /**
+     * 占有ブロック（画像・表）として置く。既に占有ブロックのある区間では
+     * `+++` で横へ並べ、並べる先が埋まっていれば `***` で新しいスライドを起こす。
+     * 画像の挿入だけが立てる。`+++` や `///` のような 1 行の記法では立てない
+     */
+    beside?: boolean;
+  },
+): BlockInsertResult {
   if (body.trim() === '') {
     const b = block + '\n';
     return { body: b, cursor: block.length, moved: null };
@@ -149,8 +218,19 @@ export function insertBlock(body: string, cursor: number, block: string): BlockI
   for (let k = 0; k < lines.length; k++) {
     if (!lines[k].code && COLUMN_SEPARATOR.test(lines[k].text)) sepLines.push(k);
   }
+  const beside = opts?.beside === true;
+  /* 並べる先が埋まっているときの逃げ場。区間の末尾（`::: notes` の後ろ）へ
+     `***` ごと送って新しいスライドを起こす。3 列目は無警告で消え、
+     列の中で占有ブロックを重ねると段組みごと壊れて割れる（実測） */
+  const toNewSlide = (): BlockInsertResult =>
+    place(body, seg.end, '***\n\n' + block, 'new-slide');
+
   if (sepLines.length) {
     const next = sepLines.find((k) => k > li);
+    /* カーソルのいる列の範囲。`+++` の行そのものは含めない */
+    let prev = -1;
+    for (const k of sepLines) if (k <= li) prev = k;
+    if (beside && occupiedCount(lines, prev + 1, next ?? lines.length) > 0) return toNewSlide();
     if (next !== undefined) {
       const end = trimBack(lines, 0, next);
       return place(body, end < lines.length ? lines[end].at : seg.end, block, 'column');
@@ -195,8 +275,10 @@ export function insertBlock(body: string, cursor: number, block: string): BlockI
   }
 
   let at: number;
+  let placed = block;
   if (colOpen >= 0) {
     const end = closeOf(lines, colOpen);
+    if (beside && occupiedCount(lines, colOpen + 1, end) > 0) return toNewSlide();
     const k = trimBack(lines, colOpen + 1, Math.min(end, lines.length));
     at = k < lines.length ? lines[k].at : body.length;
   } else {
@@ -220,8 +302,14 @@ export function insertBlock(body: string, cursor: number, block: string): BlockI
     if (moved === null && end - 1 !== li) moved = lines[li].code ? 'code' : 'block';
     at = end < lines.length ? lines[end].at : seg.end;
     if (end >= lines.length) at = seg.end;
+    /* 段組みがまだ無い区間に 2 つ目の占有ブロックを足す。`+++` で列にすれば
+       1 枚に収まる（左の列に本文が残っていても割れない。実測） */
+    if (beside && sepLines.length === 0 && occupiedCount(lines, 0, lines.length) > 0) {
+      placed = COLUMN_SEPARATOR_TEXT + '\n\n' + block;
+      moved = 'beside';
+    }
   }
-  return place(body, at, block, moved);
+  return place(body, at, placed, moved);
 }
 
 /** 着地点へ独立した段落として置く。前後に空行を確保し、元の行は決して割らない */

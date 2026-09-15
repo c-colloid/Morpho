@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { unzipSync, zipSync, strToU8, strFromU8 } from 'fflate';
 import { convert } from '../node_modules/pandoc-wasm/src/index.node.js';
 import { slideSegments } from '../src/preview/cursorSlide.ts';
+import { insertBlock } from '../src/text/blockInsert.ts';
 
 const src = readFileSync(new URL('../src/converter/bridgeHtml.ts', import.meta.url), 'utf8');
 const decl = src.indexOf('export const BRIDGE_HTML');
@@ -837,6 +838,47 @@ t('docx: *** は hr、notes は Lua フィルタで消える', () => {
     const notes = hc.sc.slides[1].notes.map((p) => p.runs.map((r) => r.text).join('')).join('');
     assert.equal(notes, 'ノート');
   });
+
+  /* ---- 挿入 UI が作る原稿の往復（0.19.6。画像を続けて貼る） ----
+     pptx はコンテンツ枠を 1 枚に 1 つしか持てず、素直に足すと pandoc が
+     無警告でスライドを割る（区間数と枚数が食い違い contentIndexOf が止まる）。
+     blockInsert が `+++`（横へ並べる）と `***`（新しいスライド）を選ぶので、
+     ここでは「その結果が本当に 1 枚に収まり、画像が 1 枚も消えない」を見る */
+  {
+    let body = '# 見出し\n\n本文です。\n';
+    const moves = [];
+    for (let i = 0; i < 3; i++) {
+      const r = insertBlock(body, body.length, '![](z.png)', { beside: true });
+      body = r.body;
+      moves.push(r.moved);
+    }
+    const r3 = await run(body);
+    t('画像を続けて貼る: 2 枚目は横へ並べ、3 枚目で新しいスライドを起こす', () => {
+      assert.deepEqual(moves, ['block', 'beside', 'new-slide'], body);
+    });
+    t('画像を続けて貼る: 枚数と区間数が一致し、画像が 1 枚も消えない', () => {
+      assert.equal(r3.nonInfo.length, 0, JSON.stringify(r3.nonInfo));
+      assert.equal(r3.sc.slideCount, segs(body), '枚数と区間数が食い違う:\n' + body);
+      assert.equal(r3.sc.slides.reduce((a, s) => a + s.images.length, 0), 3, '画像が消えた:\n' + body);
+    });
+    t('画像を続けて貼る: 1 枚目に 2 つ並び、本文も残る', () => {
+      assert.equal(r3.sc.slides[0].images.length, 2);
+      assert.equal(r3.sc.slides[1].images.length, 1);
+      const texts = r3.sc.slides[0].shapes.flatMap((s) => s.paragraphs.map((p) => p.runs.map((x) => x.text).join('')));
+      assert.ok(texts.includes('本文です。'), JSON.stringify(texts));
+    });
+
+    let tb = '# 見出し\n\n表の説明。\n\n| a | b |\n|---|---|\n| 1 | 2 |\n';
+    const rt = insertBlock(tb, tb.length, '![](z.png)', { beside: true });
+    const rtc = await run(rt.body);
+    t('表のあるスライドへ画像を貼る: 横へ並び、表も画像も残って 1 枚', () => {
+      assert.equal(rt.moved, 'beside');
+      assert.equal(rtc.nonInfo.length, 0, JSON.stringify(rtc.nonInfo));
+      assert.equal(rtc.sc.slideCount, segs(rt.body));
+      assert.equal(rtc.sc.slides[0].images.length, 1);
+      assert.equal(rtc.sc.slides[0].tables.length, 1);
+    });
+  }
 }
 
 /* ---------- 表・図と並ぶスライド（Content with Caption）のタイトル ---------- */

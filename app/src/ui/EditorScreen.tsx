@@ -640,9 +640,17 @@ export default function EditorScreen() {
       /* 位置決めは純関数へ。フェンス行を割らず、必ず単独の段落として入れる */
       const { body } = splitFrontMatter(baseSource);
       const fmLen = baseSource.length - body.length;
-      const r = insertBlock(body, baseCursor - fmLen, '![](' + name + ')');
+      /* 画像は占有ブロック。同じスライドに既に画像・表があれば `+++` で横へ並べ、
+         並べる先が埋まっていれば `***` で新しいスライドを起こす（blockInsert の表） */
+      const r = insertBlock(body, baseCursor - fmLen, '![](' + name + ')', { beside: true });
       patchBody(r.body, fmLen + r.cursor);
       await flushSave();
+      if (r.moved === 'new-slide') {
+        Alert.alert(
+          '新しいスライドに置きました',
+          'このスライドは画像・表で埋まっていました。pptx は 1 枚に 2 つまでしか並べられません',
+        );
+      }
     } catch (e) {
       Alert.alert('画像を挿入できませんでした', String(e instanceof Error ? e.message : e));
     }
